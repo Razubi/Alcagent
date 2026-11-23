@@ -1,0 +1,27 @@
+[package]
+name = "alc-persistence"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Save/load worlds, autosaves."
+
+[dependencies]
+alc-core = { workspace = true }
+alc-events = { workspace = true }
+alc-economy = { workspace = true }
+alc-warden = { workspace = true }
+alc-guard = { workspace = true }
+alc-social = { workspace = true }
+alc-prisoner = { workspace = true }
+alc-agents = { workspace = true }
+alc-world = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bincode = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

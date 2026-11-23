@@ -1,0 +1,69 @@
+[workspace]
+members = [
+  "crates/alc-core",
+  "crates/alc-world",
+  "crates/alc-agents",
+  "crates/alc-prisoner",
+  "crates/alc-social",
+  "crates/alc-economy",
+  "crates/alc-warden",
+  "crates/alc-guard",
+  "crates/alc-events",
+  "crates/alc-persistence",
+  "crates/alc-ui",
+  "crates/alc-testing",
+  "crates/alcagent",
+  "crates/sumo",
+]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+version = "0.1.0"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = "1"
+thiserror = "2"
+rand = "0.8"
+rand_pcg = "0.3"
+tracing = "0.1"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.28"
+eframe = "0.37.0"
+egui = "0.37.0"
+ratatui = "0.29"
+uuid = { version = "1", features = ["v4", "serde"] }
+alc-core = { path = "crates/alc-core" }
+alc-world = { path = "crates/alc-world" }
+alc-agents = { path = "crates/alc-agents" }
+alc-prisoner = { path = "crates/alc-prisoner" }
+alc-social = { path = "crates/alc-social" }
+alc-economy = { path = "crates/alc-economy" }
+alc-warden = { path = "crates/alc-warden" }
+alc-guard = { path = "crates/alc-guard" }
+alc-events = { path = "crates/alc-events" }
+alc-persistence = { path = "crates/alc-persistence" }
+alc-testing = { path = "crates/alc-testing" }
+alc-ui = { path = "crates/alc-ui" }
+alcagent = { path = "crates/alcagent" }
+sumo = { path = "crates/sumo" }
+
+[workspace.lints.clippy]
+pedantic = "warn"
+nursery = "warn"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

@@ -1,0 +1,19 @@
+[package]
+name = "alc-agents"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "AI orchestration: decision loops, memory, info model, prompt validation."
+
+[dependencies]
+alc-core = { workspace = true }
+alc-prisoner = { workspace = true }
+alc-social = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,29 @@
+[package]
+name = "alc-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Observation UI (ratatui TUI, plan for map + dashboards)."
+
+[dependencies]
+alc-core = { workspace = true }
+alc-events = { workspace = true }
+alc-prisoner = { workspace = true }
+alc-social = { workspace = true }
+alc-economy = { workspace = true }
+alc-warden = { workspace = true }
+alc-guard = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+ratatui = { workspace = true }
+alc-world = { workspace = true }
+sumo = { path = "../sumo" }
+
+[dependencies.crossterm]
+workspace = true
+
+[lints]
+workspace = true

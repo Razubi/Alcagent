@@ -1,0 +1,26 @@
+[package]
+name = "alcagent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Binary: run the prison simulation headless or with the TUI observer."
+
+[[bin]]
+name = "alcagent"
+path = "src/main.rs"
+
+[dependencies]
+alc-core = { workspace = true }
+alc-world = { workspace = true }
+alc-events = { workspace = true }
+alc-persistence = { workspace = true }
+alc-ui = { workspace = true }
+sumo = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[lints]
+workspace = true

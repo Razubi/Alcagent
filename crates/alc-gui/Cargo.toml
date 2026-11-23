@@ -1,0 +1,26 @@
+[package]
+name = "alc-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "egui GUI observer for the Alcagent prison simulation (the interactive counterpart of the alc-ui ratatui TUI)."
+
+[dependencies]
+alc-core = { workspace = true }
+alc-ui = { workspace = true }
+alc-world = { workspace = true }
+alc-social = { workspace = true }
+alc-economy = { workspace = true }
+alc-warden = { workspace = true }
+alc-guard = { workspace = true }
+alc-events = { workspace = true }
+alc-prisoner = { workspace = true }
+sumo = { workspace = true }
+egui = { workspace = true }
+eframe = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,27 @@
+[package]
+name = "alc-world"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "World simulation: facility layout, population, tick loop, history."
+
+[dependencies]
+alc-core = { workspace = true }
+alc-events = { workspace = true }
+alc-economy = { workspace = true }
+alc-warden = { workspace = true }
+alc-guard = { workspace = true }
+alc-social = { workspace = true }
+alc-prisoner = { workspace = true }
+alc-agents = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+rand = { workspace = true }
+rand_pcg = { workspace = true }
+
+[lints]
+workspace = true
