@@ -1,12 +1,20 @@
 # Changelog — Project Alcagent
 
-## [0.05] — "The Living Institution" (in development; status 2026-11-23)
+## [0.05] — "The Living Institution" (in development; status 2026-11-24)
 
 ### Build / tests
-- `cargo build --workspace` / `cargo test --workspace`: **green** — 184 passed, 0 failed,
-  1 ignored (the 10k-entry `logs_over_limit_are_detected` stress test). Includes the
-  730-day 3-seed chaos soak, save/load determinism, and all Wave 4 suites.
+- Last verified green baseline (2026-11-23): `cargo build --workspace` / `cargo test --workspace`
+  184 passed, 0 failed, 1 ignored (the 10k-entry `logs_over_limit_are_detected` stress test),
+  including the 730-day 3-seed chaos soak, save/load determinism and all Wave 4 suites.
 - Pre-Wave-4 baseline was 136/136 passing.
+- **2026-11-24:** an in-flight gameplay wave is mid-edit in the working tree (policy controls,
+  construction queue, rehab/contraband steps, save format v3). It may not compile until the
+  edits land; see `docs/SUMO_API.md` §12 and `docs/ALCAGENT.md` for the new APIs/controls.
+
+### Repository split
+- The `sumo` engine and its 11 `alc-*` dependencies were extracted into a standalone repository
+  at `../sumo` for independent publishing. This repository remains the full application
+  (`alcagent` CLI + `alc-ui` TUI + engine).
 
 ### Implemented (pre-Wave-4)
 - Capability catalog + trait deltas (`alc-core::capability`, 23 kinds).

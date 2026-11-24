@@ -10,7 +10,13 @@ modify arbitrary simulation state") is enforced by this boundary.
 - **Features:** `default = []`; `gui` is a stub (`SumoApp` unit struct and `launch_gui()`
   returning `Ok(())`) and is not recommended — use the `alc-ui` ratatui observer instead.
 - **Source of truth for signatures:** `crates/sumo/src/*.rs`; this guide reflects the codebase
-  as of 2026-11-23.
+  as of 2026-11-24.
+
+> **In-flight work (2026-11-24):** a new gameplay wave is landing in the working tree. It adds
+> policy-control methods, structured decision/incident audit records, queued construction,
+> daily rehab/contraband steps, save format v3 and new event kinds. These are documented in
+> section 12. The working tree may not compile while the wave is mid-edit; the last verified
+> green baseline was 184 passed / 0 failed / 1 ignored on 2026-11-23.
 
 ---
 
@@ -323,7 +329,9 @@ tests in `crates/sumo/tests/` verify this.
 3. **Policy mirror** — `World::tick` can mutate `world.policies` directly; `Sim::tick` and
    `apply_warden_action` resync `engine_state.policy_state`. Use the public `set_policy` /
    `set_lockdown` methods for engine-initiated changes.
-4. **Rejected decisions leave no audit trace**; only applied ones are logged.
+4. **Decision audit semantics are changing (in-flight):** historically only applied decisions
+   were logged; the new `DecisionAuditRecord` path records rejected decisions too. Check which
+   API you are reading (`decision_log()` vs `decision_audit_log()`).
 5. **Autosave directory is lost on load** (interval survives); errors from `maybe_autosave()`
    are swallowed inside `tick()`.
 6. **Incident causality is currently self-referential** — placeholder until real chains land.
@@ -332,8 +340,9 @@ tests in `crates/sumo/tests/` verify this.
 8. **Map geometry is placeholder** (synthetic grid + ring graph, no pathfinding).
 9. **Summary stubs** — empty warden inbox, zeroed facility wing/staff fields.
 10. **The `gui` feature is a no-op stub**; use `alc-ui` for a real observer.
-11. **Contraband/capabilities** library modules exist but are not wired into `sumo`;
-    `has_contraband` in validation is a proxy (`!prisoner.skills.is_empty()`).
+11. **Contraband/capabilities** are being wired in the in-flight wave (daily
+    `contraband_step`); until it lands, `has_contraband` in validation is a proxy
+    (`!prisoner.skills.is_empty()`).
 12. **Event bus eviction** at 50k can make `events_since` / `wait_for_event` miss old events.
 
 ---
@@ -354,3 +363,72 @@ fixed seeds and id/time-derived RNG streams; none require a network connection o
 
 For design rationale, see [`../Documentation/Design/Engine/sumo-engine.md`](../Documentation/Design/Engine/sumo-engine.md)
 and [`../Documentation/Systems/engine-api.md`](../Documentation/Systems/engine-api.md).
+
+---
+
+## 12. In-flight gameplay wave (2026-11-24, not yet stable)
+
+The following APIs exist in the working tree but are still being integrated. Treat them as
+unstable until the wave lands and the suite is green again.
+
+### Policy controls
+
+```rust
+pub struct PolicySummary {
+    pub policy: Policy,
+    pub lockdown: bool,
+    pub security_level: f32,            // 0.0–1.0
+    pub privileges_level: f32,          // 0.0–1.0
+    pub rehab_funding_multiplier: f32,  // 0.0–2.0
+    pub intake_paused: bool,            // lockdown || security>=0.9 || manual pause
+}
+
+sim.policy_summary() -> PolicySummary
+sim.set_security_level(level: f32)      // clamped 0..1; emits PolicyChange
+sim.set_privileges_level(level: f32)
+sim.set_rehab_funding(multiplier: f32)  // clamped 0..2
+sim.set_intake_paused(paused: bool)
+```
+
+Security level also selects a policy band: ≥0.9 or lockdown → `Lockdown`, ≥0.7 → `Enhanced`,
+otherwise `Normal`. `World::policies` gains `intake_paused: bool` (serde-defaulted).
+
+### Structured audit records
+
+```rust
+sim.decision_audit_log() -> &[DecisionAuditRecord]
+sim.record_decision_audit(record: DecisionAuditRecord)
+sim.incident_records() -> Vec<IncidentRecord>
+```
+
+`DecisionAuditRecord { time, actor, source, action, summary, validation, reason }` — actor is
+`"warden"`, `"prisoner:<id>"` or `"guard:<id>"`; source is `deterministic`, `council`, `shadow`
+or `agent`; validation is `accepted` / `repaired` / `rejected`. `IncidentRecord { id, at,
+kind, severity, location, involved_prisoners, cause, consequence, resolved }`.
+`sumo::incidents::IncidentFilter` and `filter_incidents(&[Incident], &IncidentFilter)` support
+time/kind/severity/prisoner/location/resolved filtering with a most-recent `limit`.
+
+### Construction queue
+
+```rust
+sim.construction_queue() -> Vec<ConstructionSummary>
+```
+
+`ConstructionSummary { id, kind, wing, capacity, total_days, progress_days, cost, started_day }`.
+`WardenAction::Expand` now **queues** a project (7–14 days depending on facility type) instead
+of adding the facility immediately; completion emits `ConstructionComplete`.
+
+### Daily rehab / contraband steps
+
+`alc-world::World::tick` now runs daily `rehab_step`, `contraband_step` and `construction_step`
+alongside the existing parole/escape boundary. Rehab auto-enrolls motivated prisoners and emits
+`ProgramEnrolled` / `RehabilitationSuccess`; contraband discovery can change disciplinary
+status and security level. New `EventKind` variants: `RehabilitationProgress`,
+`RehabilitationFailure`, `PostRelease`. New typed payloads in `alc-events`:
+`RehabProgressEvent`, `RehabFailureEvent` (`RehabFailureReason`), `PostReleaseRecord`.
+
+### Persistence
+
+`SAVE_FORMAT_VERSION` is now **3** (adds `decision_audit` to `EngineState`). Older v2 saves
+must be regenerated or migrated before loading. `alc_persistence::DecisionAuditRecord` mirrors
+the sumo type; `Economy::spend(...)` was added to charge construction costs.

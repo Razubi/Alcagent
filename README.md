@@ -7,9 +7,10 @@ and escapes change the population, and the world keeps developing whether or not
 watching. No LLM is required to run it — the simulation is deterministic, seed-driven and
 fully local.
 
-> **Status (v0.05, verified 2026-11-23):** `cargo build --workspace` and
-> `cargo test --workspace` are green (**184 passed, 0 failed, 1 ignored**), including a
-> 730-day three-seed chaos soak, save/load replay determinism and Wave 4 integration tests.
+> **Status (v0.05):** last verified green baseline 2026-11-23 — `cargo build --workspace` and
+> `cargo test --workspace` passed (**184 passed, 0 failed, 1 ignored**), including a
+> 730-day three-seed chaos soak and save/load replay determinism. A new gameplay wave is
+> mid-edit as of 2026-11-24 (see docs); the tree may not compile until it lands.
 
 ---
 
@@ -84,6 +85,10 @@ Running `cargo run -- run N` writes a save to `saves/default` by default. See
 `sumo` is the supported integration surface. Application code should go through `sumo::Sim`
 rather than mutating `alc_world::World` directly; agents propose decisions and the engine
 validates and applies them.
+
+The engine and its `alc-*` dependencies are also published as a standalone repository at
+`../sumo` (`docs/SUMO_API.md` is shared between both). This repository additionally owns the
+`alcagent` CLI, the `alc-ui` TUI and the `alc-gui` experiment.
 
 ---
 

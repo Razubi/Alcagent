@@ -120,16 +120,26 @@ restores the terminal. The loop renders at ~60 FPS and ticks at `--speed` ticks/
 | `Space` | Pause / resume the observer tick loop |
 | `+` / `=` | Double tick speed (max 4000 tps) |
 | `-` / `_` | Halve tick speed (min 1 tps) |
-| `1`–`9` | Switch observation view (resets scroll) |
+| `1`–`9` (in-flight: `0`, `A`) | Switch observation view (resets scroll) |
 | `↑` `↓` `←` `→` / `k` `j` `h` `l` | Move the selection cursor (held keys repeat) |
 | `s` / `S` | Manual save to `--save-dir` (status shows `Saved to <path>` or the error) |
-| `L` | Enable lockdown; `U` | Lift lockdown |
+| `L` / `U` | Enable / lift lockdown |
 | `p` / `P` | Cycle policy mode: Deterministic → Council → Shadow → Deterministic |
+| `N` / `E` / `K` | Set policy band: Normal / Enhanced / Lockdown (in-flight) |
+| `[` / `]` | Decrease / increase security level by 0.05 (in-flight) |
+| `,` / `.` | Decrease / increase privileges by 0.05 (in-flight) |
+| `;` / `'` | Decrease / increase rehab funding by 0.1 (in-flight) |
+| `b` / `B` | Toggle manual intake pause (in-flight) |
 
-The in-app help bar shows the first five groups; `s`/`S`, `L`/`U` and `p`/`P` are also active
-but not listed there. The `PAUSED`/`RUNNING` badge refers to the tick loop, *not* to policy mode.
+The in-app help bar lists the common controls; several of the policy keys above are only shown
+in the Warden view's "Policy Controls" panel. The `PAUSED`/`RUNNING` badge refers to the tick
+loop, *not* to policy mode. A `LOCKDOWN` badge appears in the status bar when lockdown is active.
 
-### The nine views
+> **In-flight (2026-11-24):** a gameplay wave is adding the policy keys, the `0`/`A` views,
+> incident-record/audit views and a construction table on the map. The keybindings above marked
+> "in-flight" may change before the wave lands; the list is kept for early adopters.
+
+### The nine views (plus in-flight additions)
 
 | Key | View | What it shows |
 |---|---|---|
@@ -137,11 +147,12 @@ but not listed there. The `PAUSED`/`RUNNING` badge refers to the tick loop, *not
 | 2 | Prisoner | Selectable prisoner list; profile (age, class, sentence, gang, reputation, health/mental/hope), 12 traits, 25 need-deficit bars, goals/schedule, top skills, memory summary. |
 | 3 | Gang | Leader, members, reputation/resources, culture, formation time, hierarchy, rivalries, alliances, disputes and goals (or an empty-state hint). |
 | 4 | Staff | Roster (rank/post); detail: authority, shift, task, credibility, duty-condition bars (competence, morale, fatigue), disposition (stress, loyalty, integrity) and duty log. |
-| 5 | Warden | Name/philosophy, attention, reports received, 11 leadership traits, pending actions. |
+| 5 | Warden | Name/philosophy, attention, reports received, 11 leadership traits, pending actions. **In-flight:** "Policy Controls" panel (band, lockdown, security/privileges bars, rehab funding, intake state). |
 | 6 | Financial | Treasury, health index, funding per prisoner/day, crowding threshold, paged ledger of daily accounts. |
 | 7 | Event Timeline | Newest-first events; detail pane with kind, time, id, confidence and causal chains (`a → b`). |
 | 8 | Social Network | Dyad counts and a paged table of relationships sorted by bond strength (friendship, trust, fear, hostility, rivalry, bond/threat scores). |
-| 9 | Prison Map | ASCII schematic: perimeter/tower count, facilities by kind coloured by condition, guard-post counts and facilities table. (A live graphical map fed by `sim.map_frame()` is planned; the current view is schematic.) |
+| 9 | Prison Map | ASCII schematic: perimeter/tower count, facilities by kind coloured by condition, guard-post counts and facilities table. **In-flight:** construction-queue table (ID, project, %, days). (A live graphical map fed by `sim.map_frame()` is planned; the current view is schematic.) |
+| 0 / A (in-flight) | Incident Reports / Decision Audit | Structured incident records (severity colour, OPEN/RES, cause/consequence) and decision audit records (actor, source, validation colour, reason). |
 
 Views have narrow-layout fallbacks (compact tab labels/help) and are safe on sparse or very
 large worlds (2,000+ prisoners).
@@ -151,7 +162,7 @@ large worlds (2,000+ prisoners).
 ## Saves and autosave
 
 - Default directory: `saves/default` (created on first save). Override with `--save-dir`.
-- Files: `world.bin` (versioned bincode — world + engine state) and `world.debug.json` (human-readable debug sidecar).
+- Files: `world.bin` (versioned bincode — world + engine state) and `world.debug.json` (human-readable debug sidecar). Format version is currently **3**; saves from earlier versions must be regenerated/migrated.
 - Autosave every 7 simulated days by default; `--autosave-days 0` disables it.
 - Resume with `cargo run -- --load saves/default observe` (or `run 30`). Loading ignores
   `--seed`: the world's original seed comes from the save.
