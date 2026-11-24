@@ -27,11 +27,25 @@ pub enum ViewMode {
     DecisionAudit,
 }
 
+/// Observer-side selection/filter state (0.05 control wiring).
+///
+/// The fields added here back the TUI control layer (`app::App`) without
+/// touching the render functions in [`crate::views`]: search queries, entity
+/// drill-down selections and the declarative incident query all live here.
 pub struct UiState {
     pub mode: ViewMode,
     pub selected_prisoner: Option<u64>,
     pub selected_gang: Option<u64>,
     pub selected_guard: Option<u64>,
+    pub selected_incident: Option<u64>,
+    pub selected_decision: Option<String>,
+    pub selected_construction: Option<u64>,
+    pub selected_rehab: Option<u64>,
+    pub selected_contraband: Option<u64>,
+    /// Free-text search query over the active list (name / id substring).
+    pub search: String,
+    /// Declarative incident query (0.05); [`UiState::filter`] is the accessor.
+    pub incident_filter: sumo::incidents::IncidentFilter,
     pub scroll: u16,
 }
 
@@ -42,8 +56,40 @@ impl UiState {
             selected_prisoner: None,
             selected_gang: None,
             selected_guard: None,
+            selected_incident: None,
+            selected_decision: None,
+            selected_construction: None,
+            selected_rehab: None,
+            selected_contraband: None,
+            search: String::new(),
+            incident_filter: sumo::incidents::IncidentFilter::all(),
             scroll: 0,
         }
+    }
+
+    /// Current search query (empty matches everything).
+    pub fn query(&self) -> &str {
+        &self.search
+    }
+
+    /// Set (or replace) the free-text search query.
+    pub fn set_query(&mut self, query: impl Into<String>) {
+        self.search = query.into();
+    }
+
+    /// Clear the search query.
+    pub fn clear_query(&mut self) {
+        self.search.clear();
+    }
+
+    /// Current declarative incident filter (all incidents by default).
+    pub fn filter(&self) -> &sumo::incidents::IncidentFilter {
+        &self.incident_filter
+    }
+
+    /// Replace the declarative incident filter.
+    pub fn set_filter(&mut self, filter: sumo::incidents::IncidentFilter) {
+        self.incident_filter = filter;
     }
 }
 

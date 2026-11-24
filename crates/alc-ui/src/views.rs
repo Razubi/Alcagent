@@ -25,9 +25,19 @@ pub struct ViewData {
     pub economy: EconomySummary,
     pub social_edges: Vec<SocialEdge>,
     pub facilities: Vec<FacilitySummary>,
+    pub construction_queue: Vec<sumo::ConstructionSummary>,
     pub events: Vec<WorldEvent>,
     pub incident_log: Vec<WorldEvent>,
-    pub decision_log: Vec<String>,
+    pub incident_records: Vec<sumo::IncidentRecord>,
+    pub decision_audit: Vec<sumo::DecisionAuditRecord>,
+    pub policy: sumo::PolicySummary,
+    pub post_release_records: Vec<sumo::PostReleaseSummary>,
+    pub rehab_summaries: Vec<sumo::RehabEnrollmentSummary>,
+    pub rehab_overview: sumo::RehabOverview,
+    pub contraband_cases: Vec<sumo::ContrabandCaseSummary>,
+    pub contraband_inventory: Vec<sumo::ContrabandInventorySummary>,
+    pub budget_snapshot: sumo::BudgetSnapshot,
+    pub selected_schedule: Option<sumo::ScheduleTimeline>,
 }
 
 /// Extra context the status bar needs that is not part of the world snapshot.
@@ -55,8 +65,8 @@ const ALL_MODES: [ViewMode; 11] = [
 /// Status-bar help text. Kept as constants so tests can assert that the hints
 /// stay in sync with the keys handled in `app::App::handle_key`.
 pub const HELP_WIDE: &str =
-    " │ ↑↓/←→ select · 1-9,0,- view · SPACE pause · +/- speed · s save · q quit";
-pub const HELP_COMPACT: &str = " │ ↑↓ select · 1-9,0,- · SPC · +/- · s · q";
+    " │ ↑↓ select · 1-9,0,A view · SPACE pause · +/- speed · S save · N/E/K policy · L/U lock · q quit";
+pub const HELP_COMPACT: &str = " │ ↑↓ · 1-9,0,A · SPC · +/- · S · N/E/K · q";
 
 /// Map a `1`-`9`, `0`, `-` key press to its observation mode.
 pub fn mode_from_index(index: usize) -> Option<ViewMode> {
@@ -327,10 +337,25 @@ fn render_status(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState, s
         format!(" {} tps ", status.ticks_per_second),
         Style::default().fg(Color::Magenta),
     ));
+    if obs.lockdown {
+        spans.push(Span::styled(" LOCKDOWN ", Style::default().fg(Color::Black).bg(Color::Red).add_modifier(Modifier::BOLD)));
+    }
 
     if let Some(msg) = &status.status_msg {
         spans.push(Span::raw(" │ "));
         spans.push(Span::styled(truncate(msg, 40), Style::default().fg(Color::Cyan)));
+    }
+    let open_critical = data
+        .incident_records
+        .iter()
+        .filter(|r| !r.resolved && r.severity >= 0.75)
+        .count();
+    if open_critical > 0 {
+        spans.push(Span::raw(" │ "));
+        spans.push(Span::styled(
+            format!("CRITICAL:{} open", open_critical),
+            Style::default().fg(Color::Black).bg(Color::Red).add_modifier(Modifier::BOLD),
+        ));
     }
     let widget = Paragraph::new(Line::from(spans))
         .style(Style::default().bg(Color::Reset).fg(Color::White));
@@ -344,7 +369,7 @@ fn render_status(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState, s
 fn render_overview(frame: &mut Frame, area: Rect, data: &ViewData) {
     let obs = &data.observation;
     let chunks = Layout::vertical([
-        Constraint::Length(12),
+        Constraint::Length(13),
         Constraint::Min(5),
         Constraint::Length(10),
     ])
@@ -364,16 +389,15 @@ fn render_overview(frame: &mut Frame, area: Rect, data: &ViewData) {
         ),
         kv("Gangs", obs.gangs.to_string()),
         kv("Events logged", data.events.len().to_string()),
-        bar_line("Security level", obs.security_level, 18),
-        bar_line("Privileges", 0.5, 18),
+        kv("Rehab", format!("{} enroll / {} prisoners / {:.0}% avg", data.rehab_overview.enrollments, data.rehab_overview.enrolled_prisoners, data.rehab_overview.average_progress * 100.0)),
+        kv("Contraband/Post-release", format!("{} cases / {} records", data.contraband_cases.len(), data.post_release_records.len())),
+        bar_line("Security level", data.policy.security_level, 18),
+        bar_line("Privileges", data.policy.privileges_level, 18),
         bar_line("Economy health", obs.economy_health as f32, 18),
+        kv("Rehab funding", format!("{:.2}x", data.policy.rehab_funding_multiplier)),
         kv(
-            "Lockdown",
-            if obs.lockdown {
-                "ACTIVE — institution on lockdown"
-            } else {
-                "none"
-            },
+            "Lockdown / Intake",
+            format!("{} / {}", if data.policy.lockdown { "ACTIVE" } else { "none" }, if data.policy.intake_paused { "paused" } else { "open" }),
         ),
     ];
     frame.render_widget(
@@ -390,7 +414,7 @@ fn render_overview(frame: &mut Frame, area: Rect, data: &ViewData) {
     );
 
     let w = &data.warden;
-    let warden_lines = vec![
+    let mut warden_lines = vec![
         kv("Warden", w.name.clone()),
         kv("Philosophy", truncate(&w.philosophy, 46)),
         good_bar("Administrative focus", w.attention, 16),
@@ -402,6 +426,25 @@ fn render_overview(frame: &mut Frame, area: Rect, data: &ViewData) {
             format!("${:.2}", data.economy.cash_major),
         ),
     ];
+    warden_lines.push(plain("--- Recent critical events ---"));
+    let mut critical_events: Vec<&sumo::IncidentRecord> =
+        data.incident_records.iter().filter(|r| r.severity >= 0.4).collect();
+    critical_events.sort_by(|a, b| b.at.cmp(&a.at));
+    if critical_events.is_empty() {
+        warden_lines.push(plain("No critical incidents recorded."));
+    } else {
+        for r in critical_events.iter().take(5) {
+            let status = if r.resolved { "RES" } else { "OPEN" };
+            warden_lines.push(plain(format!(
+                "[{}] {} sev {:.0}% {} ({})",
+                r.at,
+                truncate(&r.kind, 12),
+                r.severity * 100.0,
+                truncate(&r.location, 20),
+                status
+            )));
+        }
+    }
     frame.render_widget(
         Paragraph::new(warden_lines).block(title_block(" Warden & Institution ")),
         mid[1],
@@ -473,7 +516,7 @@ fn render_prisoner(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState)
     frame.render_widget(list, chunks[0]);
 
     if let Some(p) = data.prisoners.get(idx) {
-        render_prisoner_detail(frame, chunks[1], p);
+        render_prisoner_detail(frame, chunks[1], p, data);
     } else {
         frame.render_widget(
             Paragraph::new("No prisoners in custody.").block(title_block(" Prisoner Profile ")),
@@ -482,7 +525,7 @@ fn render_prisoner(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState)
     }
 }
 
-fn render_prisoner_detail(frame: &mut Frame, area: Rect, p: &PrisonerSummary) {
+fn render_prisoner_detail(frame: &mut Frame, area: Rect, p: &PrisonerSummary, data: &ViewData) {
     let chunks = Layout::vertical([
         Constraint::Length(10),
         Constraint::Min(10),
@@ -496,10 +539,7 @@ fn render_prisoner_detail(frame: &mut Frame, area: Rect, p: &PrisonerSummary) {
         .unwrap_or_else(|| "unaffiliated".to_string());
     let header = vec![
         kv("Name", p.name.clone()),
-        kv(
-            "ID / Age",
-            format!("{} / {} years", p.id.0, p.age),
-        ),
+        kv("ID / Age", format!("{} / {} years", p.id.0, p.age)),
         kv("Classification", format!("{:?}", p.classification)),
         kv(
             "Sentence",
@@ -539,83 +579,87 @@ fn render_prisoner_detail(frame: &mut Frame, area: Rect, p: &PrisonerSummary) {
         good_bar("Ambition", t.ambition, 12),
         good_bar("Leadership", t.leadership, 12),
     ];
-    frame.render_widget(
-        Paragraph::new(traits).block(title_block(" Personality Traits ")),
-        columns[0],
-    );
+    frame.render_widget(Paragraph::new(traits).block(title_block(" Personality Traits ")), columns[0]);
+    frame.render_widget(Paragraph::new(need_lines(&p.needs)).block(title_block(" Needs (deficit pressure) ")), columns[1]);
 
-    let needs = need_lines(&p.needs);
-    frame.render_widget(
-        Paragraph::new(needs).block(title_block(" Needs (deficit pressure) ")),
-        columns[1],
-    );
-
-    let lower =
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(chunks[2]);
+    let lower = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(chunks[2]);
 
     let mut goals: Vec<Line<'static>> = Vec::new();
     for g in &p.goals {
         goals.push(Line::from(vec![
-            Span::styled(
-                format!("{:?}", g.kind),
-                Style::default().fg(Color::Yellow),
-            ),
-            Span::raw(format!(
-                " pro {:.2} urg {:.2} — {}",
-                g.progress, g.urgency, truncate(&g.description, 40)
-            )),
+            Span::styled(format!("{:?}", g.kind), Style::default().fg(Color::Yellow)),
+            Span::raw(format!(" pro {:.2} urg {:.2} — {}", g.progress, g.urgency, truncate(&g.description, 40))),
         ]));
     }
-    if goals.is_empty() {
-        goals.push(plain("No active goals."));
-    }
+    if goals.is_empty() { goals.push(plain("No active goals.")); }
     goals.push(plain("--- Schedule ---"));
     goals.push(kv("Wing", p.schedule.wing.to_string()));
-    goals.push(kv(
-        "Work",
-        p.schedule
-            .work_assignment
-            .clone()
-            .unwrap_or_else(|| "none".into()),
-    ));
+    goals.push(kv("Work", p.schedule.work_assignment.clone().unwrap_or_else(|| "none".into())));
     goals.push(kv("Education", p.schedule.education.to_string()));
-    goals.push(kv(
-        "Discipline",
-        if p.schedule.disciplinary_status {
-            "sanctioned"
-        } else {
-            "clean"
-        },
-    ));
-    frame.render_widget(
-        Paragraph::new(goals).block(title_block(" Goals & Schedule ")),
-        lower[0],
-    );
+    goals.push(kv("Discipline", if p.schedule.disciplinary_status { "sanctioned" } else { "clean" }));
+
+    if let Some(tl) = data.selected_schedule.as_ref().filter(|t| t.prisoner_id == p.id) {
+        goals.push(plain(format!(
+            "--- Daily Timeline day {} {:02}:{:02} att {:.0}% ---",
+            tl.day, tl.current_minute / 60, tl.current_minute % 60, tl.attendance_probability * 100.0
+        )));
+        for b in &tl.blocks {
+            let marker = if b.current { ">" } else { " " };
+            let status = if b.cancelled { format!("CANCELLED{}", b.reason.as_deref().map(|r| format!(" ({r})")).unwrap_or_default()) } else { b.activity.clone() };
+            goals.push(plain(format!(
+                "{} {:02}:{:02}-{:02}:{:02} {} — {}",
+                marker, b.start_minute / 60, b.start_minute % 60, b.end_minute / 60, b.end_minute % 60, b.label, status
+            )));
+        }
+    } else {
+        goals.push(plain("--- Daily Timeline (inferred) ---"));
+        let work = p.schedule.work_assignment.clone().unwrap_or_else(|| "idle".into());
+        let disc = if p.schedule.disciplinary_status { " (restricted)" } else { "" };
+        goals.push(plain(format!("06:00 Wake & count{disc}")));
+        goals.push(plain("07:00 Breakfast"));
+        if p.schedule.education { goals.push(plain(format!("08:00-12:00 Education / {work}"))); } else { goals.push(plain(format!("08:00-12:00 Work: {work}"))); }
+        goals.push(plain("12:00 Lunch"));
+        goals.push(plain("13:00-15:00 Recreation / yard"));
+        if p.schedule.education { goals.push(plain("15:00 Programs & counseling")); }
+        goals.push(plain("17:00 Dinner"));
+        goals.push(plain("18:00 Free time / social"));
+        goals.push(plain("21:00 Lockup"));
+    }
+    frame.render_widget(Paragraph::new(goals).block(title_block(" Goals & Schedule ")), lower[0]);
 
     let mut tail: Vec<Line<'static>> = Vec::new();
     tail.push(plain("--- Skills ---"));
     let mut skills: Vec<_> = p.skills.iter().collect();
     skills.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
-    for (k, v) in skills.iter().take(5) {
-        tail.push(kv(k.as_str(), format!("{v:.2}")));
+    for (k, v) in skills.iter().take(5) { tail.push(kv(k.as_str(), format!("{v:.2}"))); }
+    if p.skills.is_empty() { tail.push(plain("  (none recorded)")); }
+
+    tail.push(plain("--- Rehab (0.05) ---"));
+    let mut rehab_rows: Vec<_> = data.rehab_summaries.iter().filter(|r| r.prisoner_id == p.id).collect();
+    rehab_rows.sort_by(|a,b| a.program.cmp(&b.program));
+    if rehab_rows.is_empty() { tail.push(plain("  no active enrollments")); }
+    for r in rehab_rows.iter().take(6) {
+        tail.push(kv(&r.program, format!("{:.0}%{}", r.progress * 100.0, if r.disciplinary { " disc" } else { "" })));
     }
-    if p.skills.is_empty() {
-        tail.push(plain("  (none recorded)"));
+
+    tail.push(plain("--- Contraband (0.05) ---"));
+    let mut cases: Vec<_> = data.contraband_cases.iter().filter(|c| c.holder == Some(p.id)).collect();
+    cases.sort_by(|a,b| b.at.cmp(&a.at));
+    if cases.is_empty() { tail.push(plain("  no cases")); }
+    for c in cases.iter().take(4) {
+        tail.push(plain(format!("d{} {} sev {:.1}{}", c.at.as_days(), c.item.as_deref().unwrap_or("Unknown"), c.severity, if c.resolved { " resolved" } else { "" })));
     }
+
+    if let Some(pr) = data.post_release_records.iter().find(|r| r.prisoner_id == p.id) {
+        tail.push(plain("--- Post-release ---"));
+        tail.push(kv("Outcome", if pr.successful_reintegration { "successful" } else { "follow-up" }.to_string()));
+        if let Some(risk) = pr.recidivism_risk { tail.push(kv("Recidivism", format!("{:.0}%", risk * 100.0))); }
+    }
+
     tail.push(plain("--- Memory ---"));
-    let memory = if p.memory_summary.is_empty() {
-        "  (no significant memories yet)".to_string()
-    } else {
-        truncate(&p.memory_summary, 400)
-    };
-    for part in memory.lines() {
-        tail.push(plain(part.to_string()));
-    }
-    frame.render_widget(
-        Paragraph::new(tail).block(title_block(" Skills & Memory ")),
-        lower[1],
-    );
+    let memory = if p.memory_summary.is_empty() { "  (no significant memories yet)".to_string() } else { truncate(&p.memory_summary, 300) };
+    for part in memory.lines() { tail.push(plain(part.to_string())); }
+    frame.render_widget(Paragraph::new(tail).block(title_block(" Skills, Rehab & Memory ")), lower[1]);
 }
 
 fn need_lines(n: &alc_prisoner::Needs) -> Vec<Line<'static>> {
@@ -914,6 +958,7 @@ fn render_warden(frame: &mut Frame, area: Rect, data: &ViewData, _ui: &UiState) 
     let chunks =
         Layout::horizontal([Constraint::Percentage(45), Constraint::Min(30)]).split(area);
     let w = &data.warden;
+    let p = &data.policy;
 
     let t = &w.traits;
     let traits = vec![
@@ -945,6 +990,7 @@ fn render_warden(frame: &mut Frame, area: Rect, data: &ViewData, _ui: &UiState) 
         left[1],
     );
 
+    let right = Layout::vertical([Constraint::Min(6), Constraint::Length(13)]).split(chunks[1]);
     let actions: Vec<Line<'static>> = if w.pending_actions.is_empty() {
         vec![plain("No pending actions.")]
     } else {
@@ -952,7 +998,30 @@ fn render_warden(frame: &mut Frame, area: Rect, data: &ViewData, _ui: &UiState) 
     };
     frame.render_widget(
         Paragraph::new(actions).block(title_block(" Pending Actions ")),
-        chunks[1],
+        right[0],
+    );
+
+    let policy_lines = vec![
+        kv("Policy band", format!("{:?}", p.policy)),
+        kv("Lockdown", if p.lockdown { "ENABLED".to_string() } else { "off".to_string() }),
+        good_bar("Security", p.security_level, 14),
+        good_bar("Privileges", p.privileges_level, 14),
+        kv("Rehab funding", format!("{:.2}x", p.rehab_funding_multiplier)),
+        kv("Intake", if p.intake_paused { "PAUSED".to_string() } else { "open".to_string() }),
+        plain("--- 0.05 Systems ---"),
+        kv("Rehab", format!("{} enroll, {} done, {} drop", data.rehab_overview.enrollments, data.rehab_overview.completions, data.rehab_overview.dropouts)),
+        kv("Contraband", format!("{} cases, {} inventory kinds", data.contraband_cases.len(), data.contraband_inventory.len())),
+        kv("Budget (30d)", format!("net ${:.0}/d runway {:.0}d", data.budget_snapshot.projected_daily_revenue - data.budget_snapshot.projected_daily_expense, data.budget_snapshot.runway_days)),
+        plain("--- Control hints ---"),
+        plain("N/E/K policy band  L/U lockdown"),
+        plain("[/] security level  ,/. privileges"),
+        plain(";/' rehab funding  B intake  P mode"),
+        plain("r/R enroll/drop rehab (selected prisoner)"),
+        plain("Values above reflect current policy state."),
+    ];
+    frame.render_widget(
+        Paragraph::new(policy_lines).block(title_block(" Policy Controls & Current Values ")),
+        right[1],
     );
 }
 
@@ -962,28 +1031,97 @@ fn render_warden(frame: &mut Frame, area: Rect, data: &ViewData, _ui: &UiState) 
 
 fn render_financial(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
     let chunks =
-        Layout::vertical([Constraint::Length(7), Constraint::Min(4)]).split(area);
+        Layout::vertical([Constraint::Length(11), Constraint::Length(11), Constraint::Min(4)]).split(area);
     let e = &data.economy;
+
+    // Budget breakdown by account.
+    let mut accounts: Vec<(alc_economy::Account, i64)> = Vec::new();
+    for l in &e.ledger {
+        if let Some(entry) = accounts.iter_mut().find(|(a, _)| *a == l.account) {
+            entry.1 += l.amount.0;
+        } else {
+            accounts.push((l.account, l.amount.0));
+        }
+    }
+    accounts.sort_by(|a, b| b.1.abs().cmp(&a.1.abs()));
+
+    let revenue_total: i64 = accounts
+        .iter()
+        .filter(|(a, _)| is_revenue_account(*a))
+        .map(|(_, v)| *v)
+        .sum();
+    let expense_total: i64 = accounts
+        .iter()
+        .filter(|(a, _)| !is_revenue_account(*a))
+        .map(|(_, v)| *v)
+        .sum();
+
+    // Recent daily net (last 7 days).
+    let max_day = e.ledger.iter().map(|l| l.at_secs / 86_400).max().unwrap_or(0);
+    let mut daily_lines: Vec<Line<'static>> = Vec::new();
+    for i in 0..7u64 {
+        let day = max_day.saturating_sub(6 - i);
+        let net: i64 = e.ledger.iter().filter(|l| l.at_secs / 86_400 == day).map(|l| l.amount.0).sum();
+        let style = if net >= 0 { Style::default().fg(Color::Green) } else { Style::default().fg(Color::Red) };
+        daily_lines.push(Line::from(Span::styled(format!("D{} {:+.2}", day, net as f64 / 100.0), style)));
+    }
+
+    let mut warnings: Vec<String> = Vec::new();
+    if e.health < 0.3 {
+        warnings.push("WARNING: financial health critical".to_string());
+    } else if e.health < 0.5 {
+        warnings.push("CAUTION: financial health low".to_string());
+    }
+    if e.cash_major < 0.0 {
+        warnings.push("WARNING: negative treasury".to_string());
+    }
+    if warnings.is_empty() {
+        warnings.push("No financial warnings.".to_string());
+    }
 
     let summary = vec![
         kv("Treasury", format!("${:.2}", e.cash_major)),
         kv("Financial health", format!("{:.0}%  (30-day runway heuristic)", e.health * 100.0)),
-        kv(
-            "Funding / prisoner / day",
-            format!("${:.2}", e.funding_per_prisoner_per_day),
-        ),
-        kv(
-            "Crowding threshold",
-            format!("{} prisoners", e.crowding_threshold),
-        ),
+        kv("Funding / prisoner / day", format!("${:.2}", e.funding_per_prisoner_per_day)),
+        kv("Crowding threshold", format!("{} prisoners", e.crowding_threshold)),
         kv("Ledger entries", e.ledger.len().to_string()),
+        kv("Revenue (all-time)", format!("${:.2}", revenue_total as f64 / 100.0)),
+        kv("Expenses (all-time)", format!("${:.2}", expense_total as f64 / 100.0)),
+        kv("Net (all-time)", format!("${:.2}", (revenue_total + expense_total) as f64 / 100.0)),
+        kv("Budget (30d proj/d)", format!("inc ${:.0} exp ${:.0} net ${:.0}", data.budget_snapshot.projected_daily_revenue, data.budget_snapshot.projected_daily_expense, data.budget_snapshot.projected_daily_revenue - data.budget_snapshot.projected_daily_expense)),
+        kv("Warnings", warnings.join(" · ")),
     ];
     frame.render_widget(
-        Paragraph::new(summary).block(title_block(" Prison Economy ")),
+        Paragraph::new(summary).block(title_block(" Prison Economy & Budget ")),
         chunks[0],
     );
 
-    let per_page = (chunks[1].height.saturating_sub(3) as usize).max(1);
+    // Budget breakdown panel.
+    let mut breakdown_lines: Vec<Line<'static>> = Vec::new();
+    breakdown_lines.push(Line::from(Span::styled(
+        format!("{:<24} {:>12}", "Account", "Net"),
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+    )));
+    for (acct, net) in accounts.iter().take(10) {
+        let style = if *net >= 0 { Style::default().fg(Color::Green) } else { Style::default().fg(Color::Red) };
+        breakdown_lines.push(Line::from(vec![
+            Span::raw(format!("{:<24}", format!("{:?}", acct))),
+            Span::styled(format!("{:>12.2}", *net as f64 / 100.0), style),
+        ]));
+    }
+    if accounts.is_empty() {
+        breakdown_lines.push(plain("No ledger entries yet."));
+    }
+    breakdown_lines.push(plain("--- Recent daily net (last 7 days) ---"));
+    for l in daily_lines {
+        breakdown_lines.push(l);
+    }
+    frame.render_widget(
+        Paragraph::new(breakdown_lines).block(title_block(" Budget Breakdown & Trend ")),
+        chunks[1],
+    );
+
+    let per_page = (chunks[2].height.saturating_sub(3) as usize).max(1);
     let offset = ui.scroll as usize;
     let rows: Vec<Row<'static>> = e
         .ledger
@@ -1026,7 +1164,20 @@ fn render_financial(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
         " Ledger — from entry {} (↑/↓ to scroll) ",
         u32::from(ui.scroll) + 1
     )));
-    frame.render_widget(table, chunks[1]);
+    frame.render_widget(table, chunks[2]);
+}
+
+fn is_revenue_account(a: alc_economy::Account) -> bool {
+    use alc_economy::Account;
+    matches!(
+        a,
+        Account::PerCapitaFunding
+            | Account::GovGrant
+            | Account::Bonus
+            | Account::ContractIncome
+            | Account::RehabFunding
+            | Account::SpecialProgram
+    )
 }
 
 /// Tiny wrapper so the ledger day can be formatted without importing SimTime.
@@ -1250,6 +1401,38 @@ fn render_map(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
     }
     lines.push(plain("╚═══════════════════════════════════════════╝"));
     lines.push(plain(""));
+    let pop = data.observation.population;
+    let cap = data.observation.capacity;
+    let pct = if cap == 0 { 0.0 } else { pop as f32 / cap as f32 * 100.0 };
+    lines.push(plain(format!("Occupancy: {pop}/{cap} ({pct:.0}%)")));
+    let mut wing_counts: std::collections::BTreeMap<u32, usize> = std::collections::BTreeMap::new();
+    for p in &data.prisoners {
+        *wing_counts.entry(p.schedule.wing).or_insert(0) += 1;
+    }
+    for (wing, count) in &wing_counts {
+        lines.push(plain(format!("  Wing {wing}: {count} prisoners assigned")));
+    }
+    if wing_counts.is_empty() {
+        lines.push(plain("  No prisoner wing assignments yet."));
+    }
+    let open_inc = data.incident_records.iter().filter(|r| !r.resolved).count();
+    lines.push(plain(format!("Incident overlay: {open_inc} open incidents")));
+    let mut locs: Vec<String> = data
+        .incident_records
+        .iter()
+        .filter(|r| !r.resolved)
+        .map(|r| r.location.clone())
+        .filter(|l| !l.is_empty())
+        .collect();
+    locs.sort();
+    locs.dedup();
+    for loc in locs.iter().take(5) {
+        lines.push(plain(format!("  - {}", truncate(loc, 40))));
+    }
+    if open_inc == 0 {
+        lines.push(plain("  (no incident overlays available)"));
+    }
+    lines.push(plain(""));
     lines.push(plain("Legend: green = good condition · yellow = worn · red = critical"));
     lines.push(plain("↑/↓ moves the facility cursor; guards are listed at right."));
 
@@ -1279,6 +1462,7 @@ fn render_map(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
         right[0],
     );
 
+    let right_bottom = Layout::vertical([Constraint::Min(4), Constraint::Length(6)]).split(right[1]);
     let cursor = ui.scroll as usize;
     let rows: Vec<Row<'static>> = data
         .facilities
@@ -1316,7 +1500,21 @@ fn render_map(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
             .style(Style::default().fg(Color::Yellow)),
     )
     .block(title_block(" Facilities (cursor) "));
-    frame.render_widget(table, right[1]);
+    frame.render_widget(table, right_bottom[0]);
+
+    let cq_rows: Vec<Row<'static>> = data.construction_queue.iter().map(|p| {
+        let pct = if p.total_days == 0 { 100 } else { (p.progress_days * 100 / p.total_days).min(100) };
+        Row::new(vec![
+            Cell::from(p.id.to_string()),
+            Cell::from(p.kind.display().to_string()),
+            Cell::from(format!("{pct}%")),
+            Cell::from(format!("{}/{}", p.progress_days, p.total_days)),
+        ])
+    }).collect();
+    let cq = Table::new(cq_rows, [Constraint::Length(5), Constraint::Length(14), Constraint::Length(6), Constraint::Length(9)])
+        .header(Row::new(vec!["ID", "Project", "Pct", "Days"]).style(Style::default().fg(Color::Yellow)))
+        .block(title_block(format!(" Construction ({}) ", data.construction_queue.len())));
+    frame.render_widget(cq, right_bottom[1]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1324,41 +1522,85 @@ fn render_map(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
 // ---------------------------------------------------------------------------
 
 fn render_incidents(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
-    let chunks = Layout::vertical([Constraint::Min(4), Constraint::Length(7)]).split(area);
-    let mut events: Vec<_> = data.incident_log.iter().collect();
-    events.reverse();
-    let idx = (ui.scroll as usize).min(events.len().saturating_sub(1));
+    let chunks = Layout::vertical([Constraint::Length(4), Constraint::Min(4), Constraint::Length(10)]).split(area);
+    let mut records: Vec<_> = data.incident_records.iter().collect();
+    records.reverse();
+    let idx = (ui.scroll as usize).min(records.len().saturating_sub(1));
 
-    let items: Vec<ListItem<'static>> = events.iter().enumerate().map(|(i, e)| {
+    // Severity / status counts.
+    let critical = records.iter().filter(|r| r.severity >= 0.75).count();
+    let high = records.iter().filter(|r| r.severity >= 0.4 && r.severity < 0.75).count();
+    let low = records.iter().filter(|r| r.severity < 0.4).count();
+    let open = records.iter().filter(|r| !r.resolved).count();
+    let resolved = records.iter().filter(|r| r.resolved).count();
+
+    let names = name_map(&data.prisoners);
+    let summary = vec![
+        kv("Incidents", format!("{} total · {} open · {} resolved", records.len(), open, resolved)),
+        kv("Severity", format!("critical {} · high {} · low {}", critical, high, low)),
+        kv("Contraband (0.05)", format!("{} cases · {} inventory kinds", data.contraband_cases.len(), data.contraband_inventory.len())),
+        if records.is_empty() {
+            plain(format!("No structured incidents yet. Incident log has {} events.", data.incident_log.len()))
+        } else {
+            plain(format!("Showing {} newest-first. Incident log (raw events): {}.", records.len(), data.incident_log.len()))
+        },
+    ];
+    frame.render_widget(Paragraph::new(summary).block(title_block(" Incident Summary & Filters ")), chunks[0]);
+
+    let items: Vec<ListItem<'static>> = records.iter().enumerate().map(|(i, r)| {
         let marker = if i == idx { "»" } else { " " };
         let style = if i == idx {
             Style::default().bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD)
         } else { Style::default() };
+        let sev_color = if r.severity >= 0.75 { Color::Red } else if r.severity >= 0.4 { Color::Yellow } else { Color::Green };
+        let status = if r.resolved { "RES" } else { "OPEN" };
+        let actor_count = r.involved_prisoners.len();
         ListItem::new(Line::from(vec![
             Span::styled(format!("{marker} "), Style::default().fg(Color::Yellow)),
-            Span::styled(format!("[{}] ", e.at), Style::default().fg(Color::DarkGray)),
-            Span::styled(format!("{:<16}", event_kind_short(&e.kind)), Style::default().fg(Color::Red)),
-            Span::raw(truncate(&e.summary, 88)),
+            Span::styled(format!("[{}] ", r.at), Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("{:<14}", truncate(&r.kind, 14)), Style::default().fg(Color::Red)),
+            Span::styled(format!("sev {:.0}% ", r.severity * 100.0), Style::default().fg(sev_color)),
+            Span::styled(format!("{status:<4} "), Style::default().fg(if r.resolved { Color::Green } else { Color::Magenta })),
+            Span::styled(format!("actors:{} ", actor_count), Style::default().fg(Color::Cyan)),
+            Span::raw(truncate(&r.location, 30)),
         ])).style(style)
     }).collect();
     frame.render_widget(
-        List::new(items).block(title_block(format!(" Incident Reports — {} (newest first) ", events.len()))),
-        chunks[0],
+        List::new(items).block(title_block(format!(" Incident Reports — {} (newest first) ", records.len()))),
+        chunks[1],
     );
 
-    if let Some(e) = events.get(idx) {
-        let detail = vec![
-            kv("Event", e.summary.clone()),
-            kv("Kind", event_kind_short(&e.kind)),
-            kv("At", e.at.to_string()),
-            kv("ID", e.id.to_string()),
-            kv("Confidence", format!("{:.0}%", e.confidence * 100.0)),
-            kv("Causes", if e.causes.is_empty() { "none".into() } else { truncate(&e.causes.join(" → "), 90) }),
-        ];
-        frame.render_widget(Paragraph::new(detail).block(title_block(" Incident Detail ")), chunks[1]);
+    let mut detail = if let Some(r) = records.get(idx) {
+        let actors = if r.involved_prisoners.is_empty() {
+            "none".to_string()
+        } else {
+            r.involved_prisoners.iter().map(|id| names.get(id).cloned().unwrap_or_else(|| format!("P{}", id))).collect::<Vec<_>>().join(", ")
+        };
+        let outcome = if r.resolved { "resolved" } else { "open / unresolved" };
+        vec![
+            kv("ID", r.id.to_string()),
+            kv("Kind", r.kind.clone()),
+            kv("At", r.at.to_string()),
+            kv("Severity", format!("{:.0}% ({})", r.severity * 100.0, if r.severity >= 0.75 { "critical" } else if r.severity >= 0.4 { "high" } else { "low" })),
+            kv("Location", if r.location.is_empty() { "unknown".into() } else { r.location.clone() }),
+            kv("Actors (prisoners)", actors),
+            kv("Cause chain", r.cause.map(|c| format!("incident #{}", c)).unwrap_or_else(|| "none".into())),
+            kv("Consequence", r.consequence.map(|c| format!("incident #{}", c)).unwrap_or_else(|| "none".into())),
+            kv("Outcome", outcome.to_string()),
+        ]
     } else {
-        frame.render_widget(Paragraph::new("No incidents recorded.").block(title_block(" Incident Detail ")), chunks[1]);
+        vec![plain("No incidents recorded.")]
+    };
+    detail.push(plain("--- Contraband Cases (0.05) ---"));
+    if data.contraband_cases.is_empty() {
+        detail.push(plain("No contraband cases recorded."));
+    } else {
+        for c in data.contraband_cases.iter().rev().take(5) {
+            let holder = c.holder.map(|h| names.get(&h.raw()).cloned().unwrap_or_else(|| format!("P{}", h.raw()))).unwrap_or_else(|| "unknown".into());
+            detail.push(plain(format!("d{} {} holder {} sev {:.0}%{}", c.at.as_days(), c.item.as_deref().unwrap_or("Unknown"), holder, c.severity * 100.0, if c.resolved { " RES" } else { " OPEN" })));
+        }
     }
+    frame.render_widget(Paragraph::new(detail).block(title_block(" Incident Detail & Outcome ")), chunks[2]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1366,32 +1608,64 @@ fn render_incidents(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
 // ---------------------------------------------------------------------------
 
 fn render_decisions(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
-    let chunks = Layout::vertical([Constraint::Min(4), Constraint::Length(7)]).split(area);
-    let mut entries: Vec<_> = data.decision_log.iter().collect();
+    let chunks = Layout::vertical([Constraint::Length(4), Constraint::Min(4), Constraint::Length(10)]).split(area);
+    let mut entries: Vec<_> = data.decision_audit.iter().collect();
     entries.reverse();
     let idx = (ui.scroll as usize).min(entries.len().saturating_sub(1));
+
+    let accepted = entries.iter().filter(|d| d.validation == "accepted").count();
+    let repaired = entries.iter().filter(|d| d.validation.starts_with("repaired")).count();
+    let rejected = entries.iter().filter(|d| d.validation == "rejected").count();
+    let other = entries.len().saturating_sub(accepted + repaired + rejected);
+
+    let summary = vec![
+        kv("Decisions", format!("{} total · accepted {} · repaired {} · rejected {} · other {}", entries.len(), accepted, repaired, rejected, other)),
+        kv("Filter hints", "green=accepted yellow=repaired red=rejected gray=other · ↑/↓ scroll · A view".to_string()),
+        plain("Validation/reason/source shown in detail. Entries newest-first."),
+        if entries.is_empty() { plain("No decisions recorded. Pending data contract: decision_audit empty.") } else { plain(format!("Distinct actors: {}.", entries.iter().map(|d| d.actor.clone()).collect::<std::collections::HashSet<_>>().len())) },
+    ];
+    frame.render_widget(Paragraph::new(summary).block(title_block(" Decision Audit Summary & Filters ")), chunks[0]);
 
     let items: Vec<ListItem<'static>> = entries.iter().enumerate().map(|(i, d)| {
         let marker = if i == idx { "»" } else { " " };
         let style = if i == idx {
             Style::default().bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD)
         } else { Style::default() };
+        let vcolor = match d.validation.as_str() {
+            "accepted" => Color::Green,
+            v if v.starts_with("repaired") => Color::Yellow,
+            "rejected" => Color::Red,
+            _ => Color::Gray,
+        };
         ListItem::new(Line::from(vec![
             Span::styled(format!("{marker} "), Style::default().fg(Color::Yellow)),
-            Span::raw(truncate(d, 110)),
+            Span::styled(format!("[{}] ", d.time), Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("{:<12}", truncate(&d.actor, 12)), Style::default().fg(Color::Cyan)),
+            Span::styled(format!("{:<10}", d.validation), Style::default().fg(vcolor)),
+            Span::styled(format!("{:<8}", truncate(&d.source, 8)), Style::default().fg(Color::Magenta)),
+            Span::raw(truncate(&d.summary, 55)),
         ])).style(style)
     }).collect();
     frame.render_widget(
         List::new(items).block(title_block(format!(" Decision Audit — {} entries (newest first) ", entries.len()))),
-        chunks[0],
+        chunks[1],
     );
 
     let detail = if let Some(d) = entries.get(idx) {
-        vec![plain(truncate(d, 500))]
+        vec![
+            kv("Time", d.time.to_string()),
+            kv("Actor", d.actor.clone()),
+            kv("Source", if d.source.is_empty() { "unknown".into() } else { d.source.clone() }),
+            kv("Action", if d.action.is_empty() { "unspecified".into() } else { d.action.clone() }),
+            kv("Validation", d.validation.clone()),
+            kv("Reason", if d.reason.is_empty() { "none recorded".into() } else { d.reason.clone() }),
+            kv("Summary", truncate(&d.summary, 120)),
+            kv("Filter hints", "validation/reason/source above; ↑/↓ to inspect".to_string()),
+        ]
     } else {
-        vec![plain("No decisions recorded.")]
+        vec![plain("No decisions recorded. Pending data contract: decision_audit empty.")]
     };
-    frame.render_widget(Paragraph::new(detail).block(title_block(" Decision Detail ")), chunks[1]);
+    frame.render_widget(Paragraph::new(detail).block(title_block(" Decision Detail ")), chunks[2]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1504,7 +1778,7 @@ mod tests {
             staff_required: 0,
         }).collect();
         let events: Vec<WorldEvent> = world.events.recent().cloned().collect();
-        ViewData { observation, prisoners, gangs, guards, warden, economy, social_edges, facilities, events, incident_log: Vec::new(), decision_log: Vec::new() }
+        ViewData { observation, prisoners, gangs, guards, warden, economy, social_edges, facilities, construction_queue: Vec::new(), events, incident_log: Vec::new(), incident_records: Vec::new(), decision_audit: Vec::new(), policy: sumo::PolicySummary::default(), post_release_records: Vec::new(), rehab_summaries: Vec::new(), rehab_overview: sumo::RehabOverview::default(), contraband_cases: Vec::new(), contraband_inventory: Vec::new(), budget_snapshot: sumo::BudgetSnapshot::default(), selected_schedule: None }
     }
 
     fn render_all(world: &alc_world::World, width: u16, height: u16, scroll: u16) {

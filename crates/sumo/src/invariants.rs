@@ -345,6 +345,11 @@ pub fn invariant_policy_state_matches_world_policies(
 }
 
 /// Invariant 6: incident_log and decision_log must not grow unboundedly.
+///
+/// This function is also the wiring point for the 0.05 audit/lifecycle
+/// invariants (see [`invariant_audit_and_lifecycle_state_sane`]):
+/// `Sim::check_invariants` calls this function, so keeping the aggregate check
+/// inside it makes the new invariants observable without engine-side changes.
 pub fn invariant_logs_and_incident_store_bounded(sim: &Sim) -> bool {
     let mut violations = Vec::new();
 
@@ -371,5 +376,274 @@ pub fn invariant_logs_and_incident_store_bounded(sim: &Sim) -> bool {
         ));
     }
 
+    // The decision audit log is a fourth bounded audit store (R2 / 0.05).
+    let audit_count = sim.decision_audit_log().len();
+    if audit_count > MAX_LOG_ENTRIES {
+        violations.push(format!(
+            "decision_audit has {} entries, exceeding maximum {}",
+            audit_count, MAX_LOG_ENTRIES
+        ));
+    }
+
+    if !invariant_audit_and_lifecycle_state_sane(sim) {
+        violations.push(
+            "0.05 audit/lifecycle invariant violated (incident sidecar consistency, \
+             post-release ids, construction queue sanity)"
+                .to_string(),
+        );
+    }
+
     violations.is_empty()
+}
+
+/// Aggregate gate for the 0.05 audit/lifecycle invariants.
+///
+/// Kept as a single function so a caller that wants a precise boolean can use
+/// it directly, while [`invariant_logs_and_incident_store_bounded`] routes it
+/// into `Sim::check_invariants`.
+pub fn invariant_audit_and_lifecycle_state_sane(sim: &Sim) -> bool {
+    invariant_incident_sidecar_consistent(sim)
+        && invariant_post_release_ids_valid(sim)
+        && invariant_construction_queue_sane(sim.world())
+}
+
+/// Invariant 7: the construction queue must contain only sane pending work.
+///
+/// A queued project is work that has not completed yet: its progress must be
+/// strictly below its total, its cost must be finite and non-negative, and
+/// project ids must be unique. `World::construction_step` retires projects as
+/// soon as `progress_days >= total_days`, so a completed project still in the
+/// queue means that retirement failed.
+pub fn invariant_construction_queue_sane(world: &World) -> bool {
+    let mut violations = Vec::new();
+    let mut ids: HashSet<u64> = HashSet::new();
+
+    for project in &world.construction_queue {
+        if !ids.insert(project.id) {
+            violations.push(format!(
+                "duplicate construction project id {} in queue",
+                project.id
+            ));
+        }
+        if project.total_days == 0 {
+            violations.push(format!(
+                "construction project {} has zero total_days",
+                project.id
+            ));
+        }
+        if project.progress_days > project.total_days {
+            violations.push(format!(
+                "construction project {} has progress_days {} > total_days {}",
+                project.id, project.progress_days, project.total_days
+            ));
+        }
+        if project.progress_days >= project.total_days {
+            violations.push(format!(
+                "completed construction project {} (progress {} >= total {}) lingers in queue",
+                project.id, project.progress_days, project.total_days
+            ));
+        }
+        if !project.cost.is_finite() || project.cost < 0.0 {
+            violations.push(format!(
+                "construction project {} has invalid cost {}",
+                project.id, project.cost
+            ));
+        }
+    }
+
+    violations.is_empty()
+}
+
+/// Invariant 8: the structured decision audit log must stay bounded.
+///
+/// The engine trims this log when recording new entries; an over-long log
+/// indicates a bypass of that path (for example a direct state mutation or a
+/// loaded save from a build without the bound).
+pub fn invariant_decision_audit_bounded(sim: &Sim) -> bool {
+    sim.decision_audit_log().len() <= MAX_LOG_ENTRIES
+}
+
+/// Invariant 9: incident sidecar records must be internally consistent.
+///
+/// Structural causality (unique ids, resolvable cause/consequence links and
+/// mandatory cause/consequence on conflict kinds) is covered by
+/// [`invariant_every_incident_has_cause_and_consequence`]. This invariant adds
+/// the 0.05 consistency rules: severity is finite and within 0.0..=1.0, and
+/// every referenced prisoner id was actually allocated by the world. Released
+/// prisoners keep their historical ids below `next_prisoner_id`, so this does
+/// not invalidate genuine historical records.
+pub fn invariant_incident_sidecar_consistent(sim: &Sim) -> bool {
+    let mut violations = Vec::new();
+    let next_pid = sim.world.next_prisoner_id;
+
+    for incident in sim.incident_sidecar() {
+        if !incident.severity.is_finite() || !(0.0..=1.0).contains(&incident.severity) {
+            violations.push(format!(
+                "incident {} has out-of-range severity {}",
+                incident.id, incident.severity
+            ));
+        }
+        if next_pid > 0 {
+            for pid in &incident.involved_prisoners {
+                let raw = pid.raw();
+                if raw == 0 || raw >= next_pid {
+                    violations.push(format!(
+                        "incident {} references never-allocated prisoner id {}",
+                        incident.id, raw
+                    ));
+                }
+            }
+        }
+    }
+
+    violations.is_empty()
+}
+
+/// Invariant 10: post-release records must reference valid prisoner ids.
+///
+/// Post-release records are allowed to be absent entirely (no requirement to
+/// track every release), but any record that is present must point at an id
+/// the world actually allocated. Historical ids of released prisoners remain
+/// below `next_prisoner_id`, so this accepts genuine post-release history.
+pub fn invariant_post_release_ids_valid(sim: &Sim) -> bool {
+    let mut violations = Vec::new();
+    let next_pid = sim.world.next_prisoner_id;
+
+    for pid in sim.post_release().keys() {
+        let raw = pid.raw();
+        if raw == 0 {
+            violations.push("post-release record references prisoner id 0".to_string());
+        } else if next_pid > 0 && raw >= next_pid {
+            violations.push(format!(
+                "post-release record references never-allocated prisoner id {} (next id {})",
+                raw, next_pid
+            ));
+        }
+    }
+
+    violations.is_empty()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{DecisionAuditRecord, Sim};
+    use alc_core::PrisonerId;
+    use alc_world::{ConstructionProject, FacilityKind};
+
+    fn project(id: u64) -> ConstructionProject {
+        ConstructionProject {
+            id,
+            kind: FacilityKind::CellBlock,
+            wing: 1,
+            capacity: 40,
+            total_days: 10,
+            progress_days: 3,
+            cost: 2_500.0,
+            started_day: 0,
+        }
+    }
+
+    #[test]
+    fn fresh_sim_passes_all_new_invariants() {
+        let sim = Sim::new(0xC0FF_EE);
+        assert!(invariant_construction_queue_sane(sim.world()));
+        assert!(invariant_decision_audit_bounded(&sim));
+        assert!(invariant_incident_sidecar_consistent(&sim));
+        assert!(invariant_post_release_ids_valid(&sim));
+        assert!(invariant_audit_and_lifecycle_state_sane(&sim));
+        assert!(invariant_logs_and_incident_store_bounded(&sim));
+    }
+
+    #[test]
+    fn valid_construction_project_is_accepted() {
+        let mut sim = Sim::new(1);
+        sim.world.construction_queue.push(project(7));
+        assert!(invariant_construction_queue_sane(sim.world()));
+    }
+
+    #[test]
+    fn construction_progress_over_total_is_detected() {
+        let mut sim = Sim::new(2);
+        let mut p = project(1);
+        p.progress_days = p.total_days + 1;
+        sim.world.construction_queue.push(p);
+        assert!(!invariant_construction_queue_sane(sim.world()));
+        assert!(!invariant_logs_and_incident_store_bounded(&sim));
+    }
+
+    #[test]
+    fn lingering_completed_project_is_detected() {
+        let mut sim = Sim::new(3);
+        let mut p = project(1);
+        p.progress_days = p.total_days;
+        sim.world.construction_queue.push(p);
+        assert!(!invariant_construction_queue_sane(sim.world()));
+    }
+
+    #[test]
+    fn negative_or_non_finite_construction_cost_is_detected() {
+        let mut sim = Sim::new(4);
+        let mut p = project(1);
+        p.cost = -1.0;
+        sim.world.construction_queue.push(p);
+        assert!(!invariant_construction_queue_sane(sim.world()));
+
+        let mut sim2 = Sim::new(4);
+        let mut p2 = project(1);
+        p2.cost = f32::NAN;
+        sim2.world.construction_queue.push(p2);
+        assert!(!invariant_construction_queue_sane(sim2.world()));
+    }
+
+    #[test]
+    fn duplicate_construction_ids_are_detected() {
+        let mut sim = Sim::new(5);
+        sim.world.construction_queue.push(project(9));
+        sim.world.construction_queue.push(project(9));
+        assert!(!invariant_construction_queue_sane(sim.world()));
+    }
+
+    #[test]
+    fn decision_audit_bound_is_detected() {
+        let mut sim = Sim::new(6);
+        for _ in 0..=MAX_LOG_ENTRIES {
+            sim.engine_state.decision_audit.push(DecisionAuditRecord::default());
+        }
+        assert!(!invariant_decision_audit_bounded(&sim));
+        assert!(!invariant_logs_and_incident_store_bounded(&sim));
+    }
+
+    #[test]
+    fn incident_sidecar_severity_and_prisoner_id_are_checked() {
+        let mut sim = Sim::new(7);
+        let mut bad = crate::incidents::Incident::default();
+        bad.id = 1;
+        bad.severity = f32::NAN;
+        sim.engine_state.incident_sidecar.push(bad);
+        assert!(!invariant_incident_sidecar_consistent(&sim));
+        assert!(!invariant_logs_and_incident_store_bounded(&sim));
+
+        let mut sim2 = Sim::new(7);
+        let mut bad = crate::incidents::Incident::default();
+        bad.id = 1;
+        bad.severity = 0.5;
+        bad.involved_prisoners.push(PrisonerId(u64::MAX));
+        sim2.engine_state.incident_sidecar.push(bad);
+        assert!(!invariant_incident_sidecar_consistent(&sim2));
+    }
+
+    #[test]
+    fn post_release_records_must_reference_allocated_ids() {
+        let mut sim = Sim::new(8);
+        let next = sim.world.next_prisoner_id;
+        sim.engine_state.post_release.insert(PrisonerId(next), false);
+        assert!(!invariant_post_release_ids_valid(&sim));
+        assert!(!invariant_logs_and_incident_store_bounded(&sim));
+
+        // A currently allocated id is fine for a historical post-release record.
+        sim.engine_state.post_release.remove(&PrisonerId(next));
+        sim.engine_state.post_release.insert(PrisonerId(1), true);
+        assert!(invariant_post_release_ids_valid(&sim));
+    }
 }

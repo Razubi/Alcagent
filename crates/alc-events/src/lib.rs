@@ -20,6 +20,12 @@ pub enum EventKind {
     ParoleGranted,
     ParoleDenied,
     Death,
+    // Rehab / reintegration
+    RehabilitationProgress,
+    RehabilitationFailure,
+    PostRelease,
+    // Construction
+    ConstructionComplete,
     // Social
     RelationshipShift,
     GangFormed,
@@ -50,7 +56,6 @@ pub enum EventKind {
     // Institution
     PolicyChange,
     Expansion,
-    ConstructionComplete,
     FoodShortage,
     EquipmentFailure,
     BudgetChange,
@@ -97,6 +102,58 @@ impl WorldEvent {
     pub fn with_confidence(mut self, c: f32) -> Self { self.confidence = c.clamp(0.0, 1.0); self }
 }
 
+/// Helper structs for event payloads.
+
+/// Progress update from a rehabilitation program.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RehabProgressEvent {
+    /// Prisoner who received progress.
+    pub prisoner_id: u64,
+    /// Program ID.
+    pub program: String,
+    /// Progress delta (0..1, positive for progress, negative for regression).
+    pub delta: f32,
+    /// Current progress (0..1).
+    pub progress: f32,
+}
+
+/// Rehabilitation failure reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RehabFailureReason {
+    DroppedOut,
+    DisciplinaryRemoval,
+    InsufficientEngagement,
+    ProgramCompleted,
+}
+
+/// Failure event from rehab progress.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RehabFailureEvent {
+    /// Prisoner who failed.
+    pub prisoner_id: u64,
+    /// Program ID.
+    pub program: String,
+    /// Reason for failure.
+    pub reason: RehabFailureReason,
+}
+
+/// Post-release reintegration record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostReleaseRecord {
+    /// Prisoner who was released.
+    pub prisoner_id: u64,
+    /// Release type: parole, escape, transfer, etc.
+    pub release_type: String,
+    /// Date of release.
+    pub at: SimTime,
+    /// Recidivism risk score (0..1, higher = riskier).
+    pub recidivism_risk: f32,
+    /// Whether the prisoner had a plan/arrangements.
+    pub has_reintegration_plan: bool,
+    /// Institutional follow-up flag.
+    pub follow_up_required: bool,
+}
+
 /// In-memory event bus with bounded history.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventBus {
@@ -127,4 +184,123 @@ impl EventBus {
         self.history.iter().filter(move |e| e.at >= at)
     }
     pub fn len(&self) -> usize { self.history.len() }
+
+    /// Emit a rehabilitation progress event.
+    pub fn emit_rehab_progress(&mut self, at: SimTime, prisoner_id: u64, program: &str, delta: f32, _progress: f32) -> u64 {
+        let e = WorldEvent::new(1, at, EventKind::RehabilitationProgress, format!("Rehab progress: {} {:+.2}", program, delta))
+            .with_actor(prisoner_id)
+            .with_cause(format!("Rehab progress delta {:+.2} over step", delta))
+            .with_confidence(1.0);
+        self.emit(e)
+    }
+
+    /// Emit a rehabilitation failure event.
+    pub fn emit_rehab_failure(&mut self, at: SimTime, prisoner_id: u64, program: &str, reason: RehabFailureReason) -> u64 {
+        let reason_str = match reason {
+            RehabFailureReason::DroppedOut => "dropped out",
+            RehabFailureReason::DisciplinaryRemoval => "removed due to discipline",
+            RehabFailureReason::InsufficientEngagement => "insufficient engagement",
+            RehabFailureReason::ProgramCompleted => "program completed",
+        };
+        let e = WorldEvent::new(1, at, EventKind::RehabilitationFailure, format!("Rehab failure: {} ({})", program, reason_str))
+            .with_actor(prisoner_id)
+            .with_cause(format!("Rehab failure reason: {:?}", reason))
+            .with_confidence(1.0);
+        self.emit(e)
+    }
+
+    /// Emit a post-release record event.
+    pub fn emit_post_release(&mut self, at: SimTime, prisoner_id: u64, release_type: &str, recidivism_risk: f32, _has_reintegration_plan: bool) -> u64 {
+        let e = WorldEvent::new(1, at, EventKind::PostRelease, format!("Post-release: {} (risk {:.2})", release_type, recidivism_risk))
+            .with_actor(prisoner_id)
+            .with_cause(format!("Post-release recidivism risk {:.2}", recidivism_risk))
+            .with_confidence(1.0);
+        self.emit(e)
+    }
+
+    /// Emit a construction complete event.
+    pub fn emit_construction_complete(&mut self, at: SimTime, facility: &str) -> u64 {
+        let e = WorldEvent::new(1, at, EventKind::ConstructionComplete, format!("Construction complete: {}", facility))
+            .with_cause(format!("Construction of {} completed", facility))
+            .with_confidence(1.0);
+        self.emit(e)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alc_core::SimTime;
+
+    #[test]
+    fn event_kind_has_new_kinds() {
+        // Verify the new event kinds are accessible
+        let _ = EventKind::RehabilitationProgress;
+        let _ = EventKind::RehabilitationFailure;
+        let _ = EventKind::PostRelease;
+    }
+
+    #[test]
+    fn world_event_new_and_modifiers() {
+        let e = WorldEvent::new(1, SimTime { secs: 0 }, EventKind::Admission, "test admission");
+        assert_eq!(e.id, 1);
+        assert_eq!(e.at.secs, 0);
+        assert_eq!(e.kind, EventKind::Admission);
+        assert_eq!(e.summary, "test admission");
+        assert_eq!(e.actors, []);
+        assert!(e.causes.is_empty());
+        assert_eq!(e.confidence, 1.0);
+
+        let e2 = e.with_actor(42).with_cause("test cause").with_confidence(0.8);
+        assert_eq!(e2.actors, [42]);
+        assert_eq!(e2.causes, ["test cause"]);
+        assert_eq!(e2.confidence, 0.8);
+    }
+
+    #[test]
+    fn emit_rehab_progress() {
+        let mut bus = EventBus::new(100);
+        let id = bus.emit_rehab_progress(SimTime { secs: 10 }, 42, "education", 0.05, 0.3);
+        assert!(id > 0);
+        let events = bus.recent().collect::<Vec<_>>();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0].kind, EventKind::RehabilitationProgress));
+        assert_eq!(events[0].actors, [42]);
+    }
+
+    #[test]
+    fn emit_rehab_failure() {
+        let mut bus = EventBus::new(100);
+        let id = bus.emit_rehab_failure(SimTime { secs: 20 }, 42, "anger_mgmt", RehabFailureReason::DroppedOut);
+        assert!(id > 0);
+        let events = bus.recent().collect::<Vec<_>>();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0].kind, EventKind::RehabilitationFailure));
+        assert_eq!(events[0].actors, [42]);
+    }
+
+    #[test]
+    fn emit_post_release() {
+        let mut bus = EventBus::new(100);
+        let id = bus.emit_post_release(SimTime { secs: 30 }, 42, "parole", 0.15, true);
+        assert!(id > 0);
+        let events = bus.recent().collect::<Vec<_>>();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0].kind, EventKind::PostRelease));
+        assert_eq!(events[0].actors, [42]);
+    }
+
+    #[test]
+    fn eventbus_bounded_history() {
+        let mut bus = EventBus::new(3);
+        bus.emit(WorldEvent::new(1, SimTime { secs: 0 }, EventKind::Admission, "first"));
+        bus.emit(WorldEvent::new(2, SimTime { secs: 1 }, EventKind::Admission, "second"));
+        bus.emit(WorldEvent::new(3, SimTime { secs: 2 }, EventKind::Admission, "third"));
+        // Adding 4th should pop the first
+        bus.emit(WorldEvent::new(4, SimTime { secs: 3 }, EventKind::Admission, "fourth"));
+        let recent: Vec<_> = bus.recent().collect();
+        assert_eq!(recent.len(), 3);
+        // The first should have been popped
+        assert!(!recent.iter().any(|e| e.summary == "first"));
+    }
 }

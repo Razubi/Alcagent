@@ -123,12 +123,11 @@ fn deterministic_arbitration(sim: &mut Sim) -> WardenAction {
     )
 }
 
-/// Deterministic mode: arbitrate, apply, emit. Historical behavior, untouched.
+/// Deterministic mode: arbitrate, apply, emit through the engine API so
+/// policy mirror and decision audit stay consistent (0.05).
 fn run_deterministic_path(sim: &mut Sim) -> WardenAction {
     let action = deterministic_arbitration(sim);
-    let at = sim.world.time;
-    let events = apply_warden_action(&mut sim.world, at, action.clone());
-    sim.emit_events(events);
+    sim.apply_warden_action(action.clone());
     action
 }
 
@@ -226,8 +225,9 @@ pub fn apply_warden_action(world: &mut World, at: SimTime, action: WardenAction)
                 "recreation" => FacilityKind::Recreation,
                 _ => FacilityKind::CellBlock,
             };
-            world.add_facility(kind, 1, 40);
-            events.push(WorldEvent::new(0, at, EventKind::Expansion, format!("Warden expanded: {kind:?}")));
+            // Queue construction (0.05) rather than instant build; enqueue_construction
+            // emits its own event to world.events.
+            let _pid = world.enqueue_construction(kind, 1, 40);
         }
         WardenAction::HireGuards { count } => {
             // Every pawn must be in exactly one place (invariant

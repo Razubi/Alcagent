@@ -158,6 +158,104 @@ pub struct GuardReport {
     pub requests_assistance: bool,
 }
 
+/// Severity band for guard incidents and reports (0=info .. 3=critical).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum SeverityLevel {
+    Info,
+    Minor,
+    Serious,
+    Critical,
+}
+
+impl SeverityLevel {
+    /// Convert a raw `0..=3` severity into a level; values above 3 clamp to Critical.
+    pub fn from_u8(severity: u8) -> Self {
+        match severity {
+            0 => SeverityLevel::Info,
+            1 => SeverityLevel::Minor,
+            2 => SeverityLevel::Serious,
+            _ => SeverityLevel::Critical,
+        }
+    }
+
+    pub fn as_u8(self) -> u8 {
+        match self {
+            SeverityLevel::Info => 0,
+            SeverityLevel::Minor => 1,
+            SeverityLevel::Serious => 2,
+            SeverityLevel::Critical => 3,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SeverityLevel::Info => "Info",
+            SeverityLevel::Minor => "Minor",
+            SeverityLevel::Serious => "Serious",
+            SeverityLevel::Critical => "Critical",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            SeverityLevel::Info => "Routine observation; no action required.",
+            SeverityLevel::Minor => "Low-impact incident; note and monitor.",
+            SeverityLevel::Serious => "Significant incident; enforcement or follow-up warranted.",
+            SeverityLevel::Critical => "Critical incident; immediate response and escalation.",
+        }
+    }
+
+    pub fn is_critical(self) -> bool {
+        matches!(self, SeverityLevel::Critical)
+    }
+}
+
+/// An enriched guard incident: a [`GuardReport`] plus the spatial and actor
+/// context that makes it inspectable and auditable. [`GuardReport`] itself is
+/// intentionally unchanged so existing duty/report behavior and callers stay
+/// compatible.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GuardIncident {
+    /// The underlying credibility-scored report.
+    pub report: GuardReport,
+    /// Location where the incident occurred (post name, wing, facility, etc.).
+    pub location: String,
+    /// Prisoner/guard ids involved, if known.
+    pub involved_actors: Vec<u64>,
+    /// Incident kind, e.g. "fight", "contraband", "medical", "disturbance".
+    pub incident_kind: String,
+}
+
+impl GuardIncident {
+    pub fn from_report(report: GuardReport, location: impl Into<String>, involved_actors: Vec<u64>, incident_kind: impl Into<String>) -> Self {
+        Self {
+            report,
+            location: location.into(),
+            involved_actors,
+            incident_kind: incident_kind.into(),
+        }
+    }
+
+    pub fn severity_level(&self) -> SeverityLevel {
+        SeverityLevel::from_u8(self.report.severity)
+    }
+
+    pub fn one_line_summary(&self) -> String {
+        format!(
+            "[{}] {} at {}: {} (actors: {})",
+            self.severity_level().label(),
+            self.incident_kind,
+            self.location,
+            self.report.summary,
+            if self.involved_actors.is_empty() {
+                "none".to_string()
+            } else {
+                self.involved_actors.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(",")
+            },
+        )
+    }
+}
+
 /// Minimal policy/context snapshot for guard duty decisions.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct DutyContext {
@@ -359,6 +457,34 @@ impl Guard {
         report.requests_assistance = true;
         self.stress = (self.stress + 0.03).min(1.0);
         report
+    }
+
+    /// File a credibility-scored report and wrap it in an enriched [`GuardIncident`]
+    /// with location and involved actors. Does not alter duty/report behavior;
+    /// use this when a report needs to be auditable by place and participants.
+    pub fn report_incident(
+        &mut self,
+        at: SimTime,
+        summary: impl Into<String>,
+        severity: u8,
+        location: impl Into<String>,
+        involved_actors: Vec<u64>,
+        witnessed_directly: bool,
+    ) -> GuardIncident {
+        let report = self.report(at, summary, severity, witnessed_directly);
+        GuardIncident::from_report(report, location, involved_actors, "incident")
+    }
+
+    /// Build an enriched [`GuardIncident`] from an existing report without
+    /// writing to guard history or credibility (read-only enrichment).
+    pub fn incident_from_report(
+        &self,
+        report: &GuardReport,
+        location: impl Into<String>,
+        involved_actors: Vec<u64>,
+        incident_kind: impl Into<String>,
+    ) -> GuardIncident {
+        GuardIncident::from_report(report.clone(), location, involved_actors, incident_kind)
     }
 
     /// Duty-loop stub: observe → report → enforce → request_assistance.

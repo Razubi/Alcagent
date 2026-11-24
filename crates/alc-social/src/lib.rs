@@ -195,7 +195,7 @@ pub use gang::{
     GroupDirective, LeaderMemberResolution, MemberDecision, MemberDecisionContext, MemberRecord,
     PrisonerGangProfile, Rank,
 };
-pub use parole::{ParoleBoard, ParoleCondition, ParoleDecision, ParoleSubject};
+pub use parole::{ParoleBoard, ParoleCondition, ParoleDecision, ParoleSubject, PostReleaseOutcome, PostReleaseRecord, recidivism_score};
 pub use rehab::{
     apply_program_progress, enroll_in_program, RehabOutcome, RehabPrisonerState, RehabProgram,
 };

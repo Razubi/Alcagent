@@ -49,6 +49,9 @@ pub mod parole;
 
 pub mod incidents;
 
+/// Re-export structured incident query types for UI/CLI consumers (0.05).
+pub use crate::incidents::{filter_incidents, Incident, IncidentFilter};
+
 pub mod invariants;
 
 pub mod state_digest;
@@ -64,9 +67,13 @@ use alc_core::{GuardId, PrisonerId, TimeSpeed};
 use alc_events::{EventBus, EventKind};
 use alc_guard::GuardReport;
 use alc_persistence::{SaveError, SaveManager};
-use alc_prisoner::NeedTag;
+use alc_prisoner::{
+    attendance_probability, current_block, resolve_schedule, AttendanceContext, NeedTag,
+    SchedulePolicy, ScheduleTemplate,
+};
+use alc_social::rehab::{enroll_in_program, RehabPrisonerState, RehabProgram};
 use alc_warden::WardenAction;
-use std::collections::{HashSet, HashMap};
+use std::collections::{BTreeMap, HashSet, HashMap};
 use std::path::{Path, PathBuf};
 use serde::{Serialize, Deserialize};
 
@@ -112,6 +119,23 @@ pub struct PolicyState {
     pub last_changed: alc_core::SimTime,
 }
 
+/// Observer-facing policy summary for UI/control panels (0.05).
+#[derive(Debug, Clone, Default)]
+pub struct PolicySummary {
+    /// Current policy band.
+    pub policy: Policy,
+    /// Lockdown flag.
+    pub lockdown: bool,
+    /// Security level 0.0-1.0.
+    pub security_level: f32,
+    /// Privileges level 0.0-1.0.
+    pub privileges_level: f32,
+    /// Rehab funding multiplier 0.0-2.0.
+    pub rehab_funding_multiplier: f32,
+    /// Intake paused by lockdown/max security.
+    pub intake_paused: bool,
+}
+
 impl Default for PolicyState {
     fn default() -> Self {
         PolicyState {
@@ -123,12 +147,65 @@ impl Default for PolicyState {
     }
 }
 
-/// The simulation engine: owns the world and drives it over time.
-#[derive(Debug)]
+/// Structured decision audit record for observer UI (0.05).
+#[derive(Debug, Clone, Default)]
+pub struct DecisionAuditRecord {
+    /// Simulation time when the decision was recorded.
+    pub time: SimTime,
+    /// Actor that produced the decision (warden, prisoner:ID, guard:ID).
+    pub actor: String,
+    /// Decision source/mode (deterministic, council, shadow, agent).
+    pub source: String,
+    /// Action name or type.
+    pub action: String,
+    /// Human-readable summary.
+    pub summary: String,
+    /// Validation outcome (accepted, repaired, rejected).
+    pub validation: String,
+    /// Reason or engine note.
+    pub reason: String,
+}
+
+/// Structured incident record for observer UI (0.05).
+#[derive(Debug, Clone, Default)]
+pub struct IncidentRecord {
+    /// Incident id.
+    pub id: u64,
+    /// Simulation time.
+    pub at: SimTime,
+    /// Kind label.
+    pub kind: String,
+    /// Severity 0.0-1.0.
+    pub severity: f32,
+    /// Location string.
+    pub location: String,
+    /// Involved prisoner ids.
+    pub involved_prisoners: Vec<u64>,
+    /// Cause incident id.
+    pub cause: Option<u64>,
+    /// Consequence incident id.
+    pub consequence: Option<u64>,
+    /// Resolved flag.
+    pub resolved: bool,
+}
+
+impl From<&incidents::Incident> for IncidentRecord {
+    fn from(incident: &incidents::Incident) -> Self {
+        IncidentRecord {
+            id: incident.id,
+            at: incident.timestamp,
+            kind: format!("{:?}", incident.kind),
+            severity: incident.severity,
+            location: incident.location.clone(),
+            involved_prisoners: incident.involved_prisoners.iter().map(|p| p.raw()).collect(),
+            cause: incident.cause,
+            consequence: incident.consequence,
+            resolved: incident.resolved,
+        }
+    }
+}
+
 /// Engine state for persistence (S0: prerequisite save/load).
-/// Stores all engine-side state that must survive save/load cycles,
-/// alongside the World state in the bincode save format.
-#[derive(Clone, Serialize, Deserialize)]
 pub struct EngineState {
     /// Parole ledger (Directive §15).
     pub parole: ParoleLedger,
@@ -145,6 +222,10 @@ pub struct EngineState {
     pub incident_sidecar: Vec<incidents::Incident>,
     /// Decision audit log (R2: decision audit log).
     pub decision_log: Vec<alc_agents::Decision>,
+    /// Structured decision audit records for observer UI (0.05).
+    pub decision_audit: Vec<DecisionAuditRecord>,
+    /// Contraband case IDs manually resolved by observer/control (0.05).
+    pub resolved_contraband_cases: std::collections::BTreeSet<u64>,
     /// Post-release tracking (R4: released prisoner outcomes).
     pub post_release: HashMap<alc_core::PrisonerId, bool>,
     /// Policy and lockdown state (H1: policy management).
@@ -163,6 +244,8 @@ impl Default for EngineState {
             incidents: Vec::new(),
             incident_sidecar: Vec::new(),
             decision_log: Vec::new(),
+            decision_audit: Vec::new(),
+            resolved_contraband_cases: std::collections::BTreeSet::new(),
             post_release: std::collections::HashMap::new(),
             policy_state: PolicyState::default(),
             policy_mode: PolicyMode::Deterministic,
@@ -197,8 +280,19 @@ impl EngineState {
                 }
             }).collect(),
             decision_log: self.decision_log.clone(),
+            decision_audit: self.decision_audit.iter().map(|r| alc_persistence::DecisionAuditRecord {
+                time: r.time,
+                actor: r.actor.clone(),
+                source: r.source.clone(),
+                action: r.action.clone(),
+                summary: r.summary.clone(),
+                validation: r.validation.clone(),
+                reason: r.reason.clone(),
+            }).collect(),
+            resolved_contraband_cases: self.resolved_contraband_cases.iter().copied().collect(),
             post_release: self.post_release.iter().map(|(k, v)| (k.raw(), *v)).collect(),
             autosave_interval_days: self.autosave.as_ref().map(|a| a.interval_days),
+            last_autosave_day: self.autosave.as_ref().map(|a| a.last_save_day()),
             policy_state: alc_persistence::PolicyState {
                 policy: policy_to_persist(self.policy_state.policy),
                 lockdown: self.policy_state.lockdown,
@@ -210,7 +304,7 @@ impl EngineState {
     }
 
     /// Convert alc_persistence's EngineState to sumo's EngineState for loading.
-    pub fn from_persistence(persist: alc_persistence::EngineState) -> Self {
+    pub fn from_persistence(persist: alc_persistence::EngineState, save_dir: &Path) -> Self {
         EngineState {
             parole: ParoleLedger {
                 status: persist.parole.status.into_iter().map(|(k, v)| (PrisonerId(k), parole_status_from_persist(v))).collect(),
@@ -220,7 +314,9 @@ impl EngineState {
             },
             population_history: persist.population_history.into_iter().map(|(t, p)| (SimTime::from_secs(t), p)).collect(),
             autosave: persist.autosave_interval_days.map(|days| {
-                AutosaveScheduler::new(std::path::PathBuf::new(), days)
+                let mut s = AutosaveScheduler::new(save_dir.to_path_buf(), days);
+                if let Some(d) = persist.last_autosave_day { s = s.with_last_save_day(d); }
+                s
             }),
             incidents: persist.incidents,
             incident_sidecar: persist.incident_sidecar.into_iter().map(|inc| {
@@ -237,6 +333,16 @@ impl EngineState {
                 }
             }).collect(),
             decision_log: persist.decision_log,
+            decision_audit: persist.decision_audit.into_iter().map(|r| DecisionAuditRecord {
+                time: r.time,
+                actor: r.actor,
+                source: r.source,
+                action: r.action,
+                summary: r.summary,
+                validation: r.validation,
+                reason: r.reason,
+            }).collect(),
+            resolved_contraband_cases: persist.resolved_contraband_cases.into_iter().collect(),
             post_release: persist.post_release.into_iter().map(|(k, v)| (PrisonerId(k), v)).collect(),
             policy_state: PolicyState {
                 policy: policy_from_persist(persist.policy_state.policy),
@@ -378,6 +484,17 @@ impl Sim {
         &mut self.engine_state.decision_log
     }
 
+    /// Structured decision audit log for observer UI (0.05).
+    pub fn decision_audit_log(&self) -> &[DecisionAuditRecord] {
+        &self.engine_state.decision_audit
+    }
+
+    /// Record a structured decision audit entry.
+    pub fn record_decision_audit(&mut self, record: DecisionAuditRecord) {
+        self.engine_state.decision_audit.push(record);
+        self.trim_engine_logs();
+    }
+
     /// Access post_release from engine_state.
     pub fn post_release(&self) -> &HashMap<alc_core::PrisonerId, bool> {
         &self.engine_state.post_release
@@ -425,10 +542,29 @@ impl Sim {
         }
         tracing::debug!(time = ?self.world.time, "tick");
         let last_event_id = self.world.events.recent().last().map(|e| e.id).unwrap_or(0);
+        let prev_decisions = self.world.current_decisions.clone();
         self.world.tick();
         // World::tick runs its own warden/guard cycles that mutate
         // world.policies directly; reconcile the engine mirror every tick.
         self.sync_policy_from_world();
+        // Audit world-tick decisions (0.05).
+        let mut new_audits = Vec::new();
+        for (pid, decision) in &self.world.current_decisions {
+            if prev_decisions.get(pid) != Some(decision) {
+                new_audits.push(DecisionAuditRecord {
+                    time: self.world.time,
+                    actor: format!("prisoner:{}", pid.raw()),
+                    source: "world_tick".to_string(),
+                    action: decision.action_name().to_string(),
+                    summary: format!("{:?}", decision),
+                    validation: "accepted".to_string(),
+                    reason: "applied by world tick".to_string(),
+                });
+            }
+        }
+        for record in new_audits {
+            self.record_decision_audit(record);
+        }
         // Mirror newly-emitted world events into the engine-side incident log
         // and structured sidecar (C1: logs were never populated at runtime).
         self.pump_events_into_engine_log(last_event_id);
@@ -464,6 +600,14 @@ impl Sim {
                     | EventKind::GangClash
                     | EventKind::Protests
                     | EventKind::PropertyDamage
+                    | EventKind::MedicalEmergency
+                    | EventKind::EscapeAttempt
+                    | EventKind::EscapePrevented
+                    | EventKind::EscapeSucceeded
+                    | EventKind::ContrabandFound
+                    | EventKind::Death
+                    | EventKind::TransferOut
+                    | EventKind::ConstructionComplete
             ) {
                 continue;
             }
@@ -483,8 +627,10 @@ impl Sim {
                 .map(alc_core::PrisonerId)
                 .collect();
             let severity = match event.kind {
-                EventKind::Fight | EventKind::GangClash => 0.8,
-                EventKind::Threat | EventKind::Theft => 0.6,
+                EventKind::Fight | EventKind::GangClash | EventKind::EscapeSucceeded | EventKind::Death => 0.9,
+                EventKind::EscapeAttempt | EventKind::MedicalEmergency | EventKind::TransferOut => 0.7,
+                EventKind::Threat | EventKind::Theft | EventKind::ContrabandFound => 0.6,
+                EventKind::ConstructionComplete => 0.2,
                 _ => 0.4,
             };
             self.engine_state.incident_sidecar.push(incidents::Incident {
@@ -517,6 +663,10 @@ impl Sim {
         if self.engine_state.decision_log.len() > MAX {
             let excess = self.engine_state.decision_log.len() - MAX;
             self.engine_state.decision_log.drain(..excess);
+        }
+        if self.engine_state.decision_audit.len() > MAX {
+            let excess = self.engine_state.decision_audit.len() - MAX;
+            self.engine_state.decision_audit.drain(..excess);
         }
     }
 
@@ -879,6 +1029,685 @@ impl Sim {
         }).collect()
     }
 
+    /// Construction queue for observer UI (0.05).
+    ///
+    /// Backed by `World::construction_queue`; entries disappear when a project
+    /// completes (the facility is then in [`Sim::facilities`]).
+    pub fn construction_queue(&self) -> Vec<ConstructionSummary> {
+        self.world.construction_queue.iter().map(|p| ConstructionSummary {
+            id: p.id,
+            kind: p.kind,
+            wing: p.wing,
+            capacity: p.capacity,
+            total_days: p.total_days,
+            progress_days: p.progress_days,
+            cost: p.cost,
+            started_day: p.started_day,
+        }).collect()
+    }
+
+    // ---------------------------------------------------------------------
+    // 0.05 observer/control DTOs
+    // ---------------------------------------------------------------------
+
+    /// Post-release records for every prisoner tracked in the engine ledger.
+    ///
+    /// Built from `EngineState::post_release` (persisted) plus the release
+    /// events still present on the bounded world event bus. Release type and
+    /// release time come from the latest matching event; if the event has aged
+    /// out of the bus, `release_type` is `"unknown"` and `released_at` is
+    /// `None` rather than fabricated.
+    pub fn post_release_records(&self) -> Vec<PostReleaseSummary> {
+        let mut rows: Vec<PostReleaseSummary> = self
+            .engine_state
+            .post_release
+            .iter()
+            .map(|(&id, &success)| {
+                let info = self.release_event_info(id);
+                let (release_type, released_at, recidivism_risk, has_plan) = match info {
+                    Some(info) => (
+                        info.release_type,
+                        Some(info.at),
+                        info.recidivism_risk,
+                        info.has_reintegration_plan,
+                    ),
+                    None => ("unknown".to_string(), None, None, None),
+                };
+                PostReleaseSummary {
+                    prisoner_id: id,
+                    prisoner_name: self
+                        .world
+                        .prisoners
+                        .iter()
+                        .find(|p| p.id == id)
+                        .map(|p| p.name.clone()),
+                    release_type,
+                    released_at,
+                    successful_reintegration: success,
+                    recidivism_risk,
+                    has_reintegration_plan: has_plan,
+                    follow_up_required: !success,
+                }
+            })
+            .collect();
+        rows.sort_by_key(|r| {
+            (
+                r.released_at.map(|t| t.secs).unwrap_or(u64::MAX),
+                r.prisoner_id.raw(),
+            )
+        });
+        rows
+    }
+
+    /// Latest release-shaped event for a prisoner, if the event bus still has it.
+    fn release_event_info(&self, prisoner_id: PrisonerId) -> Option<ReleaseEventInfo> {
+        let mut best: Option<ReleaseEventInfo> = None;
+        for event in self.world.events.recent() {
+            let release_type = match event.kind {
+                EventKind::PostRelease => "post_release",
+                EventKind::Release => "release",
+                EventKind::ParoleGranted => "parole",
+                EventKind::EscapeSucceeded => "escape",
+                EventKind::TransferOut => "transfer",
+                _ => continue,
+            };
+            if !event.actors.contains(&prisoner_id.raw()) {
+                continue;
+            }
+            let info = ReleaseEventInfo {
+                release_type: release_type.to_string(),
+                at: event.at,
+                recidivism_risk: parse_f32_after(&event.causes, "risk "),
+                has_reintegration_plan: parse_plan_flag(&event.causes),
+            };
+            if best.as_ref().map(|b| b.at <= info.at).unwrap_or(true) {
+                best = Some(info);
+            }
+        }
+        best
+    }
+
+    /// Rehab enrollment rows derived from prisoner skill state (0.05).
+    ///
+    /// `alc-social` records enrollment as a `rehab_*` skill key on the prisoner
+    /// whose value is program progress 0..1, so no new world state is needed.
+    /// Completed programs remove the key and therefore drop out of this list
+    /// (completion counts live in [`Sim::rehab_overview`]).
+    pub fn rehab_summaries(&self) -> Vec<RehabEnrollmentSummary> {
+        let mut rows: Vec<RehabEnrollmentSummary> = Vec::new();
+        for p in &self.world.prisoners {
+            for program in REHAB_PROGRAMS {
+                let Some(progress) = p.skills.get(program.key()) else {
+                    continue;
+                };
+                rows.push(RehabEnrollmentSummary {
+                    prisoner_id: p.id,
+                    prisoner_name: p.name.clone(),
+                    program: format!("{program:?}"),
+                    program_key: program.key().to_string(),
+                    progress: progress.clamp(0.0, 1.0),
+                    education_track: matches!(
+                        program,
+                        RehabProgram::Education | RehabProgram::Vocational
+                    ),
+                    disciplinary: p.schedule.disciplinary_status,
+                });
+            }
+        }
+        rows.sort_by_key(|r| (r.prisoner_id.raw(), r.program_key.clone()));
+        rows
+    }
+
+    /// Static rehab program catalog for enrollment controls (0.05).
+    pub fn rehab_program_catalog(&self) -> Vec<RehabProgramInfo> {
+        REHAB_PROGRAMS
+            .iter()
+            .map(|program| RehabProgramInfo {
+                name: format!("{program:?}"),
+                key: program.key().to_string(),
+                difficulty: program.difficulty(),
+            })
+            .collect()
+    }
+
+    /// Aggregate rehab overview: enrollments, completions, dropouts by program.
+    ///
+    /// Completion/dropout counts are event-derived (bounded world bus), so they
+    /// cover roughly the retained event window rather than all time.
+    pub fn rehab_overview(&self) -> RehabOverview {
+        let enrollments = self.rehab_summaries();
+        let mut enrolled_prisoners: Vec<PrisonerId> = Vec::new();
+        let mut progress_sum = 0.0_f32;
+        let mut rollups: Vec<RehabProgramRollup> = REHAB_PROGRAMS
+            .iter()
+            .map(|program| RehabProgramRollup {
+                program: format!("{program:?}"),
+                key: program.key().to_string(),
+                enrolled: 0,
+                average_progress: 0.0,
+            })
+            .collect();
+        for row in &enrollments {
+            if !enrolled_prisoners.contains(&row.prisoner_id) {
+                enrolled_prisoners.push(row.prisoner_id);
+            }
+            progress_sum += row.progress;
+            if let Some(slot) = rollups.iter_mut().find(|r| r.key == row.program_key) {
+                slot.enrolled += 1;
+                slot.average_progress += row.progress;
+            }
+        }
+        for slot in &mut rollups {
+            if slot.enrolled > 0 {
+                slot.average_progress /= slot.enrolled as f32;
+            }
+        }
+
+        let mut completions = 0u32;
+        let mut dropouts = 0u32;
+        for event in self.world.events.recent() {
+            match event.kind {
+                EventKind::RehabilitationSuccess => completions += 1,
+                EventKind::RehabilitationFailure => dropouts += 1,
+                EventKind::ProgramEnrolled if event.summary.contains("dropped") => dropouts += 1,
+                _ => {}
+            }
+        }
+
+        RehabOverview {
+            enrollments: enrollments.len() as u32,
+            enrolled_prisoners: enrolled_prisoners.len() as u32,
+            average_progress: if enrollments.is_empty() {
+                0.0
+            } else {
+                progress_sum / enrollments.len() as f32
+            },
+            completions,
+            dropouts,
+            programs: rollups,
+        }
+    }
+
+    /// Contraband cases derived from the event record (0.05).
+    ///
+    /// TODO(world-state): there is no persisted contraband inventory/case
+    /// store yet — `alc-world` only emits `EventKind::ContrabandFound` events.
+    /// This accessor therefore reconstructs cases from the bounded world event
+    /// bus (plus the engine incident log), deduplicated by event id. Item and
+    /// guard are best-effort parsed from the event summary/causes; `resolved`
+    /// is always `false` until a real case store exists.
+    pub fn contraband_summaries(&self) -> Vec<ContrabandCaseSummary> {
+        let mut cases: Vec<ContrabandCaseSummary> = Vec::new();
+        let mut seen: HashSet<u64> = HashSet::new();
+        let bus_events = self.world.events.recent();
+        let log_events = self.engine_state.incidents.iter();
+        for event in bus_events.chain(log_events) {
+            if event.kind != EventKind::ContrabandFound || !seen.insert(event.id) {
+                continue;
+            }
+            let item = detect_contraband_item(&event.summary);
+            let severity = item
+                .as_deref()
+                .map(contraband_severity_for_label)
+                .unwrap_or(0.5);
+            cases.push(ContrabandCaseSummary {
+                case_id: event.id,
+                at: event.at,
+                item,
+                holder: event.actors.first().copied().map(PrisonerId),
+                guard: event.causes.iter().find_map(|c| parse_guard_cause(c)),
+                severity,
+                summary: event.summary.clone(),
+                causes: event.causes.clone(),
+                resolved: self.engine_state.resolved_contraband_cases.contains(&event.id),
+            });
+        }
+        cases.sort_by_key(|c| c.case_id);
+        cases
+    }
+
+    /// Mark a contraband case resolved (observer/control, 0.05).
+    pub fn resolve_contraband_case(&mut self, case_id: u64) -> bool {
+        self.engine_state.resolved_contraband_cases.insert(case_id)
+    }
+
+    /// Contraband inventory rollup by item category (0.05).
+    ///
+    /// Aggregates [`Sim::contraband_summaries`]; again event-derived only.
+    pub fn contraband_inventory(&self) -> Vec<ContrabandInventorySummary> {
+        let mut map: BTreeMap<String, ContrabandInventorySummary> = BTreeMap::new();
+        for case in self.contraband_summaries() {
+            let label = case.item.clone().unwrap_or_else(|| "Unknown".to_string());
+            let slot = map
+                .entry(label.clone())
+                .or_insert_with(|| ContrabandInventorySummary {
+                    item: label,
+                    cases: 0,
+                    holders: Vec::new(),
+                    last_seen: None,
+                    max_severity: 0.0,
+                });
+            slot.cases += 1;
+            if let Some(holder) = case.holder {
+                if !slot.holders.contains(&holder) {
+                    slot.holders.push(holder);
+                }
+            }
+            slot.last_seen = Some(match slot.last_seen {
+                Some(prev) if prev >= case.at => prev,
+                _ => case.at,
+            });
+            slot.max_severity = slot.max_severity.max(case.severity);
+        }
+        map.into_values().collect()
+    }
+
+    /// Resolved daily schedule timeline for one prisoner (0.05).
+    ///
+    /// Recomputes `resolve_schedule` from the current policy/staffing (the
+    /// world itself only persists the *current* activity, so this is the
+    /// documented source of truth for the whole day). Attendance outcomes are
+    /// not persisted per block: `ScheduleBlockView::attendance` is `None` and
+    /// `attendance_probability` is the deterministic probability model the
+    /// world uses — TODO(world-state): store per-block attendance history.
+    pub fn schedule_timeline(&self, prisoner_id: PrisonerId) -> Option<ScheduleTimeline> {
+        let prisoner = self.world.prisoners.iter().find(|p| p.id == prisoner_id)?;
+        let policy = self.schedule_policy_snapshot();
+        let template = ScheduleTemplate::default_medium();
+        let resolved = resolve_schedule(prisoner, &template, &policy);
+        let minute = self.world.time.minute_of_day() as u16;
+        let current_block_id = current_block(&resolved, minute).map(|rb| rb.block.id);
+
+        let blocks: Vec<ScheduleBlockView> = resolved
+            .iter()
+            .map(|rb| ScheduleBlockView {
+                block_id: rb.block.id,
+                activity: format!("{:?}", rb.block.activity),
+                label: rb.block.label.clone(),
+                start_minute: rb.start_minute,
+                end_minute: rb.end_minute,
+                cancelled: rb.cancelled,
+                reason: rb.reason.map(|r| format!("{r:?}")),
+                mandatory: rb.block.attendance.mandatory,
+                staff_required: rb.block.staff_requirement,
+                current: current_block_id == Some(rb.block.id),
+                // TODO(world-state): attendance outcomes are not persisted.
+                attendance: None,
+            })
+            .collect();
+
+        Some(ScheduleTimeline {
+            prisoner_id,
+            prisoner_name: prisoner.name.clone(),
+            day: self.world.days_simulated,
+            current_minute: minute,
+            current_activity: self
+                .world
+                .current_activity
+                .get(&prisoner_id)
+                .map(|a| format!("{a:?}")),
+            lockdown: policy.lockdown,
+            staff_coverage: policy.staff_coverage,
+            attendance_probability: attendance_probability(&AttendanceContext::from_prisoner(
+                prisoner,
+            )),
+            cancelled_blocks: blocks.iter().filter(|b| b.cancelled).count() as u32,
+            blocks,
+        })
+    }
+
+    /// Policy/staffing context for schedule resolution (mirrors the world's
+    /// private `schedule_policy` / `staff_coverage` so the observer timeline
+    /// matches what the simulation actually resolved).
+    fn schedule_policy_snapshot(&self) -> SchedulePolicy {
+        SchedulePolicy {
+            lockdown: self.world.policies.lockdown,
+            privileges_level: self.world.policies.privileges_level.max(0.05),
+            security_level: self.world.policies.security_level,
+            staff_coverage: self.staff_coverage_estimate(),
+            weather_ok: true,
+            rehab_funding_multiplier: self.world.policies.rehab_funding_multiplier,
+        }
+    }
+
+    /// Staff coverage estimate (guards / required facility posts), clamped 0..1.
+    fn staff_coverage_estimate(&self) -> f32 {
+        let required: u32 = self.world.facilities.iter().map(|f| f.staff_required).sum();
+        if required == 0 {
+            1.0
+        } else {
+            (self.world.guards.len() as f32 / required as f32).min(1.0)
+        }
+    }
+
+    /// Budget snapshot over the trailing 30 days (0.05).
+    pub fn budget_snapshot(&self) -> BudgetSnapshot {
+        self.budget_snapshot_window(30)
+    }
+
+    /// Budget snapshot over `window_days` of ledger history (0.05).
+    ///
+    /// Aggregates the persisted `alc-economy` ledger by account, derives
+    /// daily revenue/expense projections and a cash runway, and explains the
+    /// financial health index with explicit warnings.
+    pub fn budget_snapshot_window(&self, window_days: u64) -> BudgetSnapshot {
+        let window_days = window_days.max(1);
+        let cutoff = self
+            .world
+            .time
+            .as_secs()
+            .saturating_sub(window_days.saturating_mul(86_400));
+
+        let mut by_account: BTreeMap<String, (f64, f64, u32)> = BTreeMap::new();
+        for entry in &self.world.economy.ledger {
+            if entry.at_secs < cutoff {
+                continue;
+            }
+            let slot = by_account
+                .entry(format!("{:?}", entry.account))
+                .or_insert((0.0, 0.0, 0));
+            let major = entry.amount.as_major();
+            if major >= 0.0 {
+                slot.0 += major;
+            } else {
+                slot.1 += -major;
+            }
+            slot.2 += 1;
+        }
+        let lines: Vec<BudgetLine> = by_account
+            .into_iter()
+            .map(|(account, (inflow, outflow, entries))| BudgetLine {
+                account,
+                inflow_major: inflow,
+                outflow_major: outflow,
+                net_major: inflow - outflow,
+                entries,
+            })
+            .collect();
+
+        let inflow_total: f64 = lines.iter().map(|l| l.inflow_major).sum();
+        let outflow_total: f64 = lines.iter().map(|l| l.outflow_major).sum();
+        let span = (window_days as f64)
+            .min(self.world.days_simulated.max(1) as f64)
+            .max(1.0);
+        let trailing_daily_expense_avg =
+            self.world.economy.trailing_daily_expense_avg() as f64 / 100.0;
+        let projected_daily_revenue = if inflow_total > 0.0 {
+            inflow_total / span
+        } else {
+            0.0
+        };
+        let projected_daily_expense = if outflow_total > 0.0 {
+            outflow_total / span
+        } else {
+            trailing_daily_expense_avg
+        };
+        let cash_major = self.world.economy.cash.as_major();
+        let runway_days = if cash_major <= 0.0 {
+            0.0
+        } else if projected_daily_expense <= 0.0 {
+            9_999.0
+        } else {
+            cash_major / projected_daily_expense
+        };
+
+        let mut warnings = Vec::new();
+        if cash_major < 0.0 {
+            warnings.push("cash is negative (institution in deficit)".to_string());
+        }
+        if self.world.economy.health() < 0.25 {
+            warnings.push("financial health below 25% of one month of expenses".to_string());
+        }
+        if projected_daily_expense > projected_daily_revenue {
+            warnings.push(format!(
+                "structural deficit: daily expenses ${:.0} exceed revenue ${:.0}",
+                projected_daily_expense, projected_daily_revenue
+            ));
+        }
+        let payroll = lines
+            .iter()
+            .find(|l| l.account == "Salaries")
+            .map(|l| l.outflow_major)
+            .unwrap_or(0.0);
+        if outflow_total > 0.0 && payroll / outflow_total > 0.6 {
+            warnings.push(format!(
+                "payroll is {:.0}% of expenses",
+                payroll / outflow_total * 100.0
+            ));
+        }
+        if self.world.population() > self.world.economy.crowding_threshold {
+            warnings.push(format!(
+                "population {} above crowding threshold {}",
+                self.world.population(),
+                self.world.economy.crowding_threshold
+            ));
+        }
+        let projects = self.world.construction_queue.len();
+        if projects > 0 {
+            warnings.push(format!("{projects} construction project(s) in progress"));
+        }
+        if self.world.policies.intake_paused {
+            warnings.push("intake is paused by policy".to_string());
+        }
+
+        BudgetSnapshot {
+            day: self.world.days_simulated,
+            at: self.world.time,
+            window_days,
+            cash_major,
+            health: self.world.economy.health() as f32,
+            funding_per_prisoner_per_day: self
+                .world
+                .economy
+                .funding_per_prisoner_per_day
+                .as_major(),
+            base_daily_grant: self.world.economy.base_daily_grant.as_major(),
+            projected_daily_revenue,
+            projected_daily_expense,
+            trailing_daily_expense_avg,
+            runway_days,
+            population: self.world.population(),
+            capacity: self.world.capacity(),
+            crowding_threshold: self.world.economy.crowding_threshold,
+            lines,
+            warnings,
+        }
+    }
+
+    /// Structured incident records matching `filter` (0.05).
+    ///
+    /// Reads the persisted sidecar incident store; filters are applied by
+    /// [`incidents::IncidentFilter`] so UI and CLI share one query semantic.
+    pub fn incident_records_filtered(
+        &self,
+        filter: &incidents::IncidentFilter,
+    ) -> Vec<IncidentRecord> {
+        incidents::filter_incidents(&self.engine_state.incident_sidecar, filter)
+            .iter()
+            .map(IncidentRecord::from)
+            .collect()
+    }
+
+    /// Raw structured incidents matching `filter` (0.05).
+    pub fn incidents_filtered(
+        &self,
+        filter: &incidents::IncidentFilter,
+    ) -> Vec<incidents::Incident> {
+        incidents::filter_incidents(&self.engine_state.incident_sidecar, filter)
+    }
+
+    // --- 0.05 validated observer controls ---
+
+    /// Enroll a prisoner in a rehabilitation program (observer control, 0.05).
+    ///
+    /// Validated: returns `false` (and emits nothing) when the prisoner does
+    /// not exist, is already enrolled in that program, or the program's
+    /// willingness/eligibility gate rejects enrollment. On success the
+    /// enrollment and its immediate purpose/hope lift are written back to the
+    /// prisoner and a `ProgramEnrolled` event is emitted.
+    pub fn enroll_rehab(&mut self, prisoner_id: PrisonerId, program: RehabProgram) -> bool {
+        let at = self.world.time;
+        let Some(prisoner) = self
+            .world
+            .prisoners
+            .iter_mut()
+            .find(|p| p.id == prisoner_id)
+        else {
+            return false;
+        };
+        if prisoner.skills.contains_key(program.key()) {
+            return false;
+        }
+        let mut state = rehab_state_for(prisoner);
+        if !enroll_in_program(&mut state, program) {
+            return false;
+        }
+        write_back_rehab_state(prisoner, state);
+        let name = prisoner.name.clone();
+        let day = self.world.days_simulated;
+        let recs = self.world.rehab_records.entry(prisoner_id).or_default();
+        if !recs.iter().any(|r| r.program == program && !r.completed && !r.dropped) {
+            recs.push(alc_world::RehabProgramRecord {
+                program,
+                enrolled_day: day,
+                progress_days: 0,
+                progress_sum: 0.0,
+                completed: false,
+                dropped: false,
+            });
+        }
+        let event = WorldEvent::new(
+            0,
+            at,
+            EventKind::ProgramEnrolled,
+            format!("{name} enrolled in {program:?} (observer control)"),
+        )
+        .with_actor(prisoner_id.raw())
+        .with_cause("manual rehabilitation enrollment");
+        self.emit_event(event);
+        true
+    }
+
+    /// Enroll by program key (UI/control convenience).
+    pub fn enroll_rehab_by_key(&mut self, prisoner_id: PrisonerId, key: &str) -> bool {
+        let Some(program) = REHAB_PROGRAMS.iter().copied().find(|p| p.key() == key) else { return false; };
+        self.enroll_rehab(prisoner_id, program)
+    }
+
+    /// Drop a rehab program by key (UI/control convenience).
+    pub fn drop_rehab_by_key(&mut self, prisoner_id: PrisonerId, key: &str) -> bool {
+        let Some(program) = REHAB_PROGRAMS.iter().copied().find(|p| p.key() == key) else { return false; };
+        self.drop_rehab(prisoner_id, program)
+    }
+
+    /// Remove a prisoner from a rehabilitation program (observer control, 0.05).
+    ///
+    /// Validated: returns `false` when the prisoner does not exist or is not
+    /// enrolled. On success emits a `RehabilitationFailure` event with the
+    /// manual-removal cause.
+    pub fn drop_rehab(&mut self, prisoner_id: PrisonerId, program: RehabProgram) -> bool {
+        let at = self.world.time;
+        let Some(prisoner) = self
+            .world
+            .prisoners
+            .iter_mut()
+            .find(|p| p.id == prisoner_id)
+        else {
+            return false;
+        };
+        if prisoner.skills.remove(program.key()).is_none() {
+            return false;
+        }
+        let name = prisoner.name.clone();
+        if let Some(recs) = self.world.rehab_records.get_mut(&prisoner_id) {
+            if let Some(rec) = recs.iter_mut().rev().find(|r| r.program == program && !r.completed && !r.dropped) {
+                rec.dropped = true;
+            }
+        }
+        let event = WorldEvent::new(
+            0,
+            at,
+            EventKind::RehabilitationFailure,
+            format!("{name} removed from {program:?} (observer control)"),
+        )
+        .with_actor(prisoner_id.raw())
+        .with_cause("manual removal by observer");
+        self.emit_event(event);
+        true
+    }
+
+    /// Mark a structured sidecar incident resolved (observer control, 0.05).
+    ///
+    /// Validated: returns `false` for an unknown id or an already-resolved
+    /// incident. Resolution persists with the sidecar incident and emits an
+    /// `Investigation` event for the audit trail.
+    pub fn resolve_incident(&mut self, incident_id: u64) -> bool {
+        let at = self.world.time;
+        let Some(incident) = self
+            .engine_state
+            .incident_sidecar
+            .iter_mut()
+            .find(|inc| inc.id == incident_id)
+        else {
+            return false;
+        };
+        if incident.resolved {
+            return false;
+        }
+        incident.resolved = true;
+        let kind = incident.kind;
+        let event = WorldEvent::new(
+            0,
+            at,
+            EventKind::Investigation,
+            format!("Incident {incident_id} ({kind:?}) marked resolved"),
+        )
+        .with_cause("incident resolution by observer");
+        self.emit_event(event);
+        true
+    }
+
+    /// Record a post-release outcome (observer/engine control, 0.05).
+    ///
+    /// Stores the reintegration result in the engine ledger (persisted) and
+    /// emits a `PostRelease` event carrying the recidivism risk and whether a
+    /// reintegration plan existed, so [`Sim::post_release_records`] can report
+    /// both. Returns `true` once recorded.
+    pub fn record_post_release(
+        &mut self,
+        prisoner_id: PrisonerId,
+        release_type: &str,
+        recidivism_risk: f32,
+        has_reintegration_plan: bool,
+    ) -> bool {
+        let at = self.world.time;
+        let risk = recidivism_risk.clamp(0.0, 1.0);
+        let success = has_reintegration_plan && risk < 0.5;
+        self.engine_state.post_release.insert(prisoner_id, success);
+        let event = WorldEvent::new(
+            0,
+            at,
+            EventKind::PostRelease,
+            format!(
+                "Post-release: prisoner {} ({release_type}) risk {risk:.2}{}",
+                prisoner_id.raw(),
+                if has_reintegration_plan {
+                    ", plan in place"
+                } else {
+                    ", no plan"
+                }
+            ),
+        )
+        .with_actor(prisoner_id.raw())
+        .with_cause(format!("recidivism risk {risk:.2}"))
+        .with_cause(format!(
+            "reintegration plan {}",
+            if has_reintegration_plan { "yes" } else { "no" }
+        ));
+        self.emit_event(event);
+        true
+    }
+
     /// Compute the average population since a given time.
     fn avg_population_since(&self, at: SimTime) -> f64 {
         let pts: Vec<&(SimTime, u32)> = self.population_history().iter().filter(|(t, _)| *t >= at).collect();
@@ -899,13 +1728,14 @@ impl Sim {
 
     /// Load a saved world with full EngineState restoration.
     pub fn load(dir: impl AsRef<Path>) -> Result<Sim, SaveError> {
-        let manager = SaveManager::new(dir);
+        let dir = dir.as_ref().to_path_buf();
+        let manager = SaveManager::new(&dir);
         let (world, engine_state) = manager.load_with_engine()?;
-        
+
         Ok(Sim {
             world,
             speed: TimeSpeed::Paused,
-            engine_state: engine_state.map(EngineState::from_persistence).unwrap_or_default(),
+            engine_state: engine_state.map(|es| EngineState::from_persistence(es, &dir)).unwrap_or_default(),
         })
     }
 
@@ -1028,6 +1858,15 @@ impl Sim {
         incidents::incidents_since(&self.engine_state.incident_sidecar, at)
     }
 
+    /// Structured incident records for observer UI (0.05).
+    pub fn incident_records(&self) -> Vec<IncidentRecord> {
+        self.engine_state
+            .incident_sidecar
+            .iter()
+            .map(IncidentRecord::from)
+            .collect()
+    }
+
     /// Record a delivered decision in the audit log (R2: decision audit log).
     ///
     /// Persists every decision delivered to the engine for later review
@@ -1125,6 +1964,77 @@ impl Sim {
                 format!("Lockdown {} to {:?}", if lockdown { "enabled" } else { "disabled" }, self.engine_state.policy_state.policy),
             ));
         }
+    }
+
+    /// Observer-facing policy summary for control panels.
+    pub fn policy_summary(&self) -> PolicySummary {
+        PolicySummary {
+            policy: self.engine_state.policy_state.policy,
+            lockdown: self.world.policies.lockdown,
+            security_level: self.world.policies.security_level,
+            privileges_level: self.world.policies.privileges_level,
+            rehab_funding_multiplier: self.world.policies.rehab_funding_multiplier,
+            intake_paused: self.world.policies.lockdown || self.world.policies.security_level >= 0.9 || self.world.policies.intake_paused,
+        }
+    }
+
+    /// Set fine-grained security level (0.0-1.0) with validation and event feedback.
+    pub fn set_security_level(&mut self, level: f32) {
+        let level = level.clamp(0.0, 1.0);
+        let old = self.world.policies.security_level;
+        if (old - level).abs() < f32::EPSILON { return; }
+        self.world.policies.security_level = level;
+        self.sync_policy_band_from_world();
+        self.engine_state.policy_state.last_changed = self.world.time;
+        self.emit_event(WorldEvent::new(0, self.world.time, EventKind::PolicyChange,
+            format!("Security level {:.0}% -> {:.0}%", old * 100.0, level * 100.0)));
+    }
+
+    /// Set privileges level (0.0-1.0) with validation and event feedback.
+    pub fn set_privileges_level(&mut self, level: f32) {
+        let level = level.clamp(0.0, 1.0);
+        let old = self.world.policies.privileges_level;
+        if (old - level).abs() < f32::EPSILON { return; }
+        self.world.policies.privileges_level = level;
+        self.engine_state.policy_state.last_changed = self.world.time;
+        self.emit_event(WorldEvent::new(0, self.world.time, EventKind::PolicyChange,
+            format!("Privileges {:.0}% -> {:.0}%", old * 100.0, level * 100.0)));
+    }
+
+    /// Set rehabilitation funding multiplier (0.0-2.0) with validation and event feedback.
+    pub fn set_rehab_funding(&mut self, multiplier: f32) {
+        let multiplier = multiplier.clamp(0.0, 2.0);
+        let old = self.world.policies.rehab_funding_multiplier;
+        if (old - multiplier).abs() < f32::EPSILON { return; }
+        self.world.policies.rehab_funding_multiplier = multiplier;
+        self.engine_state.policy_state.last_changed = self.world.time;
+        self.emit_event(WorldEvent::new(0, self.world.time, EventKind::PolicyChange,
+            format!("Rehab funding {:.2}x -> {:.2}x", old, multiplier)));
+    }
+
+    /// Manually pause or resume intake (0.05 policy control).
+    pub fn set_intake_paused(&mut self, paused: bool) {
+        if self.world.policies.intake_paused == paused { return; }
+        self.world.policies.intake_paused = paused;
+        self.engine_state.policy_state.last_changed = self.world.time;
+        self.emit_event(WorldEvent::new(0, self.world.time, EventKind::PolicyChange,
+            format!("Intake {}", if paused { "paused" } else { "resumed" })));
+    }
+
+    /// Sync policy band/engine security from world security while preserving fine-grained value.
+    fn sync_policy_band_from_world(&mut self) {
+        let wsec = self.world.policies.security_level;
+        let lockdown = self.world.policies.lockdown;
+        let (policy, base_engine) = if wsec >= 0.9 || lockdown {
+            (Policy::Lockdown, 5_u32)
+        } else if wsec >= 0.7 {
+            (Policy::Enhanced, 3_u32)
+        } else {
+            (Policy::Normal, 1_u32)
+        };
+        self.engine_state.policy_state.policy = policy;
+        self.engine_state.policy_state.lockdown = lockdown;
+        self.engine_state.policy_state.security_level = base_engine;
     }
 
     /// Human-readable summary (parity with the `alcagent` binary).
@@ -1232,15 +2142,25 @@ impl Sim {
     /// Apply a WardenAction with the engine-side applier.
     pub fn apply_warden_action(&mut self, action: WardenAction) {
         let at = self.world.time;
+        let summary = format!("{:?}", action);
         let events = drivers::apply_warden_action(&mut self.world, at, action.clone());
         self.emit_events(events);
         // The driver mutates `world.policies` directly (it only has &mut World),
         // so reconcile the engine-side policy mirror afterwards (R6: drift
         // between the two is an invariant violation).
         self.sync_policy_from_world();
-        if let WardenAction::AdjustParoleRecommendation { prisoner, lean } = action {
-            self.engine_state.parole.set_adjustment(PrisonerId(prisoner), lean);
+        if let WardenAction::AdjustParoleRecommendation { prisoner, lean } = &action {
+            self.engine_state.parole.set_adjustment(PrisonerId(*prisoner), *lean);
         }
+        self.record_decision_audit(DecisionAuditRecord {
+            time: at,
+            actor: "warden".to_string(),
+            source: format!("{:?}", self.engine_state.policy_mode),
+            action: "WardenAction".to_string(),
+            summary,
+            validation: "accepted".to_string(),
+            reason: "applied by engine".to_string(),
+        });
     }
 
     /// Reconcile `engine_state.policy_state` with the authoritative
@@ -1629,6 +2549,391 @@ pub struct FacilitySummary {
     pub staff_required: u32,
 }
 
+/// Summary of a construction project for the UI (0.05).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConstructionSummary {
+    /// Project id.
+    pub id: u64,
+    /// Facility kind.
+    pub kind: alc_world::FacilityKind,
+    /// Wing.
+    pub wing: u32,
+    /// Capacity on completion.
+    pub capacity: u32,
+    /// Total build days.
+    pub total_days: u32,
+    /// Progress days.
+    pub progress_days: u32,
+    /// Cost.
+    pub cost: f32,
+    /// Start day.
+    pub started_day: u64,
+}
+
+/// Post-release outcome row for the observer UI (0.05).
+///
+/// Built from the persisted `EngineState::post_release` ledger, enriched with
+/// release events that are still on the bounded world event bus.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PostReleaseSummary {
+    /// Released prisoner.
+    pub prisoner_id: PrisonerId,
+    /// Name when the prisoner is still known to the world (released prisoners
+    /// are removed from the roster, so this is usually `None`).
+    pub prisoner_name: Option<String>,
+    /// `post_release`, `release`, `parole`, `escape`, `transfer`, or `unknown`.
+    pub release_type: String,
+    /// Release time when the matching event is still retained.
+    pub released_at: Option<SimTime>,
+    /// Whether reintegration was recorded as successful.
+    pub successful_reintegration: bool,
+    /// Recidivism risk 0..1 parsed from the release event, when present.
+    pub recidivism_risk: Option<f32>,
+    /// Whether a reintegration plan existed, when the release event recorded it.
+    pub has_reintegration_plan: Option<bool>,
+    /// Whether the institution still needs to follow up (i.e. not successful).
+    pub follow_up_required: bool,
+}
+
+/// Rehab enrollment row for the observer UI (0.05).
+///
+/// Derived from `rehab_*` skill keys on the prisoner, which is where
+/// `alc-social::rehab` stores enrollment and 0..1 program progress.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RehabEnrollmentSummary {
+    /// Enrolled prisoner.
+    pub prisoner_id: PrisonerId,
+    /// Prisoner display name.
+    pub prisoner_name: String,
+    /// Program display name (`Education`, `Vocational`, ...).
+    pub program: String,
+    /// Stable program key (`rehab_education`, ...).
+    pub program_key: String,
+    /// Progress 0..1.
+    pub progress: f32,
+    /// Whether the program counts as an education/vocational track.
+    pub education_track: bool,
+    /// Whether the prisoner is currently under disciplinary status.
+    pub disciplinary: bool,
+}
+
+/// Static rehabilitation program catalog entry (0.05).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RehabProgramInfo {
+    /// Program display name.
+    pub name: String,
+    /// Stable program key.
+    pub key: String,
+    /// Difficulty 0..1 (higher = slower progress, harder enrollment).
+    pub difficulty: f32,
+}
+
+/// Per-program rehabilitation rollup (0.05).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RehabProgramRollup {
+    /// Program display name.
+    pub program: String,
+    /// Stable program key.
+    pub key: String,
+    /// Number of current enrollments.
+    pub enrolled: u32,
+    /// Average progress 0..1 across current enrollments.
+    pub average_progress: f32,
+}
+
+/// Aggregate rehabilitation overview (0.05).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RehabOverview {
+    /// Total current enrollment rows (prisoner × program).
+    pub enrollments: u32,
+    /// Distinct enrolled prisoners.
+    pub enrolled_prisoners: u32,
+    /// Average progress across current enrollments 0..1.
+    pub average_progress: f32,
+    /// Completions seen on the retained event window.
+    pub completions: u32,
+    /// Dropouts/failures seen on the retained event window.
+    pub dropouts: u32,
+    /// Per-program rollups.
+    pub programs: Vec<RehabProgramRollup>,
+}
+
+/// Contraband case derived from the event record (0.05).
+///
+/// TODO(world-state): no persisted contraband case/inventory store exists yet;
+/// remove the event-derived reconstruction once `alc-world` owns one.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ContrabandCaseSummary {
+    /// Case id (the originating world event id).
+    pub case_id: u64,
+    /// Simulation time of the case.
+    pub at: SimTime,
+    /// Item label when detectable (`Weapons`, `Drugs`, `Tools`, `Phones`,
+    /// `Money`), otherwise `None`.
+    pub item: Option<String>,
+    /// Prisoner holding the contraband, when reported.
+    pub holder: Option<PrisonerId>,
+    /// Guard who discovered it, when reported.
+    pub guard: Option<u64>,
+    /// Severity 0..1 (derived from item class, default 0.5).
+    pub severity: f32,
+    /// Original event summary.
+    pub summary: String,
+    /// Original causal notes.
+    pub causes: Vec<String>,
+    /// Always `false` until a real case store can carry disposition state.
+    pub resolved: bool,
+}
+
+/// Contraband inventory rollup by item category (0.05).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ContrabandInventorySummary {
+    /// Item label (`Weapons`, `Drugs`, `Tools`, `Phones`, `Money`, `Unknown`).
+    pub item: String,
+    /// Number of recorded cases for this item.
+    pub cases: u32,
+    /// Distinct holders seen.
+    pub holders: Vec<PrisonerId>,
+    /// Most recent case time.
+    pub last_seen: Option<SimTime>,
+    /// Worst severity seen 0..1.
+    pub max_severity: f32,
+}
+
+/// One resolved schedule block for the observer timeline (0.05).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ScheduleBlockView {
+    /// Template block id.
+    pub block_id: u32,
+    /// Activity label (`Work`, `Yard`, ...).
+    pub activity: String,
+    /// Human-readable block label.
+    pub label: String,
+    /// Start minute-of-day.
+    pub start_minute: u16,
+    /// End minute-of-day.
+    pub end_minute: u16,
+    /// Whether the block was cancelled for this prisoner today.
+    pub cancelled: bool,
+    /// Cancel reason label (`Lockdown`, `StaffShortage`, ...).
+    pub reason: Option<String>,
+    /// Whether attendance is mandatory.
+    pub mandatory: bool,
+    /// Guards/teachers the block requires.
+    pub staff_required: u8,
+    /// Whether this is the block active at the current minute.
+    pub current: bool,
+    /// Attendance outcome.
+    ///
+    /// TODO(world-state): per-block attendance is not persisted, so this is
+    /// `None`; `ScheduleTimeline::attendance_probability` is the deterministic
+    /// compliance probability the world uses.
+    pub attendance: Option<String>,
+}
+
+/// A prisoner's resolved daily schedule timeline (0.05).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ScheduleTimeline {
+    /// Prisoner.
+    pub prisoner_id: PrisonerId,
+    /// Prisoner display name.
+    pub prisoner_name: String,
+    /// Simulation day the timeline was resolved for.
+    pub day: u64,
+    /// Current minute-of-day (0..1439).
+    pub current_minute: u16,
+    /// Activity the world currently has this prisoner in.
+    pub current_activity: Option<String>,
+    /// Whether lockdown drove the resolution.
+    pub lockdown: bool,
+    /// Staff coverage used for the resolution 0..1.
+    pub staff_coverage: f32,
+    /// Deterministic attendance probability for this prisoner 0..1.
+    pub attendance_probability: f32,
+    /// Number of cancelled blocks today.
+    pub cancelled_blocks: u32,
+    /// Resolved blocks in start-time order.
+    pub blocks: Vec<ScheduleBlockView>,
+}
+
+/// One budget account line in a [`BudgetSnapshot`] (0.05).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BudgetLine {
+    /// Account name (from `alc_economy::Account`).
+    pub account: String,
+    /// Inflow in major currency units over the window.
+    pub inflow_major: f64,
+    /// Outflow magnitude in major currency units over the window.
+    pub outflow_major: f64,
+    /// Net (inflow − outflow) in major units.
+    pub net_major: f64,
+    /// Number of ledger entries in the window.
+    pub entries: u32,
+}
+
+/// Budget/finance snapshot for the observer finance view (0.05).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BudgetSnapshot {
+    /// Simulation day.
+    pub day: u64,
+    /// Simulation time.
+    pub at: SimTime,
+    /// Ledger window used, in days.
+    pub window_days: u64,
+    /// Cash on hand in major units.
+    pub cash_major: f64,
+    /// `Economy::health()` 0..1 (cash ÷ one month of trailing expenses).
+    pub health: f32,
+    /// Per-prisoner daily funding in major units.
+    pub funding_per_prisoner_per_day: f64,
+    /// Fixed daily institutional grant in major units.
+    pub base_daily_grant: f64,
+    /// Revenue per day projected from the window.
+    pub projected_daily_revenue: f64,
+    /// Expenses per day projected from the window.
+    pub projected_daily_expense: f64,
+    /// 30-day trailing average daily expense (major units).
+    pub trailing_daily_expense_avg: f64,
+    /// Estimated cash runway in days at the projected expense rate.
+    pub runway_days: f64,
+    /// Current population.
+    pub population: u32,
+    /// Current capacity.
+    pub capacity: u32,
+    /// Crowding threshold.
+    pub crowding_threshold: u32,
+    /// Per-account breakdown.
+    pub lines: Vec<BudgetLine>,
+    /// Human-readable warnings explaining financial pressure.
+    pub warnings: Vec<String>,
+}
+
+/// The five rehabilitation programs supported by `alc-social::rehab`.
+const REHAB_PROGRAMS: [RehabProgram; 5] = [
+    RehabProgram::Education,
+    RehabProgram::Vocational,
+    RehabProgram::Counseling,
+    RehabProgram::AddictionRecovery,
+    RehabProgram::AngerManagement,
+];
+
+/// Release information recovered from the event record.
+struct ReleaseEventInfo {
+    release_type: String,
+    at: SimTime,
+    recidivism_risk: Option<f32>,
+    has_reintegration_plan: Option<bool>,
+}
+
+/// Build the `alc-social` rehab view of a prisoner (same mapping the world uses).
+fn rehab_state_for(prisoner: &alc_prisoner::Prisoner) -> RehabPrisonerState {
+    RehabPrisonerState {
+        disciplinary_status: prisoner.schedule.disciplinary_status,
+        education: prisoner.schedule.education,
+        skills: prisoner.skills.clone(),
+        hope: prisoner.condition.hope,
+        mental_health: prisoner.condition.mental_health,
+        health: prisoner.condition.health,
+        aggression: prisoner.traits.aggression,
+        emotional_stability: prisoner.traits.emotional_stability,
+        impulsiveness: prisoner.traits.impulsiveness,
+        discipline: prisoner.traits.discipline,
+        intelligence: prisoner.traits.intelligence,
+        reputation: prisoner.reputation,
+        fatigue: prisoner.needs.fatigue,
+        purpose_need: prisoner.needs.purpose,
+        stability_need: prisoner.needs.stability,
+        respect_need: prisoner.needs.respect,
+        rehab_motivation: prisoner.rehab_motivation(),
+        desperation: prisoner.needs.desperation(),
+    }
+}
+
+/// Write a processed rehab state back onto the prisoner (world-compatible).
+fn write_back_rehab_state(prisoner: &mut alc_prisoner::Prisoner, state: RehabPrisonerState) {
+    prisoner.skills = state.skills;
+    prisoner.condition.hope = state.hope.clamp(0.0, 1.0);
+    prisoner.condition.mental_health = state.mental_health.clamp(0.0, 1.0);
+    prisoner.condition.health = state.health.clamp(0.0, 1.0);
+    prisoner.traits.aggression = state.aggression.clamp(0.0, 1.0);
+    prisoner.traits.emotional_stability = state.emotional_stability.clamp(0.0, 1.0);
+    prisoner.traits.impulsiveness = state.impulsiveness.clamp(0.0, 1.0);
+    prisoner.reputation = state.reputation.clamp(0.0, 1.0);
+    prisoner.needs.purpose = state.purpose_need.clamp(0.0, 1.0);
+    prisoner.needs.stability = state.stability_need.clamp(0.0, 1.0);
+    prisoner.needs.respect = state.respect_need.clamp(0.0, 1.0);
+    if state.education {
+        prisoner.schedule.education = true;
+    }
+}
+
+/// Parse a `f32` immediately following `marker` in any of the text fragments.
+fn parse_f32_after(fragments: &[String], marker: &str) -> Option<f32> {
+    for fragment in fragments {
+        let lower = fragment.to_lowercase();
+        let Some(idx) = lower.find(marker) else {
+            continue;
+        };
+        let rest = &fragment[idx + marker.len()..];
+        let token: String = rest
+            .trim_start()
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
+            .collect();
+        if let Ok(value) = token.parse::<f32>() {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// Detect an explicit reintegration-plan flag in causal notes.
+fn parse_plan_flag(fragments: &[String]) -> Option<bool> {
+    for fragment in fragments {
+        let lower = fragment.to_lowercase();
+        if lower.contains("plan yes") {
+            return Some(true);
+        }
+        if lower.contains("plan no") {
+            return Some(false);
+        }
+    }
+    None
+}
+
+/// Detect a contraband item label inside a free-form event summary.
+fn detect_contraband_item(summary: &str) -> Option<String> {
+    const ITEMS: [&str; 5] = ["Weapons", "Drugs", "Tools", "Phones", "Money"];
+    ITEMS
+        .iter()
+        .find(|label| summary.contains(*label))
+        .map(|label| (*label).to_string())
+}
+
+/// Severity by contraband item label (matches `alc-social::contraband`).
+fn contraband_severity_for_label(label: &str) -> f32 {
+    match label {
+        "Weapons" => 0.95,
+        "Drugs" => 0.75,
+        "Tools" => 0.7,
+        "Phones" => 0.55,
+        "Money" => 0.35,
+        _ => 0.5,
+    }
+}
+
+/// Parse a guard id out of a `discovery by guard N` style cause.
+fn parse_guard_cause(cause: &str) -> Option<u64> {
+    let lower = cause.to_lowercase();
+    let idx = lower.find("guard")? + "guard".len();
+    let digits: String = cause[idx..]
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    digits.parse::<u64>().ok()
+}
+
 // Same modules as above, but conditionally compiled.
 // The `gui` feature gate ensures these types only exist when the feature is active.
 //
@@ -1650,3 +2955,86 @@ mod gui;
 /// Re-export GUI types when the `gui` feature is active.
 #[cfg(feature = "gui")]
 pub use gui::{SumoApp, launch_gui};
+
+#[cfg(test)]
+mod dto_tests {
+    use super::*;
+
+    #[test]
+    fn schedule_timeline_returns_resolved_blocks() {
+        let sim = Sim::new(41);
+        let id = sim.world.prisoners[0].id;
+        let timeline = sim.schedule_timeline(id).expect("prisoner exists");
+        assert_eq!(timeline.prisoner_id, id);
+        assert!(!timeline.blocks.is_empty());
+        assert!(timeline.blocks.iter().any(|b| b.activity == "Sleep"));
+        let cancelled = timeline.blocks.iter().filter(|b| b.cancelled).count() as u32;
+        assert_eq!(timeline.cancelled_blocks, cancelled);
+    }
+
+    #[test]
+    fn budget_snapshot_matches_economy_cash() {
+        let sim = Sim::new(42);
+        let snapshot = sim.budget_snapshot();
+        assert!((snapshot.cash_major - sim.world.economy.cash.as_major()).abs() < f64::EPSILON);
+        assert!((0.0..=1.0).contains(&snapshot.health));
+        assert_eq!(snapshot.population, sim.world.population());
+        assert_eq!(snapshot.window_days, 30);
+    }
+
+    #[test]
+    fn rehab_controls_are_validated() {
+        let mut sim = Sim::new(43);
+        let id = sim.world.prisoners[0].id;
+        // Dropping when not enrolled must be a validating no-op.
+        assert!(!sim.drop_rehab(id, RehabProgram::Education));
+        // Enrolling is willingness-gated; if it succeeds, dropping must work once.
+        if sim.enroll_rehab(id, RehabProgram::Education) {
+            assert!(sim.rehab_summaries().iter().any(|r| r.prisoner_id == id));
+            assert!(sim.drop_rehab(id, RehabProgram::Education));
+            assert!(!sim.drop_rehab(id, RehabProgram::Education));
+        }
+        // Unknown prisoner is always rejected.
+        assert!(!sim.enroll_rehab(PrisonerId(99_999), RehabProgram::Counseling));
+    }
+
+    #[test]
+    fn incident_filter_end_to_end() {
+        let mut sim = Sim::new(44);
+        let id = sim.world.prisoners[0].id;
+        sim.record_sidecar_incident(
+            incidents::Incident::new(
+                EventKind::Fight,
+                sim.world.time,
+                "Yard A".to_string(),
+                vec![id],
+            )
+            .severity(0.9),
+        );
+        let filter = incidents::IncidentFilter::all()
+            .with_kinds(vec![EventKind::Fight])
+            .with_prisoner(id)
+            .with_min_severity(0.5);
+        let hits = sim.incident_records_filtered(&filter);
+        assert_eq!(hits.len(), 1);
+        assert!(!hits[0].resolved);
+        let incident_id = hits[0].id;
+        assert!(sim.resolve_incident(incident_id));
+        assert!(!sim.resolve_incident(incident_id));
+        assert!(sim.incidents_filtered(&filter)[0].resolved);
+    }
+
+    #[test]
+    fn post_release_record_roundtrip() {
+        let mut sim = Sim::new(45);
+        let id = sim.world.prisoners[0].id;
+        assert!(sim.record_post_release(id, "parole", 0.2, true));
+        let rows = sim.post_release_records();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].release_type, "post_release");
+        assert!(rows[0].successful_reintegration);
+        assert_eq!(rows[0].recidivism_risk, Some(0.2));
+        assert_eq!(rows[0].has_reintegration_plan, Some(true));
+        assert!(!rows[0].follow_up_required);
+    }
+}

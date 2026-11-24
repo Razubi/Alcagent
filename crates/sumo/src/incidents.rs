@@ -101,6 +101,122 @@ pub fn incidents_since(incidents: &[Incident], at: SimTime) -> Vec<Incident> {
     incidents.iter().filter(|e| e.timestamp >= at).cloned().collect()
 }
 
+/// Declarative filter for the observer Incident Reports view (0.05).
+///
+/// Every field is optional: an all-`None`/all-empty filter matches every
+/// incident. The filter is applied by [`filter_incidents`] and through
+/// `Sim::incident_records_filtered` / `Sim::incidents_filtered`, so the UI
+/// never has to re-implement incident query semantics.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct IncidentFilter {
+    /// Only incidents at or after this time.
+    pub since: Option<SimTime>,
+    /// Only incidents strictly before this time.
+    pub until: Option<SimTime>,
+    /// Only these kinds (empty = any kind).
+    pub kinds: Vec<EventKind>,
+    /// Minimum severity (inclusive), 0.0..1.0.
+    pub min_severity: Option<f32>,
+    /// Only incidents involving this prisoner.
+    pub prisoner: Option<PrisonerId>,
+    /// Case-insensitive substring match on the location field.
+    pub location_contains: Option<String>,
+    /// Only incidents with `resolved == resolved_wanted`.
+    ///
+    /// `None` accepts both resolved and unresolved incidents.
+    pub resolved: Option<bool>,
+    /// Keep only the most recent `limit` matches (applied after filtering).
+    pub limit: Option<usize>,
+}
+
+impl IncidentFilter {
+    /// A filter that matches every incident.
+    pub fn all() -> Self {
+        Self::default()
+    }
+
+    /// Builder helper: restrict to a set of event kinds.
+    pub fn with_kinds(mut self, kinds: Vec<EventKind>) -> Self {
+        self.kinds = kinds;
+        self
+    }
+
+    /// Builder helper: restrict to a minimum severity.
+    pub fn with_min_severity(mut self, min: f32) -> Self {
+        self.min_severity = Some(min.clamp(0.0, 1.0));
+        self
+    }
+
+    /// Builder helper: restrict to incidents involving one prisoner.
+    pub fn with_prisoner(mut self, prisoner: PrisonerId) -> Self {
+        self.prisoner = Some(prisoner);
+        self
+    }
+
+    /// Builder helper: restrict to the last `n` matches.
+    pub fn with_limit(mut self, n: usize) -> Self {
+        self.limit = Some(n);
+        self
+    }
+
+    /// Whether `incident` satisfies this filter.
+    pub fn matches(&self, incident: &Incident) -> bool {
+        if let Some(since) = self.since {
+            if incident.timestamp < since {
+                return false;
+            }
+        }
+        if let Some(until) = self.until {
+            if incident.timestamp >= until {
+                return false;
+            }
+        }
+        if !self.kinds.is_empty() && !self.kinds.contains(&incident.kind) {
+            return false;
+        }
+        if let Some(min) = self.min_severity {
+            if incident.severity < min {
+                return false;
+            }
+        }
+        if let Some(prisoner) = self.prisoner {
+            if !incident.involved_prisoners.contains(&prisoner) {
+                return false;
+            }
+        }
+        if let Some(needle) = &self.location_contains {
+            let needle = needle.to_lowercase();
+            if !incident.location.to_lowercase().contains(&needle) {
+                return false;
+            }
+        }
+        if let Some(want) = self.resolved {
+            if incident.resolved != want {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// Apply an [`IncidentFilter`] to a slice of incidents.
+///
+/// Results keep their original (chronological) order; `limit` keeps the most
+/// recent matches, which is what the observer timeline wants.
+pub fn filter_incidents(incidents: &[Incident], filter: &IncidentFilter) -> Vec<Incident> {
+    let mut out: Vec<Incident> = incidents
+        .iter()
+        .filter(|inc| filter.matches(inc))
+        .cloned()
+        .collect();
+    if let Some(limit) = filter.limit {
+        if out.len() > limit {
+            out.drain(..out.len() - limit);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,5 +291,85 @@ mod tests {
         let results = incidents_since(&[inc1, inc2], SimTime { secs: 100 });
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, 2);
+    }
+
+    fn fixture() -> Vec<Incident> {
+        vec![
+            Incident {
+                id: 1,
+                kind: EventKind::Argument,
+                cause: None,
+                consequence: None,
+                timestamp: SimTime { secs: 50 },
+                location: "Yard A".to_string(),
+                involved_prisoners: vec![PrisonerId(1)],
+                severity: 0.3,
+                resolved: false,
+            },
+            Incident {
+                id: 2,
+                kind: EventKind::Fight,
+                cause: Some(1),
+                consequence: None,
+                timestamp: SimTime { secs: 150 },
+                location: "Cell Block B".to_string(),
+                involved_prisoners: vec![PrisonerId(1), PrisonerId(2)],
+                severity: 0.8,
+                resolved: true,
+            },
+            Incident {
+                id: 3,
+                kind: EventKind::Theft,
+                cause: None,
+                consequence: None,
+                timestamp: SimTime { secs: 250 },
+                location: "Yard A".to_string(),
+                involved_prisoners: vec![PrisonerId(2)],
+                severity: 0.5,
+                resolved: false,
+            },
+        ]
+    }
+
+    #[test]
+    fn filter_by_kind_and_severity() {
+        let all = fixture();
+        let filter = IncidentFilter::all()
+            .with_kinds(vec![EventKind::Fight, EventKind::Theft])
+            .with_min_severity(0.6);
+        let hits = filter_incidents(&all, &filter);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, 2);
+    }
+
+    #[test]
+    fn filter_by_prisoner_and_unresolved() {
+        let all = fixture();
+        let filter = IncidentFilter {
+            prisoner: Some(PrisonerId(2)),
+            resolved: Some(false),
+            ..IncidentFilter::all()
+        };
+        let hits = filter_incidents(&all, &filter);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, 3);
+    }
+
+    #[test]
+    fn filter_time_window_location_and_limit() {
+        let all = fixture();
+        let filter = IncidentFilter {
+            since: Some(SimTime { secs: 100 }),
+            location_contains: Some("yard a".to_string()),
+            ..IncidentFilter::all()
+        };
+        let hits = filter_incidents(&all, &filter);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, 3);
+
+        let limited = filter_incidents(&all, &IncidentFilter::all().with_limit(2));
+        assert_eq!(limited.len(), 2);
+        assert_eq!(limited[0].id, 2);
+        assert_eq!(limited[1].id, 3);
     }
 }

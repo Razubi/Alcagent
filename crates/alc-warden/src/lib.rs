@@ -73,6 +73,182 @@ pub enum WardenAction {
     NoAction { rationale: String },
 }
 
+impl WardenAction {
+    /// Short UI label for the action.
+    pub fn label(&self) -> &'static str {
+        match self {
+            WardenAction::Expand { .. } => "Expand facility",
+            WardenAction::HireGuards { .. } => "Hire guards",
+            WardenAction::FireGuards { .. } => "Fire guards",
+            WardenAction::PromoteStaff { .. } => "Promote staff",
+            WardenAction::ChangePolicy { .. } => "Change policy",
+            WardenAction::IncreaseSecurity => "Increase security",
+            WardenAction::ReduceExpenses => "Reduce expenses",
+            WardenAction::ImproveInfrastructure { .. } => "Improve infrastructure",
+            WardenAction::RespondToDisturbance { .. } => "Respond to disturbance",
+            WardenAction::NegotiateWithRepresentatives => "Negotiate with representatives",
+            WardenAction::InvestigateMisconduct { .. } => "Investigate misconduct",
+            WardenAction::AdjustParoleRecommendation { .. } => "Adjust parole recommendation",
+            WardenAction::RequestFunding { .. } => "Request funding",
+            WardenAction::NoAction { .. } => "Hold steady",
+        }
+    }
+
+    /// Default audit reason string for the action (used when no custom reason
+    /// is supplied). Keeps arbitration itself unchanged.
+    pub fn default_reason(&self) -> &'static str {
+        match self {
+            WardenAction::Expand { .. } => {
+                // Callers can format the building name dynamically if needed.
+                "Expand facility to relieve crowding"
+            }
+            WardenAction::HireGuards { .. } => "Increase guard staffing",
+            WardenAction::FireGuards { .. } => "Reduce guard staffing",
+            WardenAction::PromoteStaff { .. } => "Recognize strong staff performance",
+            WardenAction::ChangePolicy { .. } => "Adjust institutional policy",
+            WardenAction::IncreaseSecurity => "Raise security posture after incidents",
+            WardenAction::ReduceExpenses => "Cut spending to protect solvency",
+            WardenAction::ImproveInfrastructure { .. } => "Repair and upgrade facilities",
+            WardenAction::RespondToDisturbance { .. } => "Respond to an active disturbance",
+            WardenAction::NegotiateWithRepresentatives => "Engage prisoner representatives",
+            WardenAction::InvestigateMisconduct { .. } => "Investigate staff or prisoner misconduct",
+            WardenAction::AdjustParoleRecommendation { .. } => "Adjust parole recommendation",
+            WardenAction::RequestFunding { .. } => "Request additional government funding",
+            WardenAction::NoAction { .. } => "Defer decision; no action required",
+        }
+    }
+
+    /// Attention cost in points (see [`AttentionBudget`]). Used by control
+    /// panels to show whether the warden can afford the action.
+    pub fn attention_cost(&self) -> f32 {
+        match self {
+            WardenAction::NoAction { .. } => 0.0,
+            WardenAction::RequestFunding { .. } => AttentionBudget::strategic_cost(),
+            WardenAction::Expand { .. }
+            | WardenAction::HireGuards { .. }
+            | WardenAction::FireGuards { .. } => AttentionBudget::strategic_cost(),
+            _ => AttentionBudget::tactical_cost(),
+        }
+    }
+
+    /// Whether the action is an emergency/security response that bypasses
+    /// normal attention gating in arbitration.
+    pub fn is_emergency(&self) -> bool {
+        matches!(
+            self,
+            WardenAction::IncreaseSecurity
+                | WardenAction::ReduceExpenses
+                | WardenAction::RespondToDisturbance { .. }
+        )
+    }
+}
+
+/// Source of a warden decision, for auditability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DecisionSource {
+    AiArbitration,
+    PlayerDirective,
+    Council,
+    System,
+}
+
+/// One audited warden decision. Recorded by [`Warden::record_decision`];
+/// arbitration itself is unchanged and never writes to the log.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WardenDecisionRecord {
+    pub id: u64,
+    pub time: SimTime,
+    pub warden_id: WardenId,
+    pub warden_name: String,
+    pub action: WardenAction,
+    pub reason: String,
+    pub source: DecisionSource,
+    pub applied: bool,
+}
+
+/// Append-only audit log of warden decisions, bounded to keep memory stable.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WardenAuditLog {
+    pub records: Vec<WardenDecisionRecord>,
+    next_id: u64,
+    #[serde(default = "default_max_audit_records")]
+    max_records: usize,
+}
+
+fn default_max_audit_records() -> usize {
+    10_000
+}
+
+impl WardenAuditLog {
+    pub fn with_capacity(max_records: usize) -> Self {
+        Self {
+            records: Vec::with_capacity(max_records.min(100_000)),
+            next_id: 1,
+            max_records,
+        }
+    }
+
+    pub fn record(&mut self, time: SimTime, warden_id: WardenId, warden_name: impl Into<String>, action: WardenAction, reason: impl Into<String>, source: DecisionSource, applied: bool) -> u64 {
+        let id = self.next_id;
+        self.next_id = self.next_id.saturating_add(1);
+        let record = WardenDecisionRecord {
+            id,
+            time,
+            warden_id,
+            warden_name: warden_name.into(),
+            action,
+            reason: reason.into(),
+            source,
+            applied,
+        };
+        if self.records.len() >= self.max_records {
+            self.records.remove(0);
+        }
+        self.records.push(record);
+        id
+    }
+
+    pub fn len(&self) -> usize {
+        self.records.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+
+    /// Most recent `n` records (newest first).
+    pub fn recent(&self, n: usize) -> Vec<&WardenDecisionRecord> {
+        let start = self.records.len().saturating_sub(n);
+        self.records[start..].iter().rev().collect()
+    }
+
+    /// Records matching a particular action variant.
+    pub fn by_action(&self, action: &WardenAction) -> Vec<&WardenDecisionRecord> {
+        self.records.iter().filter(|r| std::mem::discriminant(&r.action) == std::mem::discriminant(action)).collect()
+    }
+
+    pub fn clear(&mut self) {
+        self.records.clear();
+        self.next_id = 1;
+    }
+}
+
+/// Control-panel snapshot: everything an observer/UI needs to render the
+/// warden control surface without mutating state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WardenControlSummary {
+    pub attention: f32,
+    pub attention_points: f32,
+    pub can_decide_tactical: bool,
+    pub can_decide_strategic: bool,
+    pub concurrent_decisions_remaining_tactical: u32,
+    pub pending_actions: usize,
+    pub recent_decisions: usize,
+    pub security_incidents_this_week: u32,
+    pub last_action_day: u64,
+    pub financial_health: f64,
+}
+
 /// The warden agent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Warden {
@@ -97,6 +273,9 @@ pub struct Warden {
     /// Last simulated day the warden took an action (cooldown tracking).
     #[serde(default)]
     pub last_action_day: u64,
+    /// Auditable decision log (append-only, bounded). New field in 0.05.
+    #[serde(default)]
+    pub audit_log: WardenAuditLog,
 }
 
 impl Warden {
@@ -114,6 +293,7 @@ impl Warden {
             security_incidents_this_week: 0,
             incidents_this_week: 0,
             last_action_day: 0,
+            audit_log: WardenAuditLog::default(),
         }
     }
 
@@ -134,6 +314,57 @@ impl Warden {
     pub fn reset_weekly_incidents(&mut self) {
         self.security_incidents_this_week = 0;
         self.incidents_this_week = 0;
+    }
+
+    /// Record an audited warden decision. Returns the record id. Arbitration
+    /// itself is unchanged: callers (engine/UI) invoke this after applying an
+    /// action so the control panel and decision audit view have a trail.
+    pub fn record_decision(
+        &mut self,
+        time: SimTime,
+        action: WardenAction,
+        reason: impl Into<String>,
+        source: DecisionSource,
+        applied: bool,
+    ) -> u64 {
+        self.audit_log.record(
+            time,
+            self.id,
+            self.name.clone(),
+            action,
+            reason,
+            source,
+            applied,
+        )
+    }
+
+    /// Most recent `n` decision records (newest first).
+    pub fn recent_decisions(&self, n: usize) -> Vec<&WardenDecisionRecord> {
+        self.audit_log.recent(n)
+    }
+
+    /// Borrow the full audit log.
+    pub fn decision_audit_log(&self) -> &WardenAuditLog {
+        &self.audit_log
+    }
+
+    /// Control-panel snapshot for the UI: attention, affordance, pending and
+    /// recent decision counts, incidents, and financial health. Pure read.
+    pub fn control_panel_summary(&self, financial_health: f64) -> WardenControlSummary {
+        let base = AttentionBudget::default();
+        WardenControlSummary {
+            attention: self.attention,
+            attention_points: (self.attention * base.base_refill).clamp(0.0, base.max_points),
+            can_decide_tactical: self.can_decide(AttentionBudget::tactical_cost()),
+            can_decide_strategic: self.can_decide(AttentionBudget::strategic_cost()),
+            concurrent_decisions_remaining_tactical: self
+                .concurrent_decisions_remaining(AttentionBudget::tactical_cost()),
+            pending_actions: self.pending_actions.len(),
+            recent_decisions: self.audit_log.len(),
+            security_incidents_this_week: self.security_incidents_this_week,
+            last_action_day: self.last_action_day,
+            financial_health,
+        }
     }
 
     /// View the warden's 0..1 attention as a point-based attention budget.

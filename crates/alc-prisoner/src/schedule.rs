@@ -13,6 +13,7 @@
 use crate::{Classification, Needs, Prisoner};
 use alc_core::RngStream;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 
 pub type BlockId = u32;
 pub type ScheduleId = u32;
@@ -194,6 +195,34 @@ pub enum CancelReason {
     Weather,
     NotEnrolled,
     MedicalHold,
+}
+
+impl CancelReason {
+    /// Stable, UI-friendly label (snake-ish, matches `as_str` conventions used
+    /// by `AttendanceOutcome`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CancelReason::Classification => "classification",
+            CancelReason::Wing => "wing",
+            CancelReason::Privileges => "privileges",
+            CancelReason::Disciplinary => "disciplinary",
+            CancelReason::StaffShortage => "staff-shortage",
+            CancelReason::Lockdown => "lockdown",
+            CancelReason::Weather => "weather",
+            CancelReason::NotEnrolled => "not-enrolled",
+            CancelReason::MedicalHold => "medical-hold",
+        }
+    }
+
+    /// Whether the cancellation is an *institutional* cause (something the
+    /// warden/player could change) vs. a prisoner-state cause. Handy for
+    /// incident/cause aggregation in the UI.
+    pub fn is_institutional(self) -> bool {
+        matches!(
+            self,
+            CancelReason::StaffShortage | CancelReason::Lockdown | CancelReason::Weather
+        )
+    }
 }
 
 /// A concrete, prisoner-specific window. `cancelled` blocks remain in the
@@ -429,6 +458,23 @@ impl AttendanceOutcome {
                 | AttendanceOutcome::BreakRule
         )
     }
+
+    /// Whether the prisoner physically showed up (compliant or not — a
+    /// refusal happens *at* the block; a skip does not).
+    pub fn was_present(self) -> bool {
+        !matches!(
+            self,
+            AttendanceOutcome::Skip | AttendanceOutcome::SeekMedical
+        )
+    }
+
+    /// Whether the prisoner complied with the attendance policy.
+    pub fn was_compliant(self) -> bool {
+        matches!(
+            self,
+            AttendanceOutcome::Follow | AttendanceOutcome::Late | AttendanceOutcome::Participate
+        )
+    }
 }
 
 /// Local decision context for an attendance roll (design doc §4.4).
@@ -576,6 +622,322 @@ pub fn attendance_roll_with(rng: &mut RngStream, c: &AttendanceContext) -> Atten
     AttendanceOutcome::Follow
 }
 
+// ---------------------------------------------------------------------------
+// Per-prisoner daily timeline (0.05 "full schedule inspector", gap report A)
+// ---------------------------------------------------------------------------
+//
+// World/sumo produce these in one call per prisoner per day; the UI renders
+// resolved blocks, cancellations with causes, and attendance outcomes without
+// re-running schedule resolution or attendance rolls itself.
+
+/// One row of a prisoner's resolved day: the block as scheduled, whether it
+/// ran, why it was cancelled, and (for blocks that ran) how the prisoner
+/// actually attended.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TimelineEntry {
+    pub block_id: BlockId,
+    pub label: String,
+    pub activity: Activity,
+    pub start_minute: u16,
+    pub end_minute: u16,
+    /// Template end *before* partial-staff shortening. Differs from
+    /// `end_minute` only when staff coverage shortened the block.
+    pub planned_end_minute: u16,
+    pub cancelled: bool,
+    /// Cancellation cause (why the block did not run for this prisoner).
+    pub cancel_reason: Option<CancelReason>,
+    /// Attendance roll for blocks that ran; `None` when cancelled or not yet
+    /// rolled (e.g. a timeline snapshot taken before the day's rolls).
+    pub attendance: Option<AttendanceOutcome>,
+    /// Human-readable cause: `"cancelled: lockdown"`, or an auditable summary
+    /// of the attendance roll (compliance probability + main pressures).
+    pub cause: String,
+}
+
+impl TimelineEntry {
+    fn from_resolved(rb: &ResolvedBlock) -> Self {
+        Self {
+            block_id: rb.block.id,
+            label: rb.block.label.clone(),
+            activity: rb.block.activity,
+            start_minute: rb.start_minute,
+            end_minute: rb.end_minute,
+            planned_end_minute: rb.block.end_minute,
+            cancelled: rb.cancelled,
+            cancel_reason: rb.reason,
+            attendance: None,
+            cause: rb
+                .reason
+                .map(|r| format!("cancelled: {}", r.as_str()))
+                .unwrap_or_default(),
+        }
+    }
+
+    pub fn with_attendance(mut self, outcome: AttendanceOutcome) -> Self {
+        self.attendance = Some(outcome);
+        self
+    }
+
+    pub fn with_cause(mut self, cause: impl Into<String>) -> Self {
+        self.cause = cause.into();
+        self
+    }
+
+    /// Did the prisoner physically turn up (compliant or not)?
+    pub fn attended(&self) -> bool {
+        !self.cancelled && self.attendance.is_some_and(|a| a.was_present())
+    }
+
+    /// Did the prisoner comply with the attendance policy?
+    pub fn complied(&self) -> bool {
+        !self.cancelled && self.attendance.is_some_and(|a| a.was_compliant())
+    }
+
+    /// Whether the block ran but was shortened by partial staff coverage.
+    pub fn staff_shortened(&self) -> bool {
+        !self.cancelled && self.end_minute < self.planned_end_minute
+    }
+
+    /// Block length in minutes, handling the midnight wrap (`Sleep`).
+    pub fn span_minutes(&self) -> u16 {
+        if self.end_minute >= self.start_minute {
+            self.end_minute - self.start_minute
+        } else {
+            1440 - self.start_minute + self.end_minute
+        }
+    }
+}
+
+/// A prisoner's whole resolved day: sorted blocks, cancellation causes and
+/// attendance outcomes. Produced by [`ScheduleTimeline::build`] (or the
+/// [`build_timeline`] free function) from the same inputs the world already
+/// has — nothing extra to thread through the tick.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ScheduleTimeline {
+    /// World day this timeline belongs to.
+    pub day: u32,
+    /// Minute-of-day the timeline was produced at (UI "you are here").
+    pub minute_of_day: u16,
+    /// Sorted by `start_minute`.
+    pub entries: Vec<TimelineEntry>,
+}
+
+impl ScheduleTimeline {
+    /// Resolve `template` for `prisoner`, then roll attendance for every block
+    /// that runs. One call = one complete day for the inspector.
+    ///
+    /// `rng` should be seeded per (prisoner, day) by the caller so rolls stay
+    /// deterministic across saves and replay.
+    pub fn build(
+        prisoner: &Prisoner,
+        template: &ScheduleTemplate,
+        policies: &SchedulePolicy,
+        day: u32,
+        minute_of_day: u16,
+        rng: &mut RngStream,
+    ) -> Self {
+        let resolved = resolve_schedule(prisoner, template, policies);
+        Self::from_resolved(prisoner, day, minute_of_day, resolved, rng)
+    }
+
+    /// Build a timeline from an already-resolved schedule (worlds that resolve
+    /// once per tick and want to reuse the result).
+    pub fn from_resolved(
+        prisoner: &Prisoner,
+        day: u32,
+        minute_of_day: u16,
+        resolved: ResolvedSchedule,
+        rng: &mut RngStream,
+    ) -> Self {
+        // Program blocks count as enrolled when the prisoner is actually in a
+        // rehab program (or enrolled in education, as `from_prisoner` assumes).
+        let program_enrolled = prisoner.is_rehab_enrolled() || prisoner.schedule.education;
+
+        let mut entries: Vec<TimelineEntry> = Vec::with_capacity(resolved.len());
+        for rb in &resolved {
+            let mut entry = TimelineEntry::from_resolved(rb);
+            if !rb.cancelled {
+                let mut ctx = AttendanceContext::from_prisoner(prisoner);
+                // Block-specific policy beats the neutral defaults.
+                ctx.refusal_allowed = rb.block.attendance.refusal_allowed;
+                ctx.late_tolerance_minutes = rb.block.attendance.late_tolerance_minutes;
+                ctx.program_enrolled = program_enrolled;
+                let outcome = attendance_roll_with(rng, &ctx);
+                let p = attendance_probability(&ctx);
+                entry = entry
+                    .with_attendance(outcome)
+                    .with_cause(format!(
+                        "attendance {} (p_comply={p:.2}, medical={:.2}, pressure={:.2})",
+                        outcome.as_str(),
+                        ctx.medical_pressure,
+                        ctx.unmet_pressure
+                    ));
+            }
+            entries.push(entry);
+        }
+        entries.sort_by_key(|e| (e.start_minute, e.block_id));
+
+        Self { day, minute_of_day, entries }
+    }
+
+    /// The block the prisoner should be in at `minute` (cancelled blocks are
+    /// skipped; handles the midnight wrap), so the UI can highlight "now".
+    pub fn active_entry(&self, minute: u16) -> Option<&TimelineEntry> {
+        self.entries.iter().find(|e| {
+            if e.cancelled {
+                return false;
+            }
+            if e.start_minute <= e.end_minute {
+                minute >= e.start_minute && minute < e.end_minute
+            } else {
+                minute >= e.start_minute || minute < e.end_minute
+            }
+        })
+    }
+
+    /// First entry for an activity (substitutions included).
+    pub fn entry_for(&self, activity: Activity) -> Option<&TimelineEntry> {
+        self.entries.iter().find(|e| e.activity == activity)
+    }
+
+    /// Blocks that did not run, with their causes.
+    pub fn cancellations(&self) -> impl Iterator<Item = (&TimelineEntry, CancelReason)> {
+        self.entries
+            .iter()
+            .filter_map(|e| e.cancel_reason.map(|r| (e, r)))
+    }
+
+    /// Cancellation causes aggregated by frequency (worst first) — the shape
+    /// incident/overview panels want: `lockdown ×3, staff-shortage ×1`.
+    pub fn cancel_counts(&self) -> Vec<(CancelReason, usize)> {
+        let mut counts: Vec<(CancelReason, usize)> = Vec::new();
+        for (_, reason) in self.cancellations() {
+            match counts.iter_mut().find(|(r, _)| *r == reason) {
+                Some((_, n)) => *n += 1,
+                None => counts.push((reason, 1)),
+            }
+        }
+        counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.as_str().cmp(b.0.as_str())));
+        counts
+    }
+
+    pub fn cancelled_count(&self) -> usize {
+        self.entries.iter().filter(|e| e.cancelled).count()
+    }
+
+    pub fn attended_count(&self) -> usize {
+        self.entries.iter().filter(|e| e.attended()).count()
+    }
+
+    pub fn compliant_count(&self) -> usize {
+        self.entries.iter().filter(|e| e.complied()).count()
+    }
+
+    /// Whether the day ran under lockdown: the Lockdown block itself runs
+    /// while most other blocks were cancelled.
+    pub fn is_lockdown_day(&self) -> bool {
+        let Some(lockdown) = self.entry_for(Activity::Lockdown) else {
+            return false;
+        };
+        if lockdown.cancelled {
+            return false;
+        }
+        let others = self.entries.len().saturating_sub(1);
+        others > 0 && self.cancelled_count() * 2 >= others
+    }
+
+    /// One-line human summary for timelines/logs.
+    pub fn summary(&self) -> String {
+        let cancels = self
+            .cancel_counts()
+            .into_iter()
+            .map(|(r, n)| format!("{} ×{n}", r.as_str()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let cancelled_note = if cancels.is_empty() {
+            "no cancellations".to_string()
+        } else {
+            format!("{} cancelled ({cancels})", self.cancelled_count())
+        };
+        format!(
+            "day {} @{:02}:{:02}: {} blocks, {cancelled_note}, {} attended, {} compliant",
+            self.day,
+            self.minute_of_day / 60,
+            self.minute_of_day % 60,
+            self.entries.len(),
+            self.attended_count(),
+            self.compliant_count(),
+        )
+    }
+}
+
+/// Free-function form so world/sumo can `use alc_prisoner::build_timeline`
+/// alongside `resolve_schedule` without naming the type.
+pub fn build_timeline(
+    prisoner: &Prisoner,
+    template: &ScheduleTemplate,
+    policies: &SchedulePolicy,
+    day: u32,
+    minute_of_day: u16,
+    rng: &mut RngStream,
+) -> ScheduleTimeline {
+    ScheduleTimeline::build(prisoner, template, policies, day, minute_of_day, rng)
+}
+
+fn default_timeline_history_days() -> usize {
+    7
+}
+
+/// Bounded ring of daily timelines for one prisoner: the inspector shows
+/// "today" plus the recent past without growing without bound (Directive §22).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TimelineHistory {
+    /// Oldest first; trimmed to `max_days`.
+    pub days: VecDeque<ScheduleTimeline>,
+    #[serde(default = "default_timeline_history_days")]
+    pub max_days: usize,
+}
+
+impl Default for TimelineHistory {
+    fn default() -> Self {
+        Self {
+            days: VecDeque::new(),
+            max_days: default_timeline_history_days(),
+        }
+    }
+}
+
+impl TimelineHistory {
+    pub fn with_capacity(max_days: usize) -> Self {
+        Self { days: VecDeque::new(), max_days: max_days.max(1) }
+    }
+
+    /// Append (or replace, if the same day is re-recorded) and trim to
+    /// `max_days`. Re-recording the same day is how mid-day attendance updates
+    /// flow through without duplicating rows.
+    pub fn record(&mut self, timeline: ScheduleTimeline) {
+        if self.days.back().map(|d| d.day) == Some(timeline.day) {
+            self.days.pop_back();
+        }
+        self.days.push_back(timeline);
+        while self.days.len() > self.max_days {
+            self.days.pop_front();
+        }
+    }
+
+    pub fn latest(&self) -> Option<&ScheduleTimeline> {
+        self.days.back()
+    }
+
+    pub fn day(&self, day: u32) -> Option<&ScheduleTimeline> {
+        self.days.iter().find(|t| t.day == day)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.days.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -685,5 +1047,138 @@ mod tests {
         }
         assert!(skipped_lo > skipped_hi + 100,
             "discipline had no measurable effect: {skipped_hi} vs {skipped_lo} disciplinary rolls");
+    }
+
+    // -- 0.05 schedule inspector: per-prisoner timeline DTOs ----------------
+
+    #[test]
+    fn timeline_covers_the_resolved_day_with_causes_and_attendance() {
+        let mut p = sample();
+        // Pin a classification where the default template's core blocks run,
+        // so the assertions below are about the timeline, not max-security.
+        p.classification = Classification::Medium;
+        let policy = SchedulePolicy::default();
+        let mut rng = RngStream::new(5, 5);
+        let t = ScheduleTimeline::build(&p, &ScheduleTemplate::default_medium(), &policy, 3, 480, &mut rng);
+
+        assert_eq!(t.day, 3);
+        assert!(t.entries.len() >= ScheduleTemplate::default_medium().blocks.len());
+        // Sorted by start so the UI can render the day in order.
+        assert!(t.entries.windows(2).all(|w| w[0].start_minute <= w[1].start_minute));
+        for e in &t.entries {
+            if e.cancelled {
+                assert!(e.attendance.is_none(), "cancelled block must not roll attendance");
+                assert!(e.cancel_reason.is_some());
+                assert!(e.cause.starts_with("cancelled:"), "missing cause: {}", e.cause);
+            } else {
+                assert!(e.attendance.is_some(), "running block must have an attendance outcome");
+                assert!(e.cause.contains("attendance"), "missing cause: {}", e.cause);
+            }
+        }
+        // "Now" highlighting: 08:00 falls inside the Work block (07:30–11:30).
+        assert_eq!(t.active_entry(480).map(|e| e.activity), Some(Activity::Work));
+        assert!(t.summary().contains("day 3"));
+        assert!(t.compliant_count() <= t.attended_count());
+    }
+
+    #[test]
+    fn lockdown_timeline_records_the_lockdown_cause() {
+        let p = sample();
+        let mut policy = SchedulePolicy::default();
+        policy.lockdown = true;
+        let mut rng = RngStream::new(6, 6);
+        let t = ScheduleTimeline::build(&p, &ScheduleTemplate::default_medium(), &policy, 1, 600, &mut rng);
+
+        assert!(t.is_lockdown_day());
+        let work = t.entry_for(Activity::Work).expect("Work is in the default template");
+        assert_eq!(work.cancel_reason, Some(CancelReason::Lockdown));
+        assert!(work.cause.contains("lockdown"));
+        assert!(work.attendance.is_none());
+        assert!(work.cause.contains(CancelReason::Lockdown.as_str()));
+        let counts = t.cancel_counts();
+        assert!(counts.iter().any(|(r, n)| *r == CancelReason::Lockdown && *n > 0));
+        // Lockdown runs, so the day is not 100% cancelled.
+        assert!(!t.entry_for(Activity::Lockdown).unwrap().cancelled);
+    }
+
+    #[test]
+    fn partial_staff_coverage_shortens_blocks_and_is_visible_in_the_timeline() {
+        let mut p = sample();
+        p.classification = Classification::Medium;
+        let mut policy = SchedulePolicy::default();
+        policy.staff_coverage = 0.75; // enough for Work (0.75) but not Yard (1.0)
+        let mut rng = RngStream::new(7, 7);
+        let t = build_timeline(&p, &ScheduleTemplate::default_medium(), &policy, 2, 500, &mut rng);
+
+        let work = t.entry_for(Activity::Work).unwrap();
+        assert!(work.staff_shortened(), "partial coverage must shorten Work visibly");
+        assert!(work.planned_end_minute > work.end_minute);
+        let yard = t.entry_for(Activity::Yard).unwrap();
+        assert_eq!(yard.cancel_reason, Some(CancelReason::StaffShortage));
+    }
+
+    #[test]
+    fn timeline_history_is_bounded_and_replaces_same_day() {
+        let mut h = TimelineHistory::with_capacity(3);
+        assert!(h.latest().is_none());
+        for day in 0..5 {
+            h.record(ScheduleTimeline { day, ..ScheduleTimeline::default() });
+        }
+        assert_eq!(h.days.len(), 3);
+        assert_eq!(h.latest().map(|t| t.day), Some(4));
+        assert!(h.day(2).is_some());
+        assert!(h.day(0).is_none());
+
+        // Re-recording the same day updates in place (mid-day attendance).
+        h.record(ScheduleTimeline { day: 4, minute_of_day: 600, ..ScheduleTimeline::default() });
+        assert_eq!(h.days.len(), 3);
+        assert_eq!(h.latest().map(|t| t.minute_of_day), Some(600));
+
+        // Serde default keeps old saves at the 7-day default.
+        let json = serde_json::to_string(&TimelineHistory::default()).unwrap();
+        assert!(json.contains("\"max_days\":7"), "{json}");
+    }
+
+    #[test]
+    fn attendance_and_cancel_helpers_classify_outcomes() {
+        assert!(AttendanceOutcome::Follow.was_present() && AttendanceOutcome::Follow.was_compliant());
+        assert!(AttendanceOutcome::Refuse.was_present() && !AttendanceOutcome::Refuse.was_compliant());
+        assert!(!AttendanceOutcome::Skip.was_present());
+        assert!(!AttendanceOutcome::SeekMedical.was_present());
+        assert!(AttendanceOutcome::Participate.was_compliant());
+
+        assert_eq!(CancelReason::StaffShortage.as_str(), "staff-shortage");
+        assert!(CancelReason::Lockdown.is_institutional());
+        assert!(CancelReason::StaffShortage.is_institutional());
+        assert!(!CancelReason::Disciplinary.is_institutional());
+        assert!(!CancelReason::MedicalHold.is_institutional());
+    }
+
+    #[test]
+    fn timeline_entries_report_span_and_wrap_correctly() {
+        let p = sample();
+        let policy = SchedulePolicy::default();
+        let mut rng = RngStream::new(8, 8);
+        let t = ScheduleTimeline::build(&p, &ScheduleTemplate::default_medium(), &policy, 0, 0, &mut rng);
+
+        let sleep = t.entry_for(Activity::Sleep).expect("Sleep is in the default template");
+        assert_eq!(sleep.span_minutes(), 360);
+        let work = t.entry_for(Activity::Work).unwrap();
+        assert_eq!(work.span_minutes(), 240);
+
+        // A block that genuinely crosses midnight reports its full length.
+        let wrapped = TimelineEntry {
+            block_id: 999,
+            label: "night count".into(),
+            activity: Activity::Count,
+            start_minute: 1300,
+            end_minute: 100,
+            planned_end_minute: 100,
+            cancelled: false,
+            cancel_reason: None,
+            attendance: Some(AttendanceOutcome::Follow),
+            cause: String::new(),
+        };
+        assert_eq!(wrapped.span_minutes(), 240);
     }
 }

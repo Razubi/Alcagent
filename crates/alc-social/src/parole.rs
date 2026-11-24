@@ -1,6 +1,7 @@
 //! Parole board review and decisions (Directive §15).
 
 use serde::{Deserialize, Serialize};
+use alc_core::SimTime;
 
 /// Conditions that may be attached to a parole grant.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,6 +46,69 @@ impl ParoleSubject {
     pub fn is_eligible(&self) -> bool {
         self.served_fraction() >= 0.6 && !self.disciplinary_status
     }
+}
+
+/// Outcome of post-release reintegration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PostReleaseOutcome {
+    /// Successfully reintegrated into society.
+    SuccessfulReintegration,
+    /// Re-offended and returned to custody.
+    Recidivism,
+    /// Absconded / failed to comply with conditions.
+    Absconded,
+    /// Transferred to another facility.
+    Transferred,
+    /// Died shortly after release.
+    DeathAfterRelease,
+}
+
+/// Post-release reintegration record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostReleaseRecord {
+    /// Prisoner who was released.
+    pub prisoner_id: u64,
+    /// Release type (parole, escape, transfer, etc.).
+    pub release_type: String,
+    /// Date of release.
+    pub at: SimTime,
+    /// Recidivism risk score (0..1, higher = riskier).
+    pub recidivism_risk: f32,
+    /// Actual outcome observed after release.
+    pub outcome: PostReleaseOutcome,
+    /// Whether the prisoner had a reintegration plan.
+    pub had_reintegration_plan: bool,
+    /// Months until next review or outcome.
+    pub review_months: u32,
+}
+
+/// Compute a deterministic recidivism risk score for a parolee.
+///
+/// Uses prisoner attributes and sentence characteristics to produce a
+/// reproducible 0..1 score. This is a stub/simple model; real implementations
+/// would use risk assessment matrices and psychological evaluation.
+pub fn recidivism_score(subject: &ParoleSubject, behavior: f32, rehab: f32, months_in_custody: u32) -> f32 {
+    let behavior = behavior.clamp(0.0, 1.0);
+    let rehab = rehab.clamp(0.0, 1.0);
+    let served = subject.served_fraction();
+
+    // Base: longer custody + more time served can indicate entrenched patterns
+    let base_risk = 0.2 + (1.0 - served) * 0.2 + (1.0 - behavior) * 0.25;
+
+    // Rehabilitation mitigates risk
+    let rehab_mitigation = rehab * 0.3;
+
+    // Behavior mitigates risk
+    let behavior_mitigation = behavior * 0.35;
+
+    // Aggression from the prisoner record adds risk
+    let aggression_enhancement = subject.aggression * 0.15;
+
+    // Time in custody reduces risk of immediate reoffending
+    let custody_stabilization = (months_in_custody as f32 / 12.0).min(1.0) * 0.1;
+
+    let risk = base_risk - rehab_mitigation - behavior_mitigation + aggression_enhancement - custody_stabilization;
+    risk.clamp(0.0, 1.0)
 }
 
 /// Parole board decision logic.

@@ -1,8 +1,9 @@
 //! Contraband economy and discovery events (Directive §7, §8, §17).
 
-use alc_core::{GuardId, PrisonerId, RngStream};
+use alc_core::{GuardId, PrisonerId, RngStream, SimTime};
 use alc_guard::Guard;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Categories of contraband circulating in the prison.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -44,6 +45,65 @@ pub struct ContrabandPrisonerProfile {
     pub freedom: f32,
     pub safety: f32,
     pub desperation: f32,
+}
+
+/// Severity level of a contraband discovery.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum ContrabandSeverity {
+    Minimal,     // Low-severity item (money, small tools)
+    Moderate,    // Mid-severity (phones, larger tools)
+    Significant, // High-severity (drugs)
+    Critical,    // Very high-severity (weapons)
+}
+
+/// Outcome of a contraband confiscation event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfiscationOutcome {
+    /// The contraband item that was found.
+    pub item: ContrabandItem,
+    /// Severity of the discovery.
+    pub severity: ContrabandSeverity,
+    /// Whether the item was destroyed, returned, or held as evidence.
+    pub disposition: ConfiscationDisposition,
+    /// Disciplinary action taken against the holder.
+    pub disciplinary_action: Option<DisciplinaryAction>,
+}
+
+/// Disposition of confiscated contraband.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConfiscationDisposition {
+    /// Item is held as evidence.
+    Evidence,
+    /// Item is destroyed.
+    Destroyed,
+    /// Item is returned to prisoner (perhaps with penalty).
+    Returned,
+    /// Item is transferred to prison store/privilege system.
+    Seized,
+}
+
+/// Disciplinary action that may result from contraband discovery.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum DisciplinaryAction {
+    Warning,
+    LossOfPrivileges { level: f32, duration_days: u32 },
+    Isolation { duration_days: u32 },
+    Charge, // Formal charge filed
+}
+
+/// Inventory entry tracking contraband possession per prisoner.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContrabandInventory {
+    /// Prisoner ID.
+    pub prisoner_id: PrisonerId,
+    /// Item and quantity tracked.
+    pub items: HashMap<ContrabandItem, u32>,
+    /// Total severity score (weighted by severity).
+    pub severity_total: f32,
+    /// Whether the prisoner is currently flagged for search.
+    pub is_flagged: bool,
+    /// Last search timestamp.
+    pub last_search: SimTime,
 }
 
 /// Generate a simple contraband market snapshot from current prisoners.
@@ -195,6 +255,91 @@ pub fn contraband_discovery(
     }
 
     best.map(|(_, f)| f)
+}
+
+/// Create a contraband case record from a `ContrabandFound` discovery.
+pub fn contraband_case_record(
+    discovered_at: SimTime,
+    guard: GuardId,
+    found: &ContrabandFound,
+) -> ContrabandCaseRecord {
+    let _case_id = found.guard.0; // Use guard ID as base for case ID
+    let summary = format!("Guard {} found {:?} on prisoner {}", guard.0, found.item, found.holder.0);
+    ContrabandCaseRecord {
+        case_id: found.guard.0 ^ found.holder.0, // deterministic XOR-based ID
+        discovered_at,
+        discovering_guard: guard,
+        holder: found.holder,
+        item: found.item,
+        severity: found.severity,
+        disposition: ConfiscationDisposition::Evidence, // default; warden may update
+        disciplinary_action: None, // default; may be assigned later
+        summary,
+    }
+}
+
+/// Confiscate discovered contraband from a prisoner.
+///
+/// Returns the confiscation outcome with disposition and any disciplinary action.
+pub fn confiscate_contraband(
+    item: ContrabandItem,
+    severity: f32,
+) -> ConfiscationOutcome {
+    let severity_level = match item {
+        ContrabandItem::Weapons => ContrabandSeverity::Critical,
+        ContrabandItem::Drugs => ContrabandSeverity::Significant,
+        ContrabandItem::Phones => ContrabandSeverity::Moderate,
+        ContrabandItem::Tools => ContrabandSeverity::Moderate,
+        ContrabandItem::Money => ContrabandSeverity::Minimal,
+    };
+
+    let disposition = match severity {
+        // High severity almost always results in seizure/evidence
+        s if s >= 0.8 => ConfiscationDisposition::Evidence,
+        // Moderate may be returned with penalty
+        s if s >= 0.5 => ConfiscationDisposition::Returned,
+        // Low severity may be returned or seized
+        _ => ConfiscationDisposition::Seized,
+    };
+
+    let disciplinary = if severity >= 0.7 {
+        Some(DisciplinaryAction::LossOfPrivileges {
+            level: severity * 0.8,
+            duration_days: (severity * 30.0).max(1.0) as u32,
+        })
+    } else {
+        None
+    };
+
+    ConfiscationOutcome {
+        item,
+        severity: severity_level,
+        disposition,
+        disciplinary_action: disciplinary,
+    }
+}
+
+/// A contraband case record for UI display and audit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContrabandCaseRecord {
+    /// Unique case ID.
+    pub case_id: u64,
+    /// When the contraband was discovered.
+    pub discovered_at: SimTime,
+    /// Which guard discovered it.
+    pub discovering_guard: GuardId,
+    /// Which prisoner held the contraband.
+    pub holder: PrisonerId,
+    /// The contraband item.
+    pub item: ContrabandItem,
+    /// Severity of the discovery (0..1).
+    pub severity: f32,
+    /// What happened to the item.
+    pub disposition: ConfiscationDisposition,
+    /// Any disciplinary action taken.
+    pub disciplinary_action: Option<DisciplinaryAction>,
+    /// Summary description for UI.
+    pub summary: String,
 }
 
 #[cfg(test)]

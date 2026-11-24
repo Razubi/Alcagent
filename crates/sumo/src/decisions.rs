@@ -702,12 +702,37 @@ pub fn deliver(sim: &mut Sim, id: PrisonerId, decision: Decision) -> DecisionOut
         applied: false,
     };
     if !ok {
-        // Rejected proposals are not recorded in the audit log (see docs above).
+        let reason = match &result {
+            ValidationResult::Rejected { reason, .. } => reason.clone(),
+            _ => "validation failed".to_string(),
+        };
+        sim.record_decision_audit(crate::DecisionAuditRecord {
+            time: sim.world.time,
+            actor: format!("prisoner:{}", id.raw()),
+            source: "agent".to_string(),
+            action: decision.action_name().to_string(),
+            summary: format!("{:?}", decision),
+            validation: "rejected".to_string(),
+            reason,
+        });
         return outcome;
     }
     let events = apply(&mut sim.world, id, &result);
-    // Audit the applied decision before emitting/mirroring its consequences.
+    let validation = match &result {
+        ValidationResult::Repaired(_) => "repaired".to_string(),
+        ValidationResult::Accepted(_) => "accepted".to_string(),
+        ValidationResult::Rejected { reason } => format!("rejected: {reason}"),
+    };
     sim.record_decision(decision.clone());
+    sim.record_decision_audit(crate::DecisionAuditRecord {
+        time: sim.world.time,
+        actor: format!("prisoner:{}", id.raw()),
+        source: "agent".to_string(),
+        action: decision.action_name().to_string(),
+        summary: format!("{:?}", decision),
+        validation,
+        reason: "applied by engine".to_string(),
+    });
     sim.emit_events(events.clone());
     mirror_conflict_incidents(sim, &events);
     DecisionOutcome { agent: id, decision, result, applied: true }

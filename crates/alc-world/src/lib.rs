@@ -7,13 +7,13 @@
 //! deterministic fallback always keeps the simulation moving (Directive §19).
 
 use alc_core::{FacilityId, GuardId, PrisonerId, RngStream, SimTime, TimeSpeed, WardenId};
-use alc_events::{EventBus, WorldEvent, EventKind};
+use alc_events::{EventBus, WorldEvent, EventKind, RehabFailureReason};
 use alc_economy::Economy;
 use alc_warden::{Warden, WardenAction};
 use alc_guard::{Guard, GuardRank, PostType};
 use alc_social::{
     Gang, PrisonerGangProfile, SocialGraph, RelationshipDelta, EscapeOutcome,
-    apply_escape_consequences, maybe_form_gang, resolve_escape_attempt,
+    ContrabandItem, apply_escape_consequences, maybe_form_gang, resolve_escape_attempt,
 };
 use alc_prisoner::{
     Activity, DriftActivity, GoalKind, NeedDriftContext, NeedTag, Prisoner, SchedulePolicy,
@@ -69,6 +69,87 @@ impl FacilityKind {
     }
 }
 
+/// A queued construction project (0.05 lifecycle).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConstructionProject {
+    /// Project id.
+    pub id: u64,
+    /// Facility kind to build.
+    pub kind: FacilityKind,
+    /// Target wing.
+    pub wing: u32,
+    /// Capacity when complete.
+    pub capacity: u32,
+    /// Total build days required.
+    pub total_days: u32,
+    /// Days of progress completed.
+    pub progress_days: u32,
+    /// Total cost.
+    pub cost: f32,
+    /// Day enqueued.
+    pub started_day: u64,
+}
+
+/// Basic sentence info attached to a post-release record.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PostReleaseSentenceInfo {
+    pub sentence_days: u32,
+    pub sentence_served_days: u32,
+    pub classification: alc_prisoner::Classification,
+    pub escape_motivation_at_exit: f32,
+}
+
+/// Record of a prisoner who left the institution via parole, escape, death
+/// or transfer (0.05 post-release lifecycle, Directive §15/§16).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PostReleaseRecord {
+    pub id: u64,
+    pub prisoner_id: u64,
+    pub name: String,
+    /// Why they left: "parole" | "escape" | "death" | "transfer".
+    pub reason: String,
+    /// Simulation day (`World::days_simulated`) of departure.
+    pub day: u64,
+    pub sentence_info: PostReleaseSentenceInfo,
+    /// Deterministic basic-outcome seed for future reintegration modeling.
+    pub outcome_seed: u64,
+}
+
+/// Per-prisoner contraband inventory + flags (0.05 lifecycle; world-owned
+/// because `Prisoner` is in the immutable-to-us `alc-prisoner` crate).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PrisonerContrabandState {
+    /// Items held by the prisoner (item kind -> count).
+    #[serde(default)]
+    pub inventory: std::collections::HashMap<ContrabandItem, u32>,
+    /// True when guards have flagged this prisoner for contraband possession.
+    #[serde(default)]
+    pub flags_confiscated: bool,
+    /// Consecutive flagged days while the flag stays set.
+    #[serde(default)]
+    pub flagged_days: u32,
+    /// Times contraband has been discovered on the prisoner.
+    #[serde(default)]
+    pub discovered_count: u32,
+}
+
+/// Explicit rehabilitation program enrollment / progress record (0.05 depth).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RehabProgramRecord {
+    pub program: alc_social::RehabProgram,
+    pub enrolled_day: u64,
+    pub progress_days: u32,
+    pub progress_sum: f32,
+    pub completed: bool,
+    pub dropped: bool,
+}
+
+impl RehabProgramRecord {
+    fn new(program: alc_social::RehabProgram, day: u64) -> Self {
+        Self { program, enrolled_day: day, progress_days: 0, progress_sum: 0.0, completed: false, dropped: false }
+    }
+}
+
 /// Institutional policies (subset, extensible).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Policies {
@@ -76,11 +157,14 @@ pub struct Policies {
     pub privileges_level: f32,
     pub rehab_funding_multiplier: f32,
     pub security_level: f32,
+    /// Manual intake pause (0.05 control panel).
+    #[serde(default)]
+    pub intake_paused: bool,
 }
 
 impl Default for Policies {
     fn default() -> Self {
-        Self { lockdown: false, privileges_level: 0.5, rehab_funding_multiplier: 1.0, security_level: 0.6 }
+        Self { lockdown: false, privileges_level: 0.5, rehab_funding_multiplier: 1.0, security_level: 0.6, intake_paused: false }
     }
 }
 
@@ -93,6 +177,8 @@ pub struct World {
     pub next_facility_id: u64,
     pub next_guard_id: u64,
     pub next_prisoner_id: u64,
+    #[serde(default)]
+    pub next_construction_id: u64,
 
     pub facilities: Vec<Facility>,
     pub prisoners: Vec<Prisoner>,
@@ -144,6 +230,31 @@ pub struct World {
     /// Day lockdown was declared; used to expire emergency measures.
     #[serde(default)]
     pub lockdown_since_day: u64,
+
+    /// Construction queue (0.05). Projects advance daily until completion.
+    #[serde(default)]
+    pub construction_queue: Vec<ConstructionProject>,
+
+    /// Post-release records: prisoners who left via parole, escape, death or
+    /// transfer get an entry here (0.05 lifecycle). `#[serde(default)]` keeps
+    /// saves from before this field loadable.
+    #[serde(default)]
+    pub post_release_records: Vec<PostReleaseRecord>,
+    /// Monotonically increasing id for `post_release_records`.
+    #[serde(default)]
+    pub next_post_release_id: u64,
+
+    /// Per-prisoner contraband inventory + flags (0.05 lifecycle).
+    #[serde(default)]
+    pub contraband_state: HashMap<PrisonerId, PrisonerContrabandState>,
+
+    /// Explicit per-program rehabilitation enrollment/progress records.
+    #[serde(default)]
+    pub rehab_records: HashMap<PrisonerId, Vec<RehabProgramRecord>>,
+
+    /// Day the last transfer-out fired (rate-limits the 0.05 pathway).
+    #[serde(default)]
+    pub last_transfer_day: u64,
 }
 
 impl World {
@@ -155,6 +266,7 @@ impl World {
             next_facility_id: 1,
             next_guard_id: 1,
             next_prisoner_id: 1,
+            next_construction_id: 1,
             facilities: Vec::new(),
             prisoners: Vec::new(),
             guards: Vec::new(),
@@ -178,6 +290,12 @@ impl World {
             guard_location: HashMap::new(),
             last_guard_duty_hour: 0,
             lockdown_since_day: 0,
+            construction_queue: Vec::new(),
+            post_release_records: Vec::new(),
+            next_post_release_id: 1,
+            contraband_state: HashMap::new(),
+            rehab_records: HashMap::new(),
+            last_transfer_day: 0,
         };
         w.bootstrap();
         w
@@ -348,7 +466,15 @@ impl World {
         // 5. Co-presence encounters between prisoners sharing a facility.
         self.resolve_encounters_step();
 
-        // 6. Daily boundary: economy, sentence progress, escapes, parole,
+        // 6. Medical consequences: deterministic death pathway from severe
+        //    health/medical neglect, plus a small health decay rate.
+        self.resolve_medical_consequences_step();
+
+        // 7. Transfer-out when the institution is dangerously overcrowded
+        //    or at near-max security (Deterministic 0.05 pathway).
+        self.resolve_transfers_step();
+
+        // 8. Daily boundary: economy, sentence progress, escapes, parole,
         //    warden arbitration and intake. Uses a day-crossing check so fast
         //    speeds can never skip the boundary.
         if self.time.as_days() > day_before {
@@ -810,6 +936,15 @@ impl World {
         // Parole hearings (Directive §15).
         self.resolve_parole_step();
 
+        // Rehabilitation programs (Directive §14).
+        self.rehab_step();
+
+        // Contraband market and discovery (Directive §7, §17).
+        self.contraband_step();
+
+        // Construction progress (0.05 lifecycle).
+        self.construction_step();
+
         // Refresh warden context and reset trailing-week incident count weekly.
         if self.days_simulated % 7 == 0 {
             let quiet_week = self.warden.security_incidents_this_week <= 2;
@@ -817,7 +952,9 @@ impl World {
             // De-escalation: security posture relaxes after a quiet week —
             // otherwise incident spikes ratchet it to 1.0 permanently.
             if quiet_week && self.policies.security_level > 0.45 {
+                let old = self.policies.security_level;
                 self.policies.security_level = (self.policies.security_level - 0.1).max(0.45);
+                self.audit_policy_change("security_level", old, self.policies.security_level);
                 self.events.emit(WorldEvent::new(0, self.time, EventKind::PolicyChange,
                     format!("Security posture relaxed to {:.2} after a quiet week", self.policies.security_level)));
             }
@@ -827,6 +964,7 @@ impl World {
                 && self.days_simulated.saturating_sub(self.lockdown_since_day) >= 14
             {
                 self.policies.lockdown = false;
+                self.audit_policy_change("lockdown", 1.0, 0.0);
                 self.events.emit(WorldEvent::new(0, self.time, EventKind::PolicyChange,
                     "Lockdown lifted after two weeks"));
             }
@@ -913,11 +1051,14 @@ impl World {
             let consequences = apply_escape_consequences(outcome, self.policies.security_level, &[id]);
 
             // Persistent institutional consequences (Directive §16).
+            let sec_old = self.policies.security_level;
             self.policies.security_level =
                 (self.policies.security_level + consequences.security_level_delta).clamp(0.0, 1.0);
+            self.audit_policy_change("security_level", sec_old, self.policies.security_level);
             if consequences.lockdown_recommended && rng.chance(consequences.policy_pressure as f64 * 0.35) {
                 if !self.policies.lockdown {
                     self.lockdown_since_day = self.days_simulated;
+                    self.audit_policy_change("lockdown", 0.0, 1.0);
                 }
                 self.policies.lockdown = true;
             }
@@ -951,6 +1092,9 @@ impl World {
         }
 
         if !escaped.is_empty() {
+            for &id in &escaped {
+                self.record_post_release(id, "escape");
+            }
             self.purge_gang_members(&escaped);
             self.prisoners.retain(|p| !escaped.contains(&p.id));
         }
@@ -1004,9 +1148,105 @@ impl World {
         }
 
         if !released.is_empty() {
+            for &id in &released {
+                self.record_post_release(id, "parole");
+            }
             self.purge_gang_members(&released);
             self.prisoners.retain(|p| !released.contains(&p.id));
         }
+    }
+
+    /// Record a post-release entry (id, name, reason, day, sentence info,
+    /// basic outcome seed) and emit an auditable `Release` event + history
+    /// entry. Called when prisoners leave via parole, escape, death or
+    /// transfer (0.05 lifecycle).
+    fn record_post_release(&mut self, pid: PrisonerId, reason: &str) {
+        let Some(p) = self.prisoners.iter().find(|p| p.id == pid) else { return; };
+        let outcome_seed = RngStream::new(self.seed, pid.raw() ^ (self.days_simulated << 12) ^ 0x0E5C_A9E1)
+            .next_u64();
+        let rec = PostReleaseRecord {
+            id: self.next_post_release_id,
+            prisoner_id: pid.raw(),
+            name: p.name.clone(),
+            reason: reason.to_string(),
+            day: self.days_simulated,
+            sentence_info: PostReleaseSentenceInfo {
+                sentence_days: p.sentence_days,
+                sentence_served_days: p.sentence_served_days,
+                classification: p.classification,
+                escape_motivation_at_exit: p.escape_motivation(),
+            },
+            outcome_seed,
+        };
+        self.next_post_release_id += 1;
+        self.post_release_records.push(rec.clone());
+        let ev = WorldEvent::new(0, self.time, EventKind::Release,
+                format!("Prisoner {} left the institution: {reason}", pid.raw()))
+                .with_actor(pid.raw())
+                .with_cause("lifecycle: post-release record");
+        self.history.push(ev.clone());
+        self.events.emit(ev);
+    }
+
+    /// Deterministic medical-neglect death pathway (0.05 lifecycle).
+    /// Condition: severe health/medical neglect drives health down; once a
+    /// prisoner is very low and still neglecting, they die and leave the
+    /// population with a `Death` event and a post-release record.
+    fn resolve_medical_consequences_step(&mut self) {
+        for p in &mut self.prisoners {
+            if p.needs.medical_neglect() >= 0.75 {
+                p.condition.health = (p.condition.health - 0.008).max(0.0);
+            }
+        }
+        let dead: Vec<PrisonerId> = self
+            .prisoners
+            .iter()
+            .filter(|p| p.condition.health.clamp(0.0, 1.0) < 0.02 && p.needs.medical_neglect() > 0.7)
+            .map(|p| p.id)
+            .collect();
+        for pid in dead.clone() {
+            let ev = WorldEvent::new(0, self.time, EventKind::Death,
+                    format!("Prisoner {} died (severe health/medical neglect)", pid.raw()))
+                    .with_actor(pid.raw())
+                    .with_cause("condition.health < 0.02 while medical_need high; unmonitored death");
+            self.history.push(ev.clone());
+            self.events.emit(ev);
+            self.record_post_release(pid, "death");
+        }
+        if !dead.is_empty() {
+            self.purge_gang_members(&dead);
+            self.prisoners.retain(|p| !dead.contains(&p.id));
+            self.prune_agent_state();
+        }
+    }
+
+    /// Deterministic transfer-out pathway: extreme crowding (security
+    /// posture feeds this indirectly through the escape gate) transfers the
+    /// lowest-id prisoner away with a `TransferOut` event + post-release
+    /// record. Rate-limited to one per couple of days.
+    fn resolve_transfers_step(&mut self) {
+        let cap = self.capacity();
+        let pop = self.population();
+        let over_crowded = pop as f32 > cap as f32 * 1.2;
+        if !over_crowded {
+            return;
+        }
+        // Rate-limit the pathway so it stays observable without churning
+        // the population (Extreme speeds advance days fast).
+        if self.days_simulated.saturating_sub(self.last_transfer_day) < 2 {
+            return;
+        }
+        let Some(id) = self.prisoners.iter().min_by_key(|p| p.id.0).map(|p| p.id) else { return; };
+        let ev = WorldEvent::new(0, self.time, EventKind::TransferOut,
+                format!("Prisoner {} transferred out (overcrowded={} security={:.2})",
+                    id.raw(), over_crowded, self.policies.security_level))
+                .with_actor(id.raw());
+        self.history.push(ev.clone());
+        self.events.emit(ev);
+        self.record_post_release(id, "transfer");
+        self.last_transfer_day = self.days_simulated;
+        self.prisoners.retain(|p| p.id != id);
+        self.prune_agent_state();
     }
 
     /// Accept new arrivals only when the facility has spare capacity and
@@ -1016,7 +1256,7 @@ impl World {
             return;
         }
         // Lockdown / max-security posture halts admissions (Directive §13).
-        if self.policies.lockdown || self.policies.security_level >= 0.9 {
+        if self.policies.lockdown || self.policies.security_level >= 0.9 || self.policies.intake_paused {
             return;
         }
         let cap = self.capacity();
@@ -1044,10 +1284,285 @@ impl World {
         self.current_activity.retain(|id, _| live.contains(id));
         self.current_decisions.retain(|id, _| live.contains(id));
         self.prisoner_location.retain(|id, _| live.contains(id));
+        self.contraband_state.retain(|id, _| live.contains(id));
+        self.rehab_records.retain(|id, _| live.contains(id));
         // Also prune social dyads so stale relationships never survive a
         // release/escape (R6 invariant: claims must reference existing pawns).
         let live_set: std::collections::HashSet<PrisonerId> = live.into_iter().collect();
         self.social.retain(&live_set);
+    }
+
+    fn rehab_step(&mut self) {
+        use alc_social::rehab::{apply_program_progress, enroll_in_program, RehabOutcome, RehabPrisonerState, RehabProgram};
+        let programs = [
+            RehabProgram::Education,
+            RehabProgram::Vocational,
+            RehabProgram::Counseling,
+            RehabProgram::AddictionRecovery,
+            RehabProgram::AngerManagement,
+        ];
+        // Policy tie-in (Directive §14): the funding multiplier scales the
+        // daily progress step — 0.2 (the ReduceExpenses minimum) stalls
+        // programs, higher multipliers speed them up.
+        let multiplier = self.policies.rehab_funding_multiplier.clamp(0.0, 10.0);
+        let day = self.days_simulated;
+        let dt = 60u64;
+        let dt_eff = (dt as f32 * multiplier).round() as u64;
+        let mut events = Vec::new();
+
+        for i in 0..self.prisoners.len() {
+            let pid = self.prisoners[i].id;
+            let name = self.prisoners[i].name.clone();
+            let mut state = RehabPrisonerState {
+                disciplinary_status: self.prisoners[i].schedule.disciplinary_status,
+                education: self.prisoners[i].schedule.education,
+                skills: self.prisoners[i].skills.clone(),
+                hope: self.prisoners[i].condition.hope,
+                mental_health: self.prisoners[i].condition.mental_health,
+                health: self.prisoners[i].condition.health,
+                aggression: self.prisoners[i].traits.aggression,
+                emotional_stability: self.prisoners[i].traits.emotional_stability,
+                impulsiveness: self.prisoners[i].traits.impulsiveness,
+                discipline: self.prisoners[i].traits.discipline,
+                intelligence: self.prisoners[i].traits.intelligence,
+                reputation: self.prisoners[i].reputation,
+                fatigue: self.prisoners[i].needs.fatigue,
+                purpose_need: self.prisoners[i].needs.purpose,
+                stability_need: self.prisoners[i].needs.stability,
+                respect_need: self.prisoners[i].needs.respect,
+                rehab_motivation: self.prisoners[i].rehab_motivation(),
+                desperation: self.prisoners[i].needs.desperation(),
+            };
+
+            // Auto-enroll willing prisoners in a suitable program when not
+            // enrolled in any (skills keys or existing records).
+            let enrolled_any = programs.iter().any(|pr| {
+                state.skills.contains_key(pr.key())
+                    || self.rehab_records.get(&pid)
+                        .is_some_and(|recs| recs.iter().any(|r| r.program == *pr && !r.completed))
+            });
+            if !enrolled_any && !state.disciplinary_status && state.rehab_motivation > 0.45 {
+                // Pick a program based on dominant need/trait.
+                let program = if state.aggression > 0.6 { RehabProgram::AngerManagement }
+                    else if state.mental_health < 0.5 { RehabProgram::Counseling }
+                    else if state.purpose_need > 0.6 { RehabProgram::Education }
+                    else { RehabProgram::Vocational };
+                if enroll_in_program(&mut state, program) {
+                    self.rehab_records
+                        .entry(pid)
+                        .or_default()
+                        .push(RehabProgramRecord::new(program, day));
+                    events.push(WorldEvent::new(0, self.time, EventKind::ProgramEnrolled,
+                        format!("{name} enrolled in {program:?}")).with_actor(pid.raw()));
+                }
+            }
+
+            // Explicit per-program progress with records.
+            for program in programs {
+                if !state.skills.contains_key(program.key()) { continue; }
+                let has_record = self.rehab_records.get(&pid).is_some_and(|recs| {
+                    recs.iter().any(|r| r.program == program && !r.completed && !r.dropped)
+                });
+                if !has_record {
+                    // Migration: enrollments predate explicit records.
+                    self.rehab_records.entry(pid).or_default().push(RehabProgramRecord::new(program, day));
+                }
+                match apply_program_progress(&mut state, program, dt_eff) {
+                    RehabOutcome::Progress(delta) if delta > 0.0 => {
+                        if let Some(rec) = self.rehab_records.get_mut(&pid)
+                            .and_then(|recs| recs.iter_mut().find(|r| r.program == program && !r.completed && !r.dropped))
+                        {
+                            rec.progress_days += 1;
+                            rec.progress_sum += delta;
+                        }
+                        let progress = state.skills.get(program.key()).copied().unwrap_or(0.0);
+                        events.push(WorldEvent::new(0, self.time, EventKind::RehabilitationProgress,
+                            format!("Rehab progress: {} +{delta:.2} (day {progress:.2})", program.key()))
+                            .with_actor(pid.raw())
+                            .with_cause(format!("rehab funding multiplier {multiplier:.2}")));
+                    }
+                    RehabOutcome::Progress(_) => {}
+                    RehabOutcome::Completed => {
+                        if let Some(rec) = self.rehab_records.get_mut(&pid)
+                            .and_then(|recs| recs.iter_mut().find(|r| r.program == program && !r.completed))
+                        {
+                            rec.completed = true;
+                        }
+                        events.push(WorldEvent::new(0, self.time, EventKind::RehabilitationSuccess,
+                            format!("{name} completed {program:?}")).with_actor(pid.raw()));
+                    }
+                    RehabOutcome::Dropped => {
+                        if let Some(rec) = self.rehab_records.get_mut(&pid)
+                            .and_then(|recs| recs.iter_mut().find(|r| r.program == program && !r.completed && !r.dropped))
+                        {
+                            rec.dropped = true;
+                        }
+                        self.events.emit_rehab_failure(
+                            self.time, pid.raw(), program.key(), RehabFailureReason::DroppedOut);
+                    }
+                    RehabOutcome::NoEnrollment => {}
+                }
+            }
+
+            // Write back.
+            let p = &mut self.prisoners[i];
+            p.skills = state.skills;
+            p.condition.hope = state.hope.clamp(0.0, 1.0);
+            p.condition.mental_health = state.mental_health.clamp(0.0, 1.0);
+            p.condition.health = state.health.clamp(0.0, 1.0);
+            p.traits.aggression = state.aggression.clamp(0.0, 1.0);
+            p.traits.emotional_stability = state.emotional_stability.clamp(0.0, 1.0);
+            p.traits.impulsiveness = state.impulsiveness.clamp(0.0, 1.0);
+            p.reputation = state.reputation.clamp(0.0, 1.0);
+            p.needs.purpose = state.purpose_need.clamp(0.0, 1.0);
+            p.needs.stability = state.stability_need.clamp(0.0, 1.0);
+            p.needs.respect = state.respect_need.clamp(0.0, 1.0);
+            if state.education { p.schedule.education = true; }
+        }
+
+        for ev in events {
+            self.events.emit(ev);
+        }
+    }
+
+    fn contraband_step(&mut self) {
+        use alc_social::contraband::{contraband_discovery, contraband_market, ContrabandPrisonerProfile};
+        if self.prisoners.is_empty() || self.guards.is_empty() { return; }
+        let profiles: Vec<ContrabandPrisonerProfile> = self.prisoners.iter().map(|p| ContrabandPrisonerProfile {
+            id: p.id,
+            discipline: p.traits.discipline,
+            risk_tolerance: p.traits.risk_tolerance,
+            manipulation: p.traits.manipulation,
+            aggression: p.traits.aggression,
+            stimulation: p.needs.stimulation,
+            freedom: p.needs.freedom,
+            safety: p.needs.safety,
+            desperation: p.needs.desperation(),
+        }).collect();
+
+        let mut rng = RngStream::new(self.seed, self.days_simulated ^ 0xC047_2ABA);
+        let offers = contraband_market(&profiles, &mut rng);
+        for offer in offers.into_iter().take(3) {
+            // Track the trade in per-prisoner inventories (0.05 depth):
+            // the seller loses one, the buyer gains one.
+            self.move_contraband(offer.seller, &offer.item, -1);
+            self.move_contraband(offer.buyer, &offer.item, 1);
+            let flags = (self.contraband_state.get(&offer.seller).map_or(false, |s| s.flags_confiscated),
+                         self.contraband_state.get(&offer.buyer).map_or(false, |s| s.flags_confiscated));
+            self.events.emit(WorldEvent::new(0, self.time, EventKind::ContrabandFound,
+                format!("Contraband trade suspected: {:?} from {} to {} (price {}, seller_flagged={}, buyer_flagged={})",
+                    offer.item, offer.seller.raw(), offer.buyer.raw(), offer.price, flags.0, flags.1))
+                .with_actor(offer.seller.raw())
+                .with_cause("contraband market activity"));
+        }
+
+        let mut rng2 = RngStream::new(self.seed, self.days_simulated ^ 0xD15C_0BE2);
+        if let Some(found) = contraband_discovery(&self.guards, &profiles, &mut rng2) {
+            self.record_contraband_discovery(found.clone());
+            self.policies.security_level =
+                (self.policies.security_level + 0.02 * found.severity).min(1.0);
+        }
+    }
+
+    /// Record a guard discovery of contraband on a prisoner: applies
+    /// discipline/reputation/safety effects, adds the item to the prisoner's
+    /// world-owned inventory, sets the flags_confiscated flag and emits a
+    /// clear `ContrabandFound` event (0.05 lifecycle).
+    fn record_contraband_discovery(&mut self, found: alc_social::ContrabandFound) {
+        let holder = found.holder;
+        if let Some(p) = self.prisoners.iter_mut().find(|p| p.id == holder) {
+            p.schedule.disciplinary_status = true;
+            p.reputation = (p.reputation - 0.05).max(0.0);
+            p.traits.discipline = (p.traits.discipline - 0.04).max(0.05);
+            p.needs.safety = (p.needs.safety + 0.1).min(1.0);
+        }
+        let st = self.contraband_state_entry(holder);
+        *st.inventory.entry(found.item).or_insert(0) += 1;
+        st.flags_confiscated = true;
+        st.discovered_count += 1;
+        st.flagged_days += 1;
+        let inv_count = st.inventory.get(&found.item).copied().unwrap_or(0);
+        self.events.emit(WorldEvent::new(0, self.time, EventKind::ContrabandFound,
+            format!("Guard {} found {:?} on prisoner {} [flags: true; {} {:?} in inventory; severity {:.2}]",
+                found.guard.raw(), found.item, holder.raw(), inv_count, found.item, found.severity))
+            .with_actor(holder.raw())
+            .with_cause(format!("discovery by guard {}", found.guard.raw())));
+    }
+
+    fn contraband_state_entry(&mut self, id: PrisonerId) -> &mut PrisonerContrabandState {
+        self.contraband_state.entry(id).or_default()
+    }
+
+    fn contraband_inventory_count(&self, id: PrisonerId, item: &ContrabandItem) -> u32 {
+        self.contraband_state.get(&id).and_then(|s| s.inventory.get(item)).copied().unwrap_or(0)
+    }
+
+    fn move_contraband(&mut self, id: PrisonerId, item: &ContrabandItem, delta: i32) {
+        let count = self.contraband_inventory_count(id, item) as i64;
+        let new_count = if delta > 0 { count + delta as i64 } else { count - (-delta as i64) };
+        let new_count = new_count.max(0) as u32;
+        let st = self.contraband_state_entry(id);
+        if new_count == 0 {
+            st.inventory.remove(item);
+        } else {
+            st.inventory.insert(*item, new_count);
+        }
+    }
+
+    fn construction_step(&mut self) {
+        if self.construction_queue.is_empty() { return; }
+        let mut completed: Vec<ConstructionProject> = Vec::new();
+        for p in &mut self.construction_queue {
+            p.progress_days = p.progress_days.saturating_add(1);
+            if p.progress_days >= p.total_days {
+                completed.push(p.clone());
+            }
+        }
+        if completed.is_empty() { return; }
+        self.construction_queue.retain(|p| p.progress_days < p.total_days);
+        for proj in completed {
+            let id = self.add_facility(proj.kind, proj.wing, proj.capacity);
+            self.events.emit(
+                WorldEvent::new(0, self.time, EventKind::ConstructionComplete,
+                    format!("Construction complete: {} (facility {})", proj.kind.display(), id.0))
+                    .with_cause(format!("project {} completed after {} days", proj.id, proj.total_days)),
+            );
+        }
+    }
+
+    /// Public entry point for expansion queueing (0.05 lifecycle: makes the
+    /// construction queue a visible, inspectable part of world state).
+    pub fn enqueue_construction(&mut self, kind: FacilityKind, wing: u32, capacity: u32) -> u64 {
+        let id = self.next_construction_id;
+        self.next_construction_id += 1;
+        let total_days = match kind {
+            FacilityKind::CellBlock | FacilityKind::Dormitory => 14,
+            FacilityKind::Medical | FacilityKind::Education => 10,
+            FacilityKind::Isolation | FacilityKind::Visitor | FacilityKind::Staff => 8,
+            _ => 7,
+        };
+        let cost = (capacity as f32 * 50.0) + (total_days as f32 * 200.0);
+        // Charge upfront if possible; still allow construction (debt pressure is part of sim).
+        let _ = self.economy.spend(self.time.as_secs(), alc_economy::Money::from_major(cost as i64), alc_economy::Account::Construction, format!("Construction: {}", kind.display()));
+        let proj = ConstructionProject { id, kind, wing, capacity, total_days, progress_days: 0, cost, started_day: self.days_simulated };
+        self.events.emit(WorldEvent::new(0, self.time, EventKind::Expansion,
+            format!("Construction started: {} ({} days, ${:.0})", kind.display(), total_days, cost))
+            .with_cause(format!("project {id}")));
+        self.construction_queue.push(proj);
+        id
+    }
+
+    /// Auditable policy mutation: emits a `PolicyChange` event (and history
+    /// entry) when the value actually changes.
+    fn audit_policy_change(&mut self, key: &str, old: f32, new: f32) {
+        if (old - new).abs() <= f32::EPSILON {
+            return;
+        }
+        let ev = WorldEvent::new(0, self.time, EventKind::PolicyChange,
+                format!("Policy changed: {key}: {old:.2} -> {new:.2}"))
+                .with_cause("warden/policy mutation audit");
+        self.history.push(ev.clone());
+        self.events.emit(ev);
     }
 
     fn apply_warden_action(&mut self, action: WardenAction) {
@@ -1060,10 +1575,10 @@ impl World {
                     "visitor" => FacilityKind::Visitor,
                     _ => FacilityKind::CellBlock,
                 };
-                let id = self.add_facility(kind, 1, 40);
+                let pid = self.enqueue_construction(kind, 1, 40);
                 self.events.emit(
-                    WorldEvent::new(0, self.time, EventKind::Expansion, format!("Warden ordered expansion: {}", kind.display()))
-                        .with_cause(format!("warden action, facility id {}", id.0)),
+                    WorldEvent::new(0, self.time, EventKind::Expansion, format!("Warden queued expansion: {} (project {})", kind.display(), pid))
+                        .with_cause("warden action"),
                 );
             }
             WardenAction::HireGuards { count } => {
@@ -1081,35 +1596,44 @@ impl World {
                 self.events.emit(WorldEvent::new(0, self.time, EventKind::PolicyChange, format!("Hired {count} guards")));
             }
             WardenAction::IncreaseSecurity => {
+                let old = self.policies.security_level;
                 self.policies.security_level = (self.policies.security_level + 0.1).min(1.0);
+                self.audit_policy_change("security_level", old, self.policies.security_level);
                 self.events.emit(WorldEvent::new(0, self.time, EventKind::PolicyChange, "Security increased"));
             }
             WardenAction::ReduceExpenses => {
                 let days_since = self.days_simulated.saturating_sub(self.warden.last_action_day);
                 // Cooldown: only act every 7 days, and only when financial health is poor.
                 if self.economy.health() < 0.4 && days_since >= 7 {
+                    let old = self.policies.rehab_funding_multiplier;
                     self.policies.rehab_funding_multiplier =
                         (self.policies.rehab_funding_multiplier - 0.1).max(0.2);
                     self.warden.last_action_day = self.days_simulated;
                     self.warden.last_decision_at = self.time;
-                    self.events.emit(WorldEvent::new(
-                        0,
-                        self.time,
-                        EventKind::PolicyChange,
-                        "Expenses reduced; rehab funding cut",
-                    ));
+                    self.audit_policy_change("rehab_funding_multiplier", old, self.policies.rehab_funding_multiplier);
                 }
                 // Otherwise defer: no death-spiral cuts when healthy or on cooldown.
             }
             WardenAction::ChangePolicy { policy, value } => {
                 let value = value as f32;
                 match policy.as_str() {
-                    "privileges" => self.policies.privileges_level = value.clamp(0.0, 1.0),
-                    "security" => self.policies.security_level = value.clamp(0.0, 1.0),
-                    "rehab_funding" => self.policies.rehab_funding_multiplier = value.clamp(0.2, 3.0),
+                    "privileges" => {
+                        let old = self.policies.privileges_level;
+                        self.policies.privileges_level = value.clamp(0.0, 1.0);
+                        self.audit_policy_change("privileges_level", old, self.policies.privileges_level);
+                    }
+                    "security" => {
+                        let old = self.policies.security_level;
+                        self.policies.security_level = value.clamp(0.0, 1.0);
+                        self.audit_policy_change("security_level", old, self.policies.security_level);
+                    }
+                    "rehab_funding" => {
+                        let old = self.policies.rehab_funding_multiplier;
+                        self.policies.rehab_funding_multiplier = value.clamp(0.2, 3.0);
+                        self.audit_policy_change("rehab_funding_multiplier", old, self.policies.rehab_funding_multiplier);
+                    }
                     _ => {}
                 }
-                self.events.emit(WorldEvent::new(0, self.time, EventKind::PolicyChange, format!("Policy changed: {policy}={value:.2}")));
             }
             WardenAction::NegotiateWithRepresentatives => {
                 self.events.emit(WorldEvent::new(0, self.time, EventKind::PolicyChange, "Warden met with prisoner representatives"));
@@ -1302,5 +1826,127 @@ mod tests {
         assert_eq!(back.current_activity.len(), w.current_activity.len());
         assert_eq!(back.current_decisions.len(), w.current_decisions.len());
         assert_eq!(back.prisoner_location.len(), w.prisoner_location.len());
+    }
+
+    // -- 0.05 lifecycle depth ---------------------------------------------
+
+    #[test]
+    fn post_release_records_capture_reason_and_sentence_info() {
+        let mut w = running(21, TimeSpeed::Paused);
+        let id = w.prisoners[0].id;
+        let (name, sentence_days, served, classification) = {
+            let p = &w.prisoners[0];
+            (p.name.clone(), p.sentence_days, p.sentence_served_days, p.classification)
+        };
+        w.record_post_release(id, "parole");
+        assert_eq!(w.post_release_records.len(), 1);
+        let rec = &w.post_release_records[0];
+        assert_eq!(rec.id, 1);
+        assert_eq!(rec.prisoner_id, id.raw());
+        assert_eq!(rec.name, name);
+        assert_eq!(rec.reason, "parole");
+        assert_eq!(rec.day, w.days_simulated);
+        assert_eq!(rec.sentence_info.sentence_days, sentence_days);
+        assert_eq!(rec.sentence_info.sentence_served_days, served);
+        assert_eq!(rec.sentence_info.classification, classification);
+        assert!(w.events.recent().any(|e| e.kind == EventKind::Release));
+        assert!(w.history.iter().any(|e| e.kind == EventKind::Release));
+    }
+
+    #[test]
+    fn death_pathway_emits_and_removes() {
+        let mut w = running(22, TimeSpeed::Paused);
+        let before = w.population();
+        let id = w.prisoners[0].id;
+        {
+            let p = w.prisoners.iter_mut().find(|p| p.id == id).unwrap();
+            p.condition.health = 0.0;
+            p.needs.medical_need = 1.0;
+            p.needs.hygiene = 0.9;
+            p.needs.fatigue = 0.9;
+        }
+        w.resolve_medical_consequences_step();
+        assert!(w.population() < before);
+        assert!(w.events.recent().any(|e| e.kind == EventKind::Death));
+        assert!(w.history.iter().any(|e| e.kind == EventKind::Death));
+        assert!(w.post_release_records.iter().any(|r| r.reason == "death"));
+    }
+
+    #[test]
+    fn transfer_out_pathway_on_overcrowding() {
+        let mut w = running(23, TimeSpeed::Paused);
+        for f in &mut w.facilities {
+            f.capacity = 2;
+        }
+        // Bypass the rate limit for the deterministic pathway test.
+        w.days_simulated = 10;
+        w.last_transfer_day = 0;
+        let before = w.population();
+        w.resolve_transfers_step();
+        assert!(w.population() < before);
+        assert!(w.events.recent().any(|e| e.kind == EventKind::TransferOut));
+        assert!(w.history.iter().any(|e| e.kind == EventKind::TransferOut));
+        assert!(w.post_release_records.iter().any(|r| r.reason == "transfer"));
+    }
+
+    #[test]
+    fn contraband_inventory_and_discovery_tracked() {
+        use alc_social::ContrabandFound;
+        let mut w = running(24, TimeSpeed::Paused);
+        let id = w.prisoners[0].id;
+        assert_eq!(w.contraband_inventory_count(id, &ContrabandItem::Weapons), 0);
+
+        w.record_contraband_discovery(ContrabandFound {
+            guard: w.guards[0].id,
+            holder: id,
+            item: ContrabandItem::Weapons,
+            severity: 0.9,
+        });
+        assert!(w.contraband_state.get(&id).unwrap().flags_confiscated);
+        assert_eq!(w.contraband_inventory_count(id, &ContrabandItem::Weapons), 1);
+        assert!(w.events.recent().any(|e| e.kind == EventKind::ContrabandFound));
+
+        // Inventory movement through the world state.
+        w.move_contraband(id, &ContrabandItem::Weapons, -1);
+        assert_eq!(w.contraband_inventory_count(id, &ContrabandItem::Weapons), 0);
+        w.move_contraband(id, &ContrabandItem::Weapons, 2);
+        assert_eq!(w.contraband_inventory_count(id, &ContrabandItem::Weapons), 2);
+
+        // The daily step runs without panicking.
+        w.contraband_step();
+        assert!(w.events.recent().any(|e| e.kind == EventKind::ContrabandFound));
+    }
+
+    #[test]
+    fn rehab_records_track_progress_and_honor_funding_multiplier() {
+        let mut w = running(26, TimeSpeed::Paused);
+        let id = w.prisoners[0].id;
+        {
+            let p = w.prisoners.iter_mut().find(|p| p.id == id).unwrap();
+            p.skills.insert(alc_social::RehabProgram::Education.key().to_string(), 0.0);
+        }
+        w.policies.rehab_funding_multiplier = 2.0;
+        w.rehab_step();
+        assert!(w.rehab_records.get(&id).is_some_and(|recs| {
+            recs.iter().any(|r| r.program == alc_social::RehabProgram::Education)
+        }));
+        assert!(w.events.recent().any(|e| e.kind == EventKind::RehabilitationProgress));
+
+        // Zero funding multiplier => no progress events.
+        let mut w0 = running(26, TimeSpeed::Paused);
+        let id0 = w0.prisoners[0].id;
+        w0.prisoners.iter_mut().find(|p| p.id == id0).unwrap()
+            .skills.insert(alc_social::RehabProgram::Education.key().to_string(), 0.0);
+        w0.policies.rehab_funding_multiplier = 0.0;
+        w0.rehab_step();
+        assert!(w0.events.recent().all(|e| e.kind != EventKind::RehabilitationProgress));
+    }
+
+    #[test]
+    fn policy_changes_emit_auditable_events() {
+        let mut w = running(27, TimeSpeed::Paused);
+        w.audit_policy_change("security_level", 0.5, 0.7);
+        assert!(w.events.recent().any(|e| e.kind == EventKind::PolicyChange));
+        assert!(w.history.iter().any(|e| e.kind == EventKind::PolicyChange));
     }
 }

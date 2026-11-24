@@ -21,6 +21,13 @@ impl AutosaveScheduler {
     pub fn new(dir: impl Into<PathBuf>, interval_days: u64) -> Self {
         Self { dir: dir.into(), interval_days, last_save_day: 0 }
     }
+    /// Restore last save day from persistence.
+    pub fn with_last_save_day(mut self, day: u64) -> Self {
+        self.last_save_day = day;
+        self
+    }
+    /// Last simulated day an autosave was written.
+    pub fn last_save_day(&self) -> u64 { self.last_save_day }
     /// Check if an autosave is due.
     ///
     /// Returns `true` if the interval has elapsed since the last save.

@@ -28,6 +28,33 @@ pub const URGENT_THRESHOLD: f32 = 0.75;
 /// Needs below this contribute no decision noise (design doc §3.7).
 pub const DECISION_THRESHOLD: f32 = 0.05;
 
+// -- Medical / neglect escalation thresholds (0.05 advisory hooks) ----------
+//
+// The world owns the actual Death / TransferOut / medical-hold decisions
+// (Directive §16). These thresholds only *represent* severity so those
+// pathways can be triggered by observable state instead of ad-hoc magic
+// numbers — nothing here mutates state or forces world behavior.
+
+/// `medical_need` at/above this is a mild-but-notable untreated deficit.
+pub const ELEVATED_MEDICAL_THRESHOLD: f32 = 0.45;
+/// `medical_need` at/above this is a severe untreated deficit (medical hold).
+pub const SEVERE_MEDICAL_THRESHOLD: f32 = 0.75;
+/// `medical_need` at/above this is an emergency (immediate care required).
+pub const EMERGENCY_MEDICAL_THRESHOLD: f32 = 0.90;
+/// [`Needs::medical_neglect`] at/above this counts as severe neglect.
+pub const SEVERE_NEGLECT_THRESHOLD: f32 = 0.70;
+/// [`Needs::medical_neglect`] at/above this is critical neglect — health is
+/// degrading because care is not reaching the prisoner.
+pub const CRITICAL_NEGLECT_THRESHOLD: f32 = 0.85;
+
+// Condition-side thresholds live here too so the whole escalation ladder is
+// documented in one place; `Condition` helpers in the crate root read them.
+/// `Condition::health` at/below this is life-threatening (transfer/hospital).
+pub const LIFE_THREAT_HEALTH_THRESHOLD: f32 = 0.20;
+/// `Condition::health` at/below this is a fatality candidate under sustained
+/// injury/illness/neglect.
+pub const FATAL_HEALTH_THRESHOLD: f32 = 0.08;
+
 /// Tags for the full §4 need catalog. Used to target relief and impulses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum NeedTag {
@@ -87,6 +114,27 @@ pub enum NeedCategory {
     Physical,
     Psychological,
     Social,
+}
+
+/// Escalation ladder for medical / neglect state (0.05 "Death/transfer/medical
+/// outcomes"). Ordered: `Stable < Elevated < Severe < Emergency < Critical`, so
+/// `severity >= MedicalSeverity::Severe` is a natural triage gate.
+///
+/// Advisory only — the world decides whether a level triggers a medical hold,
+/// a transfer, or (rarely, with cause) a death review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum MedicalSeverity {
+    /// No actionable medical pressure.
+    Stable,
+    /// Worth watching; no intervention required yet.
+    Elevated,
+    /// Severe medical need or neglect — medical-hold territory.
+    Severe,
+    /// Needs immediate care: hospitalization / transfer candidate.
+    Emergency,
+    /// Health is failing despite (or because of) neglect — death-review
+    /// candidate for the world to evaluate with full context.
+    Critical,
 }
 
 /// The complete need state of one prisoner.
@@ -576,6 +624,36 @@ impl Needs {
         (self.medical_need * 0.7 + self.hygiene * 0.2 + self.fatigue * 0.1).clamp(0.0, 1.0)
     }
 
+    // -- Medical/neglect triage hooks (0.05, advisory only) -----------------
+
+    /// Severity implied by needs alone. `Condition` severity is layered on top
+    /// by `Prisoner::medical_crisis`, so this never reaches `Critical` — that
+    /// level is reserved for failing *health*, not unmet need.
+    pub fn medical_severity(&self) -> MedicalSeverity {
+        let neglect = self.medical_neglect();
+        if self.medical_need >= EMERGENCY_MEDICAL_THRESHOLD || neglect >= CRITICAL_NEGLECT_THRESHOLD {
+            MedicalSeverity::Emergency
+        } else if self.medical_need >= SEVERE_MEDICAL_THRESHOLD || neglect >= SEVERE_NEGLECT_THRESHOLD {
+            MedicalSeverity::Severe
+        } else if self.medical_need >= ELEVATED_MEDICAL_THRESHOLD {
+            MedicalSeverity::Elevated
+        } else {
+            MedicalSeverity::Stable
+        }
+    }
+
+    /// Severe neglect: care is not reaching the prisoner (medical hold and
+    /// long-term health degradation both key off this).
+    pub fn is_severe_neglect(&self) -> bool {
+        self.medical_neglect() >= SEVERE_NEGLECT_THRESHOLD
+    }
+
+    /// Emergency-level unmet medical need (immediate care required).
+    pub fn is_medical_emergency(&self) -> bool {
+        self.medical_need >= EMERGENCY_MEDICAL_THRESHOLD
+            || self.medical_neglect() >= CRITICAL_NEGLECT_THRESHOLD
+    }
+
     fn all_finite(&self) -> bool {
         [
             self.hunger, self.thirst, self.sleep, self.fatigue, self.hygiene,
@@ -929,5 +1007,48 @@ mod tests {
         assert_all_needs_valid(&n, 1);
         n.impulse(NeedTag::Sleep, 0.5);
         assert!(n.sleep > 0.0 && n.fatigue > 0.0, "sleep impulse must raise both deficits");
+    }
+
+    // -- 0.05 medical/neglect triage hooks (Death/TransferOut pathways) -----
+
+    #[test]
+    fn medical_severity_climbs_the_threshold_ladder() {
+        let mut n = Needs::new();
+        assert_eq!(n.medical_severity(), MedicalSeverity::Stable);
+        assert!(!n.is_severe_neglect());
+
+        n.medical_need = ELEVATED_MEDICAL_THRESHOLD;
+        assert_eq!(n.medical_severity(), MedicalSeverity::Elevated);
+
+        n.medical_need = SEVERE_MEDICAL_THRESHOLD;
+        assert_eq!(n.medical_severity(), MedicalSeverity::Severe);
+
+        n.medical_need = EMERGENCY_MEDICAL_THRESHOLD;
+        assert_eq!(n.medical_severity(), MedicalSeverity::Emergency);
+        assert!(n.is_medical_emergency());
+
+        // Neglect (untreated medical need + poor hygiene/fatigue) escalates on
+        // its own curve: hygiene/fatigue contribute up to 0.30 of
+        // `medical_neglect`, so a moderate medical_need plus squalor reaches
+        // Severe before the raw `medical_need` threshold does.
+        let mut neglected = Needs::new();
+        neglected.medical_need = 0.60;
+        neglected.hygiene = 1.0;
+        neglected.fatigue = 1.0;
+        assert!(neglected.is_severe_neglect(), "neglect ladder must key off hygiene/fatigue too");
+        assert_eq!(neglected.medical_severity(), MedicalSeverity::Severe);
+
+        // Critical neglect needs sustained, near-emergency medical need.
+        neglected.medical_need = 0.80;
+        assert!(neglected.medical_neglect() >= CRITICAL_NEGLECT_THRESHOLD);
+        assert_eq!(neglected.medical_severity(), MedicalSeverity::Emergency);
+    }
+
+    #[test]
+    fn severity_levels_are_ordered_for_triage_comparisons() {
+        assert!(MedicalSeverity::Stable < MedicalSeverity::Elevated);
+        assert!(MedicalSeverity::Severe < MedicalSeverity::Emergency);
+        assert!(MedicalSeverity::Emergency < MedicalSeverity::Critical);
+        assert!(MedicalSeverity::Severe >= MedicalSeverity::Severe);
     }
 }

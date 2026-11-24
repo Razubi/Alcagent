@@ -10,14 +10,14 @@ const DEFAULT_SPEED: u32 = 60;
     name = "alcagent",
     version,
     about = "Autonomous Living Prison Simulation",
-    long_about = "Autonomous Living Prison Simulation\n\nWith no arguments (or `observe`) an interactive ratatui observer opens.\n\nTUI controls:\n  q / Q / Esc / Ctrl-C   quit\n  Space                  pause / resume\n  + / =                  speed up\n  - / _                  speed down\n  1-9                    switch observation view\n  Up/Down/Left/Right or k/j/h/l   move the selection cursor\n\nUse `run <days>` for a headless soak run, or `--no-tui` for a short report."
+    long_about = "Autonomous Living Prison Simulation\n\nWith no arguments (or `observe`) an interactive ratatui observer opens.\n\nTUI controls:\n  q / Q / Esc / Ctrl-C   quit\n  Space                  pause / resume\n  + / =                  speed up\n  - / _                  speed down\n  1-9                    switch observation view\n  Up/Down/Left/Right or k/j/h/l   move the selection cursor\n  S                      manual save to --save-dir\n  Ctrl-L                 quick load from --save-dir\n  x / X                  toggle lockdown\n  N/E/K                  policy band (Normal/Enhanced/Lockdown)\n  L/U                    lockdown enable/lift\n  [/]                    security level down/up\n  ,/.                    privileges down/up\n  ;/'                    rehab funding down/up\n  B                      toggle intake pause\n  P                      cycle policy mode (Deterministic/Council/Shadow)\n\nUse `run <days>` for a headless soak run, or `--no-tui` for a short report."
 )]
 struct Cli {
     /// World-generation seed (same seed reproduces the same institution).
     #[arg(long, global = true, default_value_t = DEFAULT_SEED)]
     seed: u64,
 
-    /// Observer speed in simulation ticks per wall-clock second.
+    /// Observer speed in simulation ticks per wall-clock second (min 1).
     #[arg(long, global = true, default_value_t = DEFAULT_SPEED)]
     speed: u32,
 
@@ -27,15 +27,15 @@ struct Cli {
     no_tui: bool,
 
     /// Load simulation state from a save directory before running.
-    #[arg(long, global = true)]
+    #[arg(long, global = true, help = "Load simulation state from a save directory before running")]
     load: Option<std::path::PathBuf>,
 
     /// Directory for manual/auto saves.
-    #[arg(long, global = true, default_value = "saves/default")]
+    #[arg(long, global = true, default_value = "saves/default", help = "Directory for manual/auto saves")]
     save_dir: std::path::PathBuf,
 
     /// Autosave interval in simulated days (0 disables).
-    #[arg(long, global = true, default_value_t = 7)]
+    #[arg(long, global = true, default_value_t = 7, help = "Autosave interval in simulated days (0 disables)")]
     autosave_days: u64,
 
     #[command(subcommand)]
@@ -47,7 +47,11 @@ enum Cmd {
     /// Launch the interactive TUI observer (the default when no args are given).
     Observe,
     /// Run headless for N days at extreme speed, printing a summary.
-    Run { days: u64 },
+    Run {
+        /// Number of simulated days to run.
+        #[arg(default_value_t = 30)]
+        days: u64,
+    },
     /// Print design docs.
     Docs,
 }
@@ -72,6 +76,7 @@ impl SimDriver for EngineDriver {
     fn economy(&self) -> sumo::EconomySummary { self.0.economy() }
     fn social_edges(&self) -> Vec<sumo::SocialEdge> { self.0.social_edges() }
     fn facilities(&self) -> Vec<sumo::FacilitySummary> { self.0.facilities() }
+    fn construction_queue(&self) -> Vec<sumo::ConstructionSummary> { self.0.construction_queue() }
     fn speed(&self) -> TimeSpeed { self.0.speed() }
     fn set_speed(&mut self, speed: TimeSpeed) { self.0.set_speed(speed); }
     fn policy_mode(&self) -> sumo::PolicyMode { self.0.policy_mode() }
@@ -80,13 +85,35 @@ impl SimDriver for EngineDriver {
     fn days_simulated(&self) -> u64 { self.0.world.days_simulated }
     fn set_lockdown(&mut self, lockdown: bool) { self.0.set_lockdown(lockdown); }
     fn set_policy(&mut self, policy: sumo::Policy) { self.0.set_policy(policy); }
+    fn policy_summary(&self) -> sumo::PolicySummary { self.0.policy_summary() }
+    fn set_security_level(&mut self, level: f32) { self.0.set_security_level(level); }
+    fn set_privileges_level(&mut self, level: f32) { self.0.set_privileges_level(level); }
+    fn set_rehab_funding(&mut self, multiplier: f32) { self.0.set_rehab_funding(multiplier); }
+    fn set_intake_paused(&mut self, paused: bool) { self.0.set_intake_paused(paused); }
     fn save(&self, dir: &std::path::Path) -> Result<(), String> { self.0.save(dir).map_err(|e| e.to_string()) }
     fn enable_autosave(&mut self, dir: std::path::PathBuf, interval_days: u64) { self.0.enable_autosave(dir, interval_days); }
     fn maybe_autosave(&mut self) -> Result<bool, String> { self.0.maybe_autosave().map_err(|e| e.to_string()) }
     fn incident_log(&self) -> Vec<sumo::WorldEvent> { self.0.incident_log() }
-    fn decision_log(&self) -> Vec<String> {
-        self.0.decision_log().iter().map(|d| format!("{:?}", d)).collect()
+    fn incident_records(&self) -> Vec<sumo::IncidentRecord> { self.0.incident_records() }
+    fn incident_records_filtered(&self, filter: &sumo::incidents::IncidentFilter) -> Vec<sumo::IncidentRecord> { self.0.incident_records_filtered(filter) }
+    fn decision_audit_log(&self) -> Vec<sumo::DecisionAuditRecord> { self.0.decision_audit_log().to_vec() }
+    fn load(&mut self, dir: &std::path::Path) -> Result<(), String> {
+        let loaded = sumo::Sim::load(dir).map_err(|e| e.to_string())?;
+        self.0 = loaded;
+        Ok(())
     }
+    fn post_release_status(&self, prisoner_id: u64) -> Option<bool> { self.0.post_release_status(alc_core::PrisonerId(prisoner_id)) }
+    fn post_release_records(&self) -> Vec<sumo::PostReleaseSummary> { self.0.post_release_records() }
+    fn rehab_summaries(&self) -> Vec<sumo::RehabEnrollmentSummary> { self.0.rehab_summaries() }
+    fn rehab_program_catalog(&self) -> Vec<sumo::RehabProgramInfo> { self.0.rehab_program_catalog() }
+    fn enroll_rehab(&mut self, prisoner_id: u64, program_key: &str) -> bool { self.0.enroll_rehab_by_key(alc_core::PrisonerId(prisoner_id), program_key) }
+    fn drop_rehab(&mut self, prisoner_id: u64, program_key: &str) -> bool { self.0.drop_rehab_by_key(alc_core::PrisonerId(prisoner_id), program_key) }
+    fn rehab_overview(&self) -> sumo::RehabOverview { self.0.rehab_overview() }
+    fn contraband_cases(&self) -> Vec<sumo::ContrabandCaseSummary> { self.0.contraband_summaries() }
+    fn contraband_inventory(&self) -> Vec<sumo::ContrabandInventorySummary> { self.0.contraband_inventory() }
+    fn schedule_timeline(&self, prisoner_id: u64) -> Option<sumo::ScheduleTimeline> { self.0.schedule_timeline(alc_core::PrisonerId(prisoner_id)) }
+    fn budget_snapshot(&self) -> sumo::BudgetSnapshot { self.0.budget_snapshot() }
+    fn apply_rehab_progress(&mut self, prisoner_id: u64, minutes: u64) -> f32 { self.0.apply_rehab_progress(alc_core::PrisonerId(prisoner_id), minutes) }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -95,6 +122,9 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     let cli = Cli::parse();
+    if cli.speed == 0 {
+        return Err(anyhow::anyhow!("invalid --speed {}: must be at least 1", cli.speed));
+    }
     match cli.cmd {
         None | Some(Cmd::Observe) => {
             if cli.no_tui {
@@ -113,7 +143,9 @@ fn main() -> anyhow::Result<()> {
 
 fn load_or_new(seed: u64, load: Option<&std::path::Path>) -> anyhow::Result<sumo::Sim> {
     if let Some(dir) = load {
-        Ok(sumo::Sim::load(dir)?)
+        sumo::Sim::load(dir).map_err(|e| {
+            anyhow::anyhow!("failed to load save from {}: {e}", dir.display())
+        })
     } else {
         Ok(sumo::Sim::new(seed))
     }
@@ -126,11 +158,12 @@ fn launch_tui(seed: u64, speed: u32, load: Option<&std::path::Path>, save_dir: &
     }
     let driver = EngineDriver(sim);
     alc_ui::app::run_tui(
-        driver,
+        Box::new(driver),
         TuiOptions {
             ticks_per_second: speed,
             paused: false,
             save_dir: save_dir.to_path_buf(),
+            autosave_days,
         },
     )
 }
@@ -148,11 +181,14 @@ fn run_headless(days: u64, seed: u64, load: Option<&std::path::Path>, save_dir: 
         sim.tick();
         let _ = sim.maybe_autosave();
     }
-    let _ = sim.save(save_dir);
+    if let Err(e) = sim.save(save_dir) {
+        return Err(anyhow::anyhow!("failed to save simulation to {}: {e}", save_dir.display()));
+    }
     let elapsed = start.elapsed();
 
     let world = &sim.world;
     println!("=== Alcagent headless run ===");
+    println!("Loaded from:   {}", load.map(|d| d.display().to_string()).unwrap_or_else(|| format!("new world (seed {:#x})", world.seed)));
     println!("Seed:            {:#x}", world.seed);
     println!("Sim time:        {}", world.time);
     println!("Days simulated:  {}", world.days_simulated);
