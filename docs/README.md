@@ -26,6 +26,7 @@ docs/
 | [`sumo/SUMO_ENGINE.md`](sumo/SUMO_ENGINE.md) | Engine product & system design |
 | [`sumo/SUMO_API.md`](sumo/SUMO_API.md) | Complete API reference with examples and gotchas |
 | [`sumo/sumo-engine-research.md`](sumo/sumo-engine-research.md) | Deep research: architecture, GUI, determinism, backlog, questions |
+| [`sumo/SUMO_ROADMAP.md`](../sumo/docs/SUMO_ROADMAP.md) | **0.05 → 0.6+ engine roadmap + mass bug-fixing plan** (canonical in `../sumo/docs/`) |
 | [`sumo/world-expansion-plan.md`](sumo/world-expansion-plan.md) | **v0.5 plan: living town + prison coupling, GUI rewrite, roadmap** |
 | [`sumo/sumo-gui-and-support-plan.md`](sumo/sumo-gui-and-support-plan.md) | sumo GUI shell & long-term support annex |
 
