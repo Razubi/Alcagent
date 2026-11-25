@@ -12,7 +12,7 @@ use ratatui::widgets::*;
 use std::collections::HashMap;
 use sumo::{
     EconomySummary, FacilitySummary, GangSummary, GuardSummary, MapFrame, Observation,
-    PrisonerSummary, SocialEdge, WardenSummary, WorldEvent,
+    PrisonerSummary, SocialEdge, SocialRoleSummary, WardenSummary, WorldEvent,
 };
 
 /// Bundled data the views need for rendering.
@@ -31,6 +31,8 @@ pub struct ViewData {
     pub warden: WardenSummary,
     pub economy: EconomySummary,
     pub social_edges: Vec<SocialEdge>,
+    /// Detected roles, ordered by prisoner id then role label.
+    pub social_roles: Vec<SocialRoleSummary>,
     pub facilities: Vec<FacilitySummary>,
     pub construction_queue: Vec<sumo::ConstructionSummary>,
     pub events: Vec<WorldEvent>,
@@ -116,14 +118,12 @@ fn mode_name(mode: ViewMode) -> &'static str {
 
 fn title_block(title: impl Into<String>) -> Block<'static> {
     let title = title.into();
-    Block::default()
-        .borders(Borders::ALL)
-        .title(Span::styled(
-            format!(" {title} "),
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ))
+    Block::default().borders(Borders::ALL).title(Span::styled(
+        format!(" {title} "),
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    ))
 }
 
 fn plain(text: impl Into<String>) -> Line<'static> {
@@ -133,10 +133,7 @@ fn plain(text: impl Into<String>) -> Line<'static> {
 fn kv(label: impl AsRef<str>, value: impl Into<String>) -> Line<'static> {
     let label = label.as_ref();
     Line::from(vec![
-        Span::styled(
-            format!("{label:<22}"),
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled(format!("{label:<22}"), Style::default().fg(Color::DarkGray)),
         Span::raw(value.into()),
     ])
 }
@@ -218,10 +215,7 @@ fn recent_event_lines(events: &[WorldEvent], n: usize) -> Vec<Line<'static>> {
         .take(n)
         .map(|e| {
             Line::from(vec![
-                Span::styled(
-                    format!("[{}] ", e.at),
-                    Style::default().fg(Color::DarkGray),
-                ),
+                Span::styled(format!("[{}] ", e.at), Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     format!("{:<16}", event_kind_short(&e.kind)),
                     Style::default().fg(Color::Yellow),
@@ -275,13 +269,27 @@ pub fn draw(frame: &mut Frame, data: &ViewData, ui: &UiState, status: &AppStatus
 /// Build the scrollable help body as titled sections. Split into its own
 /// function so render code and tests share the facts being displayed.
 fn help_body() -> Vec<Line<'static>> {
-    let title = |s: &str| Line::from(Span::styled(format!("— {s} "), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+    let title = |s: &str| {
+        Line::from(Span::styled(
+            format!("— {s} "),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ))
+    };
     let entry = |s: &str| Line::from(format!("  {s}"));
     vec![
-        Line::from(Span::styled("=== KEYBINDINGS ===", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            "=== KEYBINDINGS ===",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
         Line::from(""),
         title("Navigation"),
-        entry("1-9,0,A Switch views (2=Prisoner 3=Gang 4=Staff 5=Warden 6=Financial 7=Timeline 8=Network 9=Map 0=Incidents A=Decisions)"),
+        entry(
+            "1-9,0,A Switch views (2=Prisoner 3=Gang 4=Staff 5=Warden 6=Financial 7=Timeline 8=Network 9=Map 0=Incidents A=Decisions)",
+        ),
         entry("↑↓,h,l,j,k Scroll lists (h/l work in the help overlay too)"),
         entry("q,Esc,Ctrl-C Quit"),
         Line::from(""),
@@ -289,7 +297,9 @@ fn help_body() -> Vec<Line<'static>> {
         entry("SPACE Pause/resume · +/- Speed · S Save · Ctrl-L Quick load"),
         Line::from(""),
         title("Observer"),
-        entry("/ Search · Ctrl-W Clear query · Tab Pin entity · n Notes feed · V Auto-pause on critical"),
+        entry(
+            "/ Search · Ctrl-W Clear query · Tab Pin entity · n Notes feed · V Auto-pause on critical",
+        ),
         entry("Ctrl-R Resolve selected/newest open critical incident"),
         entry("Ctrl-C Quit · Ctrl-L Quick load (also works while searching)"),
         Line::from(""),
@@ -300,7 +310,9 @@ fn help_body() -> Vec<Line<'static>> {
         entry("[ ] , . Security/privileges sliders · ; ' Rehab funding"),
         Line::from(""),
         title("Construction (Warden view)"),
-        entry("c Cycle build kind · C Queue project · u/U Select project · v Approve · x Cancel · X Fail · > Advance"),
+        entry(
+            "c Cycle build kind · C Queue project · u/U Select project · v Approve · x Cancel · X Fail · > Advance",
+        ),
         Line::from(""),
         title("Parole (Prisoner view)"),
         entry("H Schedule hearing · G Grant · J Deny · Y Release on granted parole"),
@@ -314,7 +326,10 @@ fn help_body() -> Vec<Line<'static>> {
         title("Decisions (Decision view)"),
         entry("d/D Decision validation filter"),
         Line::from(""),
-        Line::from(Span::styled("↑/↓ (or j/k) scrolls the help overlay itself.", Style::default().fg(Color::DarkGray))),
+        Line::from(Span::styled(
+            "↑/↓ (or j/k) scrolls the help overlay itself.",
+            Style::default().fg(Color::DarkGray),
+        )),
     ]
 }
 
@@ -338,12 +353,18 @@ fn render_observer_overlay(frame: &mut Frame, area: Rect, ui: &UiState) {
     let mut lines: Vec<Line<'static>> = vec![
         Line::from(Span::styled(
             "=== OBSERVER FEED ===",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(format!(
             "  Search: {}",
-            if ui.search.is_empty() { "none".to_string() } else { ui.search.clone() }
+            if ui.search.is_empty() {
+                "none".to_string()
+            } else {
+                ui.search.clone()
+            }
         )),
         Line::from(format!(
             "  Auto-pause on critical: {}  ·  Pins: {}",
@@ -355,13 +376,20 @@ fn render_observer_overlay(frame: &mut Frame, area: Rect, ui: &UiState) {
             if ui.bookmarks.is_empty() {
                 "none".to_string()
             } else {
-                ui.bookmarks.iter().take(12).map(|id| format!("#{id}")).collect::<Vec<_>>().join(", ")
+                ui.bookmarks
+                    .iter()
+                    .take(12)
+                    .map(|id| format!("#{id}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             }
         )),
         Line::from(""),
         Line::from(Span::styled(
             "Notifications (newest first)",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         )),
     ];
     if ui.notifications.is_empty() {
@@ -384,7 +412,9 @@ fn render_observer_overlay(frame: &mut Frame, area: Rect, ui: &UiState) {
     let area = centered_rect(70, 70, area);
     frame.render_widget(Clear, area);
     frame.render_widget(
-        Paragraph::new(lines).block(block).wrap(Wrap { trim: false }),
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
         area,
     );
 }
@@ -394,12 +424,14 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         Constraint::Percentage((100 - percent_y) / 2),
         Constraint::Percentage(percent_y),
         Constraint::Percentage((100 - percent_y) / 2),
-    ]).split(r);
+    ])
+    .split(r);
     Layout::horizontal([
         Constraint::Percentage((100 - percent_x) / 2),
         Constraint::Percentage(percent_x),
         Constraint::Percentage((100 - percent_x) / 2),
-    ]).split(popup_layout[1])[1]
+    ])
+    .split(popup_layout[1])[1]
 }
 
 /// Shrink a span vector so its measured total fits `width`. Measured with
@@ -432,7 +464,8 @@ fn render_tabbar(frame: &mut Frame, area: Rect, active: ViewMode) {
     let tabs_area = rows[0];
     let width = tabs_area.width as usize;
     let short = [
-        "1 Ovw", "2 Pris", "3 Gang", "4 Staff", "5 Ward", "6 Fin", "7 Evts", "8 Net", "9 Map", "0 Inc", "A Aud",
+        "1 Ovw", "2 Pris", "3 Gang", "4 Staff", "5 Ward", "6 Fin", "7 Evts", "8 Net", "9 Map",
+        "0 Inc", "A Aud",
     ];
     let build = |compact: bool| -> Vec<Span<'static>> {
         let mut spans: Vec<Span<'static>> = Vec::new();
@@ -467,9 +500,19 @@ fn render_tabbar(frame: &mut Frame, area: Rect, active: ViewMode) {
 
     // Choose the status-bar hint by its *measured* width so the row always
     // fits the terminal, not by a hard-coded threshold.
-    let hint_line = Line::from(Span::styled(HELP_WIDE, Style::default().fg(Color::DarkGray)));
-    let hint_text = if hint_line.width() <= width { HELP_WIDE } else { HELP_COMPACT };
-    let hint_span = Span::styled(truncate(hint_text, width), Style::default().fg(Color::DarkGray));
+    let hint_line = Line::from(Span::styled(
+        HELP_WIDE,
+        Style::default().fg(Color::DarkGray),
+    ));
+    let hint_text = if hint_line.width() <= width {
+        HELP_WIDE
+    } else {
+        HELP_COMPACT
+    };
+    let hint_span = Span::styled(
+        truncate(hint_text, width),
+        Style::default().fg(Color::DarkGray),
+    );
     frame.render_widget(Paragraph::new(Line::from(vec![hint_span])), rows[1]);
 }
 
@@ -512,7 +555,11 @@ fn render_status(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState, s
     };
     spans.push(Span::raw(" │ "));
     spans.push(Span::styled(
-        if status.paused { " PAUSED " } else { " RUNNING " },
+        if status.paused {
+            " PAUSED "
+        } else {
+            " RUNNING "
+        },
         run_style,
     ));
     spans.push(Span::styled(
@@ -520,7 +567,13 @@ fn render_status(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState, s
         Style::default().fg(Color::Magenta),
     ));
     if obs.lockdown {
-        spans.push(Span::styled(" LOCKDOWN ", Style::default().fg(Color::Black).bg(Color::Red).add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled(
+            " LOCKDOWN ",
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Red)
+                .add_modifier(Modifier::BOLD),
+        ));
     }
 
     let autosave = if status.autosave_days == 0 {
@@ -544,7 +597,10 @@ fn render_status(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState, s
     ));
     if let Some(msg) = &status.status_msg {
         spans.push(Span::raw(" │ "));
-        spans.push(Span::styled(truncate(msg, 40), Style::default().fg(Color::Cyan)));
+        spans.push(Span::styled(
+            truncate(msg, 40),
+            Style::default().fg(Color::Cyan),
+        ));
     }
     let open_critical = data
         .incident_records
@@ -555,11 +611,14 @@ fn render_status(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState, s
         spans.push(Span::raw(" │ "));
         spans.push(Span::styled(
             format!("CRITICAL:{} open", open_critical),
-            Style::default().fg(Color::Black).bg(Color::Red).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Red)
+                .add_modifier(Modifier::BOLD),
         ));
     }
-    let widget = Paragraph::new(Line::from(spans))
-        .style(Style::default().bg(Color::Reset).fg(Color::White));
+    let widget =
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::Reset).fg(Color::White));
     frame.render_widget(widget, area);
 }
 
@@ -590,15 +649,45 @@ fn render_overview(frame: &mut Frame, area: Rect, data: &ViewData) {
         ),
         kv("Gangs", obs.gangs.to_string()),
         kv("Events logged", data.events.len().to_string()),
-        kv("Rehab", format!("{} enroll / {} prisoners / {:.0}% avg", data.rehab_overview.enrollments, data.rehab_overview.enrolled_prisoners, data.rehab_overview.average_progress * 100.0)),
-        kv("Contraband/Post-release", format!("{} cases / {} records", data.contraband_cases.len(), data.post_release_records.len())),
+        kv(
+            "Rehab",
+            format!(
+                "{} enroll / {} prisoners / {:.0}% avg",
+                data.rehab_overview.enrollments,
+                data.rehab_overview.enrolled_prisoners,
+                data.rehab_overview.average_progress * 100.0
+            ),
+        ),
+        kv(
+            "Contraband/Post-release",
+            format!(
+                "{} cases / {} records",
+                data.contraband_cases.len(),
+                data.post_release_records.len()
+            ),
+        ),
         bar_line("Security level", data.policy.security_level, 18),
         bar_line("Privileges", data.policy.privileges_level, 18),
         bar_line("Economy health", obs.economy_health as f32, 18),
-        kv("Rehab funding", format!("{:.2}x", data.policy.rehab_funding_multiplier)),
+        kv(
+            "Rehab funding",
+            format!("{:.2}x", data.policy.rehab_funding_multiplier),
+        ),
         kv(
             "Lockdown / Intake",
-            format!("{} / {}", if data.policy.lockdown { "ACTIVE" } else { "none" }, if data.policy.intake_paused { "paused" } else { "open" }),
+            format!(
+                "{} / {}",
+                if data.policy.lockdown {
+                    "ACTIVE"
+                } else {
+                    "none"
+                },
+                if data.policy.intake_paused {
+                    "paused"
+                } else {
+                    "open"
+                }
+            ),
         ),
     ];
     frame.render_widget(
@@ -622,14 +711,14 @@ fn render_overview(frame: &mut Frame, area: Rect, data: &ViewData) {
         kv("Reports inbox", format!("{} guard reports", w.inbox.len())),
         kv("Pending actions", w.pending_actions.len().to_string()),
         kv("Last decision", w.last_decision_at.to_string()),
-        kv(
-            "Treasury",
-            format!("${:.2}", data.economy.cash_major),
-        ),
+        kv("Treasury", format!("${:.2}", data.economy.cash_major)),
     ];
     warden_lines.push(plain("--- Recent critical events ---"));
-    let mut critical_events: Vec<&sumo::IncidentRecord> =
-        data.incident_records.iter().filter(|r| r.severity >= 0.4).collect();
+    let mut critical_events: Vec<&sumo::IncidentRecord> = data
+        .incident_records
+        .iter()
+        .filter(|r| r.severity >= 0.4)
+        .collect();
     critical_events.sort_by(|a, b| b.at.cmp(&a.at));
     if critical_events.is_empty() {
         warden_lines.push(plain("No critical incidents recorded."));
@@ -677,8 +766,11 @@ fn render_overview(frame: &mut Frame, area: Rect, data: &ViewData) {
         ],
     )
     .header(
-        Row::new(vec!["ID", "Facility", "Wing", "Cap", "Cond", "Staff"])
-            .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Row::new(vec!["ID", "Facility", "Wing", "Cap", "Cond", "Staff"]).style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
     )
     .block(title_block(" Facilities "));
     frame.render_widget(table, chunks[2]);
@@ -689,8 +781,7 @@ fn render_overview(frame: &mut Frame, area: Rect, data: &ViewData) {
 // ---------------------------------------------------------------------------
 
 fn render_prisoner(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
-    let chunks =
-        Layout::horizontal([Constraint::Length(30), Constraint::Min(30)]).split(area);
+    let chunks = Layout::horizontal([Constraint::Length(30), Constraint::Min(30)]).split(area);
 
     // `data.prisoners` is already filtered by the observer search (see
     // `App::visible_prisoners`) — do not filter again here.
@@ -710,13 +801,20 @@ fn render_prisoner(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState)
             ListItem::new(Line::from(vec![
                 Span::raw(format!("{:>3} ", p.id.0)),
                 Span::raw(format!("{:<21}", truncate(&p.name, 20))),
-                Span::styled(class_short(p.classification), Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    class_short(p.classification),
+                    Style::default().fg(Color::DarkGray),
+                ),
             ]))
             .style(style)
         })
         .collect();
     let title = if ui.search.is_empty() {
-        format!(" Prisoners ({} of {}) ", filtered.len(), data.total_prisoners)
+        format!(
+            " Prisoners ({} of {}) ",
+            filtered.len(),
+            data.total_prisoners
+        )
     } else {
         format!(
             " Prisoners ({} of {}) q='{}' ",
@@ -732,14 +830,24 @@ fn render_prisoner(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState)
         render_prisoner_detail(frame, chunks[1], p, data, ui);
     } else {
         frame.render_widget(
-            Paragraph::new(if data.prisoners.is_empty() { "No prisoners in custody." } else { "No prisoners match search." })
-                .block(title_block(" Prisoner Profile ")),
+            Paragraph::new(if data.prisoners.is_empty() {
+                "No prisoners in custody."
+            } else {
+                "No prisoners match search."
+            })
+            .block(title_block(" Prisoner Profile ")),
             chunks[1],
         );
     }
 }
 
-fn render_prisoner_detail(frame: &mut Frame, area: Rect, p: &PrisonerSummary, data: &ViewData, ui: &UiState) {
+fn render_prisoner_detail(
+    frame: &mut Frame,
+    area: Rect,
+    p: &PrisonerSummary,
+    data: &ViewData,
+    ui: &UiState,
+) {
     let chunks = Layout::vertical([
         Constraint::Length(10),
         Constraint::Min(10),
@@ -769,7 +877,11 @@ fn render_prisoner_detail(frame: &mut Frame, area: Rect, p: &PrisonerSummary, da
         good_bar("Health", p.condition.health, 14),
         good_bar("Mental health", p.condition.mental_health, 14),
         good_bar("Hope", p.condition.hope, 14),
-        bar_line("Injury / Illness", (p.condition.injury + p.condition.illness) / 2.0, 14),
+        bar_line(
+            "Injury / Illness",
+            (p.condition.injury + p.condition.illness) / 2.0,
+            14,
+        ),
     ];
     frame.render_widget(
         Paragraph::new(header).block(title_block(format!(" {} — Profile ", p.name))),
@@ -793,60 +905,131 @@ fn render_prisoner_detail(frame: &mut Frame, area: Rect, p: &PrisonerSummary, da
         good_bar("Ambition", t.ambition, 12),
         good_bar("Leadership", t.leadership, 12),
     ];
-    frame.render_widget(Paragraph::new(traits).block(title_block(" Personality Traits ")), columns[0]);
-    frame.render_widget(Paragraph::new(need_lines(&p.needs)).block(title_block(" Needs (deficit pressure) ")), columns[1]);
+    frame.render_widget(
+        Paragraph::new(traits).block(title_block(" Personality Traits ")),
+        columns[0],
+    );
+    frame.render_widget(
+        Paragraph::new(need_lines(&p.needs)).block(title_block(" Needs (deficit pressure) ")),
+        columns[1],
+    );
 
-    let lower = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(chunks[2]);
+    let lower = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(chunks[2]);
 
     let mut goals: Vec<Line<'static>> = Vec::new();
     for g in &p.goals {
         goals.push(Line::from(vec![
             Span::styled(format!("{:?}", g.kind), Style::default().fg(Color::Yellow)),
-            Span::raw(format!(" pro {:.2} urg {:.2} — {}", g.progress, g.urgency, truncate(&g.description, 40))),
+            Span::raw(format!(
+                " pro {:.2} urg {:.2} — {}",
+                g.progress,
+                g.urgency,
+                truncate(&g.description, 40)
+            )),
         ]));
     }
-    if goals.is_empty() { goals.push(plain("No active goals.")); }
+    if goals.is_empty() {
+        goals.push(plain("No active goals."));
+    }
     goals.push(plain("--- Schedule ---"));
     goals.push(kv("Wing", p.schedule.wing.to_string()));
-    goals.push(kv("Work", p.schedule.work_assignment.clone().unwrap_or_else(|| "none".into())));
+    goals.push(kv(
+        "Work",
+        p.schedule
+            .work_assignment
+            .clone()
+            .unwrap_or_else(|| "none".into()),
+    ));
     goals.push(kv("Education", p.schedule.education.to_string()));
-    goals.push(kv("Discipline", if p.schedule.disciplinary_status { "sanctioned" } else { "clean" }));
+    goals.push(kv(
+        "Discipline",
+        if p.schedule.disciplinary_status {
+            "sanctioned"
+        } else {
+            "clean"
+        },
+    ));
 
-    if let Some(tl) = data.selected_schedule.as_ref().filter(|t| t.prisoner_id == p.id) {
+    if let Some(tl) = data
+        .selected_schedule
+        .as_ref()
+        .filter(|t| t.prisoner_id == p.id)
+    {
         goals.push(plain(format!(
             "--- Daily Timeline day {} {:02}:{:02} att {:.0}% ---",
-            tl.day, tl.current_minute / 60, tl.current_minute % 60, tl.attendance_probability * 100.0
+            tl.day,
+            tl.current_minute / 60,
+            tl.current_minute % 60,
+            tl.attendance_probability * 100.0
         )));
         for b in &tl.blocks {
             let marker = if b.current { ">" } else { " " };
-            let status = if b.cancelled { format!("CANCELLED{}", b.reason.as_deref().map(|r| format!(" ({r})")).unwrap_or_default()) } else { b.activity.clone() };
+            let status = if b.cancelled {
+                format!(
+                    "CANCELLED{}",
+                    b.reason
+                        .as_deref()
+                        .map(|r| format!(" ({r})"))
+                        .unwrap_or_default()
+                )
+            } else {
+                b.activity.clone()
+            };
             goals.push(plain(format!(
                 "{} {:02}:{:02}-{:02}:{:02} {} — {}",
-                marker, b.start_minute / 60, b.start_minute % 60, b.end_minute / 60, b.end_minute % 60, b.label, status
+                marker,
+                b.start_minute / 60,
+                b.start_minute % 60,
+                b.end_minute / 60,
+                b.end_minute % 60,
+                b.label,
+                status
             )));
         }
     } else {
         goals.push(plain("--- Daily Timeline (inferred) ---"));
-        let work = p.schedule.work_assignment.clone().unwrap_or_else(|| "idle".into());
-        let disc = if p.schedule.disciplinary_status { " (restricted)" } else { "" };
+        let work = p
+            .schedule
+            .work_assignment
+            .clone()
+            .unwrap_or_else(|| "idle".into());
+        let disc = if p.schedule.disciplinary_status {
+            " (restricted)"
+        } else {
+            ""
+        };
         goals.push(plain(format!("06:00 Wake & count{disc}")));
         goals.push(plain("07:00 Breakfast"));
-        if p.schedule.education { goals.push(plain(format!("08:00-12:00 Education / {work}"))); } else { goals.push(plain(format!("08:00-12:00 Work: {work}"))); }
+        if p.schedule.education {
+            goals.push(plain(format!("08:00-12:00 Education / {work}")));
+        } else {
+            goals.push(plain(format!("08:00-12:00 Work: {work}")));
+        }
         goals.push(plain("12:00 Lunch"));
         goals.push(plain("13:00-15:00 Recreation / yard"));
-        if p.schedule.education { goals.push(plain("15:00 Programs & counseling")); }
+        if p.schedule.education {
+            goals.push(plain("15:00 Programs & counseling"));
+        }
         goals.push(plain("17:00 Dinner"));
         goals.push(plain("18:00 Free time / social"));
         goals.push(plain("21:00 Lockup"));
     }
-    frame.render_widget(Paragraph::new(goals).block(title_block(" Goals & Schedule ")), lower[0]);
+    frame.render_widget(
+        Paragraph::new(goals).block(title_block(" Goals & Schedule ")),
+        lower[0],
+    );
 
     let mut tail: Vec<Line<'static>> = Vec::new();
     tail.push(plain("--- Skills ---"));
     let mut skills: Vec<_> = p.skills.iter().collect();
     skills.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
-    for (k, v) in skills.iter().take(5) { tail.push(kv(k.as_str(), format!("{v:.2}"))); }
-    if p.skills.is_empty() { tail.push(plain("  (none recorded)")); }
+    for (k, v) in skills.iter().take(5) {
+        tail.push(kv(k.as_str(), format!("{v:.2}")));
+    }
+    if p.skills.is_empty() {
+        tail.push(plain("  (none recorded)"));
+    }
 
     tail.push(plain("--- Rehab (0.05) t:cycle r:enroll R:drop ---"));
     if data.rehab_program_catalog.is_empty() {
@@ -856,14 +1039,25 @@ fn render_prisoner_detail(frame: &mut Frame, area: Rect, p: &PrisonerSummary, da
         let on_hold = p.schedule.disciplinary_status;
         tail.push(plain(format!(
             "  eligibility: {} · funding {:.2}x · {} program(s)",
-            if on_hold { "on hold (disciplinary)" } else { "open" },
+            if on_hold {
+                "on hold (disciplinary)"
+            } else {
+                "open"
+            },
             data.policy.rehab_funding_multiplier,
             data.rehab_program_catalog.len()
         )));
         for (i, prog) in data.rehab_program_catalog.iter().enumerate() {
             let marker = if i == sel_idx { ">" } else { " " };
-            let enrolled = data.rehab_summaries.iter().any(|r| r.prisoner_id == p.id && r.program_key == prog.key);
-            let rollup = data.rehab_overview.programs.iter().find(|r| r.key == prog.key);
+            let enrolled = data
+                .rehab_summaries
+                .iter()
+                .any(|r| r.prisoner_id == p.id && r.program_key == prog.key);
+            let rollup = data
+                .rehab_overview
+                .programs
+                .iter()
+                .find(|r| r.key == prog.key);
             let seats = rollup.map(|r| r.enrolled).unwrap_or(0);
             tail.push(plain(format!(
                 "{marker}{} diff {:.0}% seats {} {}{}",
@@ -875,25 +1069,60 @@ fn render_prisoner_detail(frame: &mut Frame, area: Rect, p: &PrisonerSummary, da
             )));
         }
     }
-    let mut rehab_rows: Vec<_> = data.rehab_summaries.iter().filter(|r| r.prisoner_id == p.id).collect();
-    rehab_rows.sort_by(|a,b| a.program.cmp(&b.program));
-    if rehab_rows.is_empty() { tail.push(plain("  active: none")); }
+    let mut rehab_rows: Vec<_> = data
+        .rehab_summaries
+        .iter()
+        .filter(|r| r.prisoner_id == p.id)
+        .collect();
+    rehab_rows.sort_by(|a, b| a.program.cmp(&b.program));
+    if rehab_rows.is_empty() {
+        tail.push(plain("  active: none"));
+    }
     for r in rehab_rows.iter().take(4) {
-        tail.push(kv(&r.program, format!("{:.0}%{}", r.progress * 100.0, if r.disciplinary { " disc" } else { "" })));
+        tail.push(kv(
+            &r.program,
+            format!(
+                "{:.0}%{}",
+                r.progress * 100.0,
+                if r.disciplinary { " disc" } else { "" }
+            ),
+        ));
     }
 
     tail.push(plain("--- Contraband (0.05) ---"));
-    let mut cases: Vec<_> = data.contraband_cases.iter().filter(|c| c.holder == Some(p.id)).collect();
-    cases.sort_by(|a,b| b.at.cmp(&a.at));
-    if cases.is_empty() { tail.push(plain("  no cases")); }
+    let mut cases: Vec<_> = data
+        .contraband_cases
+        .iter()
+        .filter(|c| c.holder == Some(p.id))
+        .collect();
+    cases.sort_by(|a, b| b.at.cmp(&a.at));
+    if cases.is_empty() {
+        tail.push(plain("  no cases"));
+    }
     for c in cases.iter().take(4) {
-        tail.push(plain(format!("d{} {} sev {:.1}{}", c.at.as_days(), c.item.as_deref().unwrap_or("Unknown"), c.severity, if c.resolved { " resolved" } else { "" })));
+        tail.push(plain(format!(
+            "d{} {} sev {:.1}{}",
+            c.at.as_days(),
+            c.item.as_deref().unwrap_or("Unknown"),
+            c.severity,
+            if c.resolved { " resolved" } else { "" }
+        )));
     }
 
-    tail.push(plain("--- Parole (0.05) H:hearing G:grant J:deny Y:release ---"));
+    tail.push(plain(
+        "--- Parole (0.05) H:hearing G:grant J:deny Y:release ---",
+    ));
     let due = data.parole_due.contains(&p.id.raw());
-    tail.push(kv("Eligibility", if due { "due for review" } else { "not due" }.to_string()));
-    tail.push(kv("Status", data.selected_parole.map(|s| format!("{s:?}")).unwrap_or_else(|| "none".into())));
+    tail.push(kv(
+        "Eligibility",
+        if due { "due for review" } else { "not due" }.to_string(),
+    ));
+    tail.push(kv(
+        "Status",
+        data.selected_parole
+            .map(|s| format!("{s:?}"))
+            .unwrap_or_else(|| "none".into()),
+    ));
     if let Some(reason) = data.selected_parole_reason.as_deref() {
         tail.push(kv("Decision", truncate(reason, 48)));
     }
@@ -907,16 +1136,39 @@ fn render_prisoner_detail(frame: &mut Frame, area: Rect, p: &PrisonerSummary, da
         tail.push(kv("Released", format!("day {}", at.as_days())));
     }
 
-    if let Some(pr) = data.post_release_records.iter().find(|r| r.prisoner_id == p.id) {
+    if let Some(pr) = data
+        .post_release_records
+        .iter()
+        .find(|r| r.prisoner_id == p.id)
+    {
         tail.push(plain("--- Post-release ---"));
-        tail.push(kv("Outcome", if pr.successful_reintegration { "successful" } else { "follow-up" }.to_string()));
-        if let Some(risk) = pr.recidivism_risk { tail.push(kv("Recidivism", format!("{:.0}%", risk * 100.0))); }
+        tail.push(kv(
+            "Outcome",
+            if pr.successful_reintegration {
+                "successful"
+            } else {
+                "follow-up"
+            }
+            .to_string(),
+        ));
+        if let Some(risk) = pr.recidivism_risk {
+            tail.push(kv("Recidivism", format!("{:.0}%", risk * 100.0)));
+        }
     }
 
     tail.push(plain("--- Memory ---"));
-    let memory = if p.memory_summary.is_empty() { "  (no significant memories yet)".to_string() } else { truncate(&p.memory_summary, 300) };
-    for part in memory.lines() { tail.push(plain(part.to_string())); }
-    frame.render_widget(Paragraph::new(tail).block(title_block(" Skills, Rehab & Memory ")), lower[1]);
+    let memory = if p.memory_summary.is_empty() {
+        "  (no significant memories yet)".to_string()
+    } else {
+        truncate(&p.memory_summary, 300)
+    };
+    for part in memory.lines() {
+        tail.push(plain(part.to_string()));
+    }
+    frame.render_widget(
+        Paragraph::new(tail).block(title_block(" Skills, Rehab & Memory ")),
+        lower[1],
+    );
 }
 
 fn need_lines(n: &alc_prisoner::Needs) -> Vec<Line<'static>> {
@@ -954,8 +1206,7 @@ fn need_lines(n: &alc_prisoner::Needs) -> Vec<Line<'static>> {
 // ---------------------------------------------------------------------------
 
 fn render_gang(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
-    let chunks =
-        Layout::horizontal([Constraint::Length(30), Constraint::Min(30)]).split(area);
+    let chunks = Layout::horizontal([Constraint::Length(30), Constraint::Min(30)]).split(area);
 
     if data.gangs.is_empty() {
         frame.render_widget(
@@ -1013,15 +1264,16 @@ fn render_gang(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
             truncate(&ui.search, 10)
         )
     };
-    frame.render_widget(
-        List::new(items).block(title_block(gtitle)),
-        chunks[0],
-    );
+    frame.render_widget(List::new(items).block(title_block(gtitle)), chunks[0]);
 
     let Some(g) = filtered.get(idx) else {
         frame.render_widget(
-            Paragraph::new(if ui.search.is_empty() { "Select a gang with ↑/↓." } else { "No gangs match search." })
-                .block(title_block(" Gang Detail ")),
+            Paragraph::new(if ui.search.is_empty() {
+                "Select a gang with ↑/↓."
+            } else {
+                "No gangs match search."
+            })
+            .block(title_block(" Gang Detail ")),
             chunks[1],
         );
         return;
@@ -1043,9 +1295,12 @@ fn render_gang(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
         kv("Formed", g.formed_at.to_string()),
         kv("Active", g.active.to_string()),
     ];
-    let detail_chunks =
-        Layout::vertical([Constraint::Length(10), Constraint::Min(6), Constraint::Length(6)])
-            .split(chunks[1]);
+    let detail_chunks = Layout::vertical([
+        Constraint::Length(10),
+        Constraint::Min(6),
+        Constraint::Length(6),
+    ])
+    .split(chunks[1]);
     frame.render_widget(
         Paragraph::new(header).block(title_block(format!(" {} ", g.name))),
         detail_chunks[0],
@@ -1116,8 +1371,7 @@ fn render_gang(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
 // ---------------------------------------------------------------------------
 
 fn render_staff(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
-    let chunks =
-        Layout::horizontal([Constraint::Length(30), Constraint::Min(30)]).split(area);
+    let chunks = Layout::horizontal([Constraint::Length(30), Constraint::Min(30)]).split(area);
     // `data.guards` is already filtered by the observer search.
     let filtered: &[GuardSummary] = &data.guards;
     let idx = (ui.scroll as usize).min(filtered.len().saturating_sub(1));
@@ -1146,7 +1400,11 @@ fn render_staff(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
         })
         .collect();
     let stitle = if ui.search.is_empty() {
-        format!(" Staff Roster ({} of {}) ", filtered.len(), data.total_guards)
+        format!(
+            " Staff Roster ({} of {}) ",
+            filtered.len(),
+            data.total_guards
+        )
     } else {
         format!(
             " Staff ({} of {}) q='{}' ",
@@ -1155,15 +1413,16 @@ fn render_staff(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
             truncate(&ui.search, 10)
         )
     };
-    frame.render_widget(
-        List::new(items).block(title_block(stitle)),
-        chunks[0],
-    );
+    frame.render_widget(List::new(items).block(title_block(stitle)), chunks[0]);
 
     let Some(g) = filtered.get(idx) else {
         frame.render_widget(
-            Paragraph::new(if data.guards.is_empty() { "No guards on duty." } else { "No staff match search." })
-                .block(title_block(" Guard Detail ")),
+            Paragraph::new(if data.guards.is_empty() {
+                "No guards on duty."
+            } else {
+                "No staff match search."
+            })
+            .block(title_block(" Guard Detail ")),
             chunks[1],
         );
         return;
@@ -1182,7 +1441,10 @@ fn render_staff(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
         kv("Authority", format!("{:?}", g.authority)),
         kv("Shift", g.shift.to_string()),
         kv("Current task", g.current_task.clone()),
-        kv("Report credibility", format!("{:.2}", (g.competence + g.integrity) / 2.0)),
+        kv(
+            "Report credibility",
+            format!("{:.2}", (g.competence + g.integrity) / 2.0),
+        ),
         kv("On-duty history", format!("{} entries", g.history.len())),
     ];
     frame.render_widget(
@@ -1282,7 +1544,11 @@ fn render_warden(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
     let actions: Vec<Line<'static>> = if w.pending_actions.is_empty() {
         vec![plain("No pending actions.")]
     } else {
-        w.pending_actions.iter().take(12).map(|a| plain(format!("{:?}", a))).collect()
+        w.pending_actions
+            .iter()
+            .take(12)
+            .map(|a| plain(format!("{:?}", a)))
+            .collect()
     };
     frame.render_widget(
         Paragraph::new(actions).block(title_block(" Pending Actions ")),
@@ -1291,12 +1557,37 @@ fn render_warden(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
 
     let policy_lines = vec![
         kv("Policy band", format!("{:?}", p.policy)),
-        kv("Lockdown", if p.lockdown { "ENABLED".to_string() } else { "off".to_string() }),
+        kv(
+            "Lockdown",
+            if p.lockdown {
+                "ENABLED".to_string()
+            } else {
+                "off".to_string()
+            },
+        ),
         good_bar("Security", p.security_level, 14),
         good_bar("Privileges", p.privileges_level, 14),
-        kv("Rehab funding", format!("{:.2}x", p.rehab_funding_multiplier)),
-        kv("Intake", if p.intake_paused { "PAUSED".to_string() } else { "open".to_string() }),
-        kv("Budget (30d)", format!("net ${:.0}/d runway {:.0}d", data.budget_snapshot.projected_daily_revenue - data.budget_snapshot.projected_daily_expense, data.budget_snapshot.runway_days)),
+        kv(
+            "Rehab funding",
+            format!("{:.2}x", p.rehab_funding_multiplier),
+        ),
+        kv(
+            "Intake",
+            if p.intake_paused {
+                "PAUSED".to_string()
+            } else {
+                "open".to_string()
+            },
+        ),
+        kv(
+            "Budget (30d)",
+            format!(
+                "net ${:.0}/d runway {:.0}d",
+                data.budget_snapshot.projected_daily_revenue
+                    - data.budget_snapshot.projected_daily_expense,
+                data.budget_snapshot.runway_days
+            ),
+        ),
     ];
     frame.render_widget(
         Paragraph::new(policy_lines).block(title_block(" Policy Controls ")),
@@ -1311,14 +1602,24 @@ fn render_warden(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
         .map(|pjt| {
             let selected = sel_c == Some(pjt.id);
             let style = if selected {
-                Style::default().bg(Color::DarkGray).fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
             let status = format!("{:?}", pjt.status);
-            let reason = pjt.terminal_reason.clone().unwrap_or_else(|| "-".to_string());
+            let reason = pjt
+                .terminal_reason
+                .clone()
+                .unwrap_or_else(|| "-".to_string());
             Row::new(vec![
-                Cell::from(if selected { format!("»{}", pjt.id) } else { pjt.id.to_string() }),
+                Cell::from(if selected {
+                    format!("»{}", pjt.id)
+                } else {
+                    pjt.id.to_string()
+                }),
                 Cell::from(pjt.kind.display().to_string()),
                 Cell::from(format!("W{}", pjt.wing)),
                 Cell::from(pjt.capacity.to_string()),
@@ -1341,30 +1642,60 @@ fn render_warden(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
             Constraint::Min(8),
         ],
     )
-    .header(Row::new(vec!["ID", "Kind", "Wg", "Cap", "Prog", "Status", "Reason"]).style(Style::default().fg(Color::Yellow)))
-    .block(title_block(format!(" Construction Queue ({}) ", data.construction_queue.len())));
+    .header(
+        Row::new(vec!["ID", "Kind", "Wg", "Cap", "Prog", "Status", "Reason"])
+            .style(Style::default().fg(Color::Yellow)),
+    )
+    .block(title_block(format!(
+        " Construction Queue ({}) ",
+        data.construction_queue.len()
+    )));
     frame.render_widget(cq_table, right[2]);
 
     let mut detail_lines = if let Some(sel_id) = sel_c {
         if let Some(pjt) = data.construction_queue.iter().find(|p| p.id == sel_id) {
             let prereq_ok = pjt.staff_allocated && pjt.materials_ready && pjt.prereqs_met;
             vec![
-                kv("Selected", format!("#{} {} W{}", pjt.id, pjt.kind.display(), pjt.wing)),
-                kv("Progress", format!("{}/{} days", pjt.progress_days, pjt.total_days)),
+                kv(
+                    "Selected",
+                    format!("#{} {} W{}", pjt.id, pjt.kind.display(), pjt.wing),
+                ),
+                kv(
+                    "Progress",
+                    format!("{}/{} days", pjt.progress_days, pjt.total_days),
+                ),
                 kv("Cost", format!("${:.0}", pjt.cost)),
                 kv("Status", format!("{:?}", pjt.status)),
-                kv("Terminal reason", pjt.terminal_reason.clone().unwrap_or_else(|| "none".into())),
-                kv("Prereqs", format!("staff={} mats={} fac={} ok={}", pjt.staff_allocated, pjt.materials_ready, pjt.prereqs_met, prereq_ok)),
+                kv(
+                    "Terminal reason",
+                    pjt.terminal_reason.clone().unwrap_or_else(|| "none".into()),
+                ),
+                kv(
+                    "Prereqs",
+                    format!(
+                        "staff={} mats={} fac={} ok={}",
+                        pjt.staff_allocated, pjt.materials_ready, pjt.prereqs_met, prereq_ok
+                    ),
+                ),
             ]
         } else {
-            vec![plain(format!("Selected construction #{} not in queue.", sel_id))]
+            vec![plain(format!(
+                "Selected construction #{} not in queue.",
+                sel_id
+            ))]
         }
     } else if let Some(pjt) = data.construction_queue.first() {
         vec![
             plain("No selected_construction; showing first queue item."),
             kv("ID/Kind", format!("#{} {}", pjt.id, pjt.kind.display())),
             kv("Cost", format!("${:.0}", pjt.cost)),
-            kv("Prereqs", format!("staff={} mats={} fac={}", pjt.staff_allocated, pjt.materials_ready, pjt.prereqs_met)),
+            kv(
+                "Prereqs",
+                format!(
+                    "staff={} mats={} fac={}",
+                    pjt.staff_allocated, pjt.materials_ready, pjt.prereqs_met
+                ),
+            ),
         ]
     } else {
         vec![plain("No construction projects in queue.")]
@@ -1373,11 +1704,19 @@ fn render_warden(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
     let catalog = CONSTRUCTION_KINDS
         .iter()
         .enumerate()
-        .map(|(i, kind)| format!("{}{}", if i == sel_kind { ">" } else { " " }, kind.display()))
+        .map(|(i, kind)| {
+            format!(
+                "{}{}",
+                if i == sel_kind { ">" } else { " " },
+                kind.display()
+            )
+        })
         .collect::<Vec<_>>()
         .join(" ");
     detail_lines.push(plain(format!("Catalog: {catalog}")));
-    detail_lines.push(plain("c cycle · C queue · v approve · x cancel · X fail · > advance"));
+    detail_lines.push(plain(
+        "c cycle · C queue · v approve · x cancel · X fail · > advance",
+    ));
     frame.render_widget(
         Paragraph::new(detail_lines).block(title_block(" Construction Detail ")),
         right[3],
@@ -1424,18 +1763,40 @@ fn render_financial(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
         .sum();
 
     // Recent daily net (last 7 days) plus 30-day variance and forecast.
-    let max_day = e.ledger.iter().map(|l| l.at_secs / 86_400).max().unwrap_or(0);
+    let max_day = e
+        .ledger
+        .iter()
+        .map(|l| l.at_secs / 86_400)
+        .max()
+        .unwrap_or(0);
     let mut daily_lines: Vec<Line<'static>> = Vec::new();
     let mut net_7: i64 = 0;
     for i in 0..7u64 {
         let day = max_day.saturating_sub(6 - i);
-        let net: i64 = e.ledger.iter().filter(|l| l.at_secs / 86_400 == day).map(|l| l.amount.0).sum();
+        let net: i64 = e
+            .ledger
+            .iter()
+            .filter(|l| l.at_secs / 86_400 == day)
+            .map(|l| l.amount.0)
+            .sum();
         net_7 += net;
-        let style = if net >= 0 { Style::default().fg(Color::Green) } else { Style::default().fg(Color::Red) };
-        daily_lines.push(Line::from(Span::styled(format!("D{} {:+.2}", day, net as f64 / 100.0), style)));
+        let style = if net >= 0 {
+            Style::default().fg(Color::Green)
+        } else {
+            Style::default().fg(Color::Red)
+        };
+        daily_lines.push(Line::from(Span::styled(
+            format!("D{} {:+.2}", day, net as f64 / 100.0),
+            style,
+        )));
     }
     let day_30_start = max_day.saturating_sub(29);
-    let net_30: i64 = e.ledger.iter().filter(|l| l.at_secs / 86_400 >= day_30_start).map(|l| l.amount.0).sum();
+    let net_30: i64 = e
+        .ledger
+        .iter()
+        .filter(|l| l.at_secs / 86_400 >= day_30_start)
+        .map(|l| l.amount.0)
+        .sum();
     let avg_daily = net_30 as f64 / 30.0 / 100.0;
     let forecast_7 = e.cash_major + avg_daily * 7.0;
     let forecast_30 = e.cash_major + avg_daily * 30.0;
@@ -1443,14 +1804,20 @@ fn render_financial(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
     // Cost groups for an at-a-glance expense breakdown.
     let mut cost_groups: Vec<(&'static str, i64)> = Vec::new();
     for (acct, net) in &accounts {
-        if *net >= 0 { continue; }
+        if *net >= 0 {
+            continue;
+        }
         let group = match acct {
             alc_economy::Account::Salaries | alc_economy::Account::Admin => "Payroll/admin",
-            alc_economy::Account::Maintenance | alc_economy::Account::Utilities
-            | alc_economy::Account::Water | alc_economy::Account::Supplies
+            alc_economy::Account::Maintenance
+            | alc_economy::Account::Utilities
+            | alc_economy::Account::Water
+            | alc_economy::Account::Supplies
             | alc_economy::Account::Construction => "Facilities/ops",
             alc_economy::Account::Food | alc_economy::Account::Medical => "Care/food",
-            alc_economy::Account::Rehabilitation | alc_economy::Account::Education => "Rehab/education",
+            alc_economy::Account::Rehabilitation | alc_economy::Account::Education => {
+                "Rehab/education"
+            }
             alc_economy::Account::SecurityEquipment => "Security",
             alc_economy::Account::Transportation => "Transport",
             _ => "Other",
@@ -1484,13 +1851,37 @@ fn render_financial(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
 
     let summary = vec![
         kv("Treasury", format!("${:.2}", e.cash_major)),
-        kv("Funding / prisoner / day", format!("${:.2}", e.funding_per_prisoner_per_day)),
-        kv("Crowding threshold", format!("{} prisoners", e.crowding_threshold)),
+        kv(
+            "Funding / prisoner / day",
+            format!("${:.2}", e.funding_per_prisoner_per_day),
+        ),
+        kv(
+            "Crowding threshold",
+            format!("{} prisoners", e.crowding_threshold),
+        ),
         kv("Ledger entries", e.ledger.len().to_string()),
-        kv("Revenue (all-time)", format!("${:.2}", revenue_total as f64 / 100.0)),
-        kv("Expenses (all-time)", format!("${:.2}", expense_total as f64 / 100.0)),
-        kv("Net (all-time)", format!("${:.2}", (revenue_total + expense_total) as f64 / 100.0)),
-        kv("Budget (30d proj/d)", format!("inc ${:.0} exp ${:.0} net ${:.0}", data.budget_snapshot.projected_daily_revenue, data.budget_snapshot.projected_daily_expense, data.budget_snapshot.projected_daily_revenue - data.budget_snapshot.projected_daily_expense)),
+        kv(
+            "Revenue (all-time)",
+            format!("${:.2}", revenue_total as f64 / 100.0),
+        ),
+        kv(
+            "Expenses (all-time)",
+            format!("${:.2}", expense_total as f64 / 100.0),
+        ),
+        kv(
+            "Net (all-time)",
+            format!("${:.2}", (revenue_total + expense_total) as f64 / 100.0),
+        ),
+        kv(
+            "Budget (30d proj/d)",
+            format!(
+                "inc ${:.0} exp ${:.0} net ${:.0}",
+                data.budget_snapshot.projected_daily_revenue,
+                data.budget_snapshot.projected_daily_expense,
+                data.budget_snapshot.projected_daily_revenue
+                    - data.budget_snapshot.projected_daily_expense
+            ),
+        ),
     ];
     frame.render_widget(
         Paragraph::new(summary).block(title_block(" Prison Economy & Budget ")),
@@ -1500,9 +1891,40 @@ fn render_financial(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
     // Trend / forecast / drivers / warnings panel — previously clipped by the
     // fixed `Length` above; now its own content-sized panel.
     let drivers = vec![
-        kv("Trend", format!("7d {:+.2} · 30d {:+.2} · avg {:+.2}/d", net_7 as f64 / 100.0, net_30 as f64 / 100.0, avg_daily)),
-        kv("Forecast cash", format!("7d ${:.2} · 30d ${:.2}", forecast_7, forecast_30)),
-        kv("Health drivers", format!("cash {} · 30d avg {} · funding {}", if e.cash_major < 0.0 { "negative" } else { "positive" }, if avg_daily < 0.0 { "deficit" } else { "surplus" }, if e.funding_per_prisoner_per_day <= 0.0 { "off" } else { "on" })),
+        kv(
+            "Trend",
+            format!(
+                "7d {:+.2} · 30d {:+.2} · avg {:+.2}/d",
+                net_7 as f64 / 100.0,
+                net_30 as f64 / 100.0,
+                avg_daily
+            ),
+        ),
+        kv(
+            "Forecast cash",
+            format!("7d ${:.2} · 30d ${:.2}", forecast_7, forecast_30),
+        ),
+        kv(
+            "Health drivers",
+            format!(
+                "cash {} · 30d avg {} · funding {}",
+                if e.cash_major < 0.0 {
+                    "negative"
+                } else {
+                    "positive"
+                },
+                if avg_daily < 0.0 {
+                    "deficit"
+                } else {
+                    "surplus"
+                },
+                if e.funding_per_prisoner_per_day <= 0.0 {
+                    "off"
+                } else {
+                    "on"
+                }
+            ),
+        ),
         kv("Warnings", warnings.join(" · ")),
     ];
     frame.render_widget(
@@ -1514,10 +1936,16 @@ fn render_financial(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
     let mut breakdown_lines: Vec<Line<'static>> = Vec::new();
     breakdown_lines.push(Line::from(Span::styled(
         format!("{:<24} {:>12}", "Account", "Net"),
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
     )));
     for (acct, net) in accounts.iter().take(5) {
-        let style = if *net >= 0 { Style::default().fg(Color::Green) } else { Style::default().fg(Color::Red) };
+        let style = if *net >= 0 {
+            Style::default().fg(Color::Green)
+        } else {
+            Style::default().fg(Color::Red)
+        };
         breakdown_lines.push(Line::from(vec![
             Span::raw(format!("{:<24}", format!("{:?}", acct))),
             Span::styled(format!("{:>12.2}", *net as f64 / 100.0), style),
@@ -1534,7 +1962,10 @@ fn render_financial(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
             breakdown_lines.push(kv(*group, format!("${:.2}", *net as f64 / -100.0)));
         }
     }
-    breakdown_lines.push(plain(format!("--- Daily net / forecast (30d avg {:+.2}/d) ---", avg_daily)));
+    breakdown_lines.push(plain(format!(
+        "--- Daily net / forecast (30d avg {:+.2}/d) ---",
+        avg_daily
+    )));
     for l in daily_lines {
         breakdown_lines.push(l);
     }
@@ -1610,8 +2041,7 @@ struct SimDay(u64);
 // ---------------------------------------------------------------------------
 
 fn render_timeline(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
-    let chunks =
-        Layout::vertical([Constraint::Min(4), Constraint::Length(7)]).split(area);
+    let chunks = Layout::vertical([Constraint::Min(4), Constraint::Length(7)]).split(area);
     let mut events: Vec<_> = data.events.iter().collect();
     events.reverse(); // newest first
     let idx = (ui.scroll as usize).min(events.len().saturating_sub(1));
@@ -1631,10 +2061,7 @@ fn render_timeline(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState)
             };
             ListItem::new(Line::from(vec![
                 Span::styled(format!("{marker} "), Style::default().fg(Color::Yellow)),
-                Span::styled(
-                    format!("[{}] ", e.at),
-                    Style::default().fg(Color::DarkGray),
-                ),
+                Span::styled(format!("[{}] ", e.at), Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     format!("{:<17}", event_kind_short(&e.kind)),
                     Style::default().fg(Color::Yellow),
@@ -1656,10 +2083,7 @@ fn render_timeline(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState)
             kv("Kind", event_kind_short(&e.kind)),
             kv("At", e.at.to_string()),
             kv("ID", e.id.to_string()),
-            kv(
-                "Confidence",
-                format!("{:.0}%", e.confidence * 100.0),
-            ),
+            kv("Confidence", format!("{:.0}%", e.confidence * 100.0)),
             kv(
                 "Causes",
                 if e.causes.is_empty() {
@@ -1686,8 +2110,12 @@ fn render_timeline(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState)
 // ---------------------------------------------------------------------------
 
 fn render_network(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
-    let chunks =
-        Layout::vertical([Constraint::Length(4), Constraint::Min(4)]).split(area);
+    let chunks = Layout::vertical([
+        Constraint::Length(4),
+        Constraint::Min(4),
+        Constraint::Length(8),
+    ])
+    .split(area);
     let names = name_map(&data.prisoners);
 
     let active_gangs = data.gangs.iter().filter(|g| g.active).count();
@@ -1716,8 +2144,14 @@ fn render_network(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) 
         .skip(offset)
         .take(per_page)
         .map(|e| {
-            let an = names.get(&e.prisoner_a.0).cloned().unwrap_or_else(|| format!("P{}", e.prisoner_a.0));
-            let bn = names.get(&e.prisoner_b.0).cloned().unwrap_or_else(|| format!("P{}", e.prisoner_b.0));
+            let an = names
+                .get(&e.prisoner_a.0)
+                .cloned()
+                .unwrap_or_else(|| format!("P{}", e.prisoner_a.0));
+            let bn = names
+                .get(&e.prisoner_b.0)
+                .cloned()
+                .unwrap_or_else(|| format!("P{}", e.prisoner_b.0));
             Row::new(vec![
                 Cell::from(truncate(&an, 18)),
                 Cell::from(truncate(&bn, 18)),
@@ -1747,7 +2181,15 @@ fn render_network(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) 
     )
     .header(
         Row::new(vec![
-            "Prisoner A", "Prisoner B", "Friend", "Trust", "Fear", "Hostile", "Rival", "Bond", "Threat",
+            "Prisoner A",
+            "Prisoner B",
+            "Friend",
+            "Trust",
+            "Fear",
+            "Hostile",
+            "Rival",
+            "Bond",
+            "Threat",
         ])
         .style(Style::default().fg(Color::Yellow)),
     )
@@ -1756,6 +2198,46 @@ fn render_network(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) 
         u32::from(ui.scroll) + 1
     )));
     frame.render_widget(table, chunks[1]);
+
+    let role_q = ui.search.to_lowercase();
+    let role_rows: Vec<Row<'static>> = data
+        .social_roles
+        .iter()
+        .filter(|row| {
+            if role_q.is_empty() {
+                return true;
+            }
+            let name = names.get(&row.prisoner.0).map(String::as_str).unwrap_or("");
+            name.to_lowercase().contains(&role_q)
+                || row.role.to_lowercase().contains(&role_q)
+                || row.prisoner.0.to_string().contains(&role_q)
+        })
+        .take(120)
+        .map(|row| {
+            let name = names
+                .get(&row.prisoner.0)
+                .cloned()
+                .unwrap_or_else(|| format!("P{}", row.prisoner.0));
+            Row::new(vec![
+                Cell::from(truncate(&name, 18)),
+                Cell::from(row.role.clone()),
+                Cell::from(format!("{:.2}", row.strength.clamp(0.0, 1.0))),
+            ])
+        })
+        .collect();
+    let role_table = Table::new(
+        role_rows,
+        [
+            Constraint::Length(18),
+            Constraint::Length(18),
+            Constraint::Length(10),
+        ],
+    )
+    .header(
+        Row::new(vec!["Prisoner", "Role", "Strength"]).style(Style::default().fg(Color::Yellow)),
+    )
+    .block(title_block(" Emergent Social Roles "));
+    frame.render_widget(role_table, chunks[2]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1805,7 +2287,13 @@ fn render_map(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
             min_y = min_y.min(y);
             max_y = max_y.max(y);
         }
-        let norm = |min: f32, max: f32| if min.is_finite() && max.is_finite() && max >= min { (min, max) } else { (0.0, 0.0) };
+        let norm = |min: f32, max: f32| {
+            if min.is_finite() && max.is_finite() && max >= min {
+                (min, max)
+            } else {
+                (0.0, 0.0)
+            }
+        };
         let (min_x, max_x) = norm(min_x, max_x);
         let (min_y, max_y) = norm(min_y, max_y);
         (min_x, max_x, min_y, max_y)
@@ -1830,8 +2318,12 @@ fn render_map(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
     // --- Nav edges first (O(edges)); facilities and pawns overwrite them, so
     // edges always render beneath pawns and only visible when unobstructed. ---
     for edge in &mf.edges {
-        let Some(&from) = mf.facility_positions.get(&edge.from) else { continue };
-        let Some(&to) = mf.facility_positions.get(&edge.to) else { continue };
+        let Some(&from) = mf.facility_positions.get(&edge.from) else {
+            continue;
+        };
+        let Some(&to) = mf.facility_positions.get(&edge.to) else {
+            continue;
+        };
         let glyph: char = if edge.restricted { 'x' } else { '·' };
         for (x, y) in [from, to] {
             let (c, r) = cell_for(x, y);
@@ -1855,18 +2347,17 @@ fn render_map(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
     }
 
     // --- Incident overlays where available (O(incidents)). ---
-    let open_incidents: Vec<&sumo::Incident> = mf.incidents.iter().filter(|i| !i.resolved).collect();
+    let open_incidents: Vec<&sumo::Incident> =
+        mf.incidents.iter().filter(|i| !i.resolved).collect();
     for inc in &open_incidents {
-        let plot_node = inc
-            .location
-            .trim()
-            .parse::<u64>()
-            .ok()
-            .or_else(|| {
-                inc.involved_prisoners.iter().find_map(|pid| {
-                    mf.prisoners.iter().find(|p| p.id == pid.raw()).map(|p| p.node_id)
-                })
-            });
+        let plot_node = inc.location.trim().parse::<u64>().ok().or_else(|| {
+            inc.involved_prisoners.iter().find_map(|pid| {
+                mf.prisoners
+                    .iter()
+                    .find(|p| p.id == pid.raw())
+                    .map(|p| p.node_id)
+            })
+        });
         if let Some(id) = plot_node {
             if let Some((x, y)) = mf.facility_positions.get(&id) {
                 let (c, r) = cell_for(*x, *y);
@@ -1886,7 +2377,9 @@ fn render_map(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
     // --- Draw one preallocated row String per grid row. ---
     let mut grid_lines: Vec<Line<'static>> = Vec::with_capacity(rows);
     for r in 0..rows {
-        grid_lines.push(Line::from(grid[r * cols..(r + 1) * cols].iter().collect::<String>()));
+        grid_lines.push(Line::from(
+            grid[r * cols..(r + 1) * cols].iter().collect::<String>(),
+        ));
     }
     frame.render_widget(
         Paragraph::new(grid_lines).block(title_block(" Spatial Map (MapFrame) ")),
@@ -1914,7 +2407,9 @@ fn render_map(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
         if p.is_prisoner {
             detail.push(kv(
                 "Gang",
-                p.gang.map(|g| format!("#{g}")).unwrap_or_else(|| "none".into()),
+                p.gang
+                    .map(|g| format!("#{g}"))
+                    .unwrap_or_else(|| "none".into()),
             ));
             if let Some(class) = &p.classification {
                 detail.push(kv("Class", class.clone()));
@@ -1935,11 +2430,18 @@ fn render_map(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
         if let Some(id) = node {
             if let Some(f) = data.facilities.iter().find(|f| f.id == id) {
                 let occ = occupancy.get(&id).copied().unwrap_or(0);
-                let util = if f.capacity == 0 { 0.0 } else { occ as f32 / f.capacity as f32 * 100.0 };
+                let util = if f.capacity == 0 {
+                    0.0
+                } else {
+                    occ as f32 / f.capacity as f32 * 100.0
+                };
                 detail.push(plain("--- Facility ---"));
                 detail.push(kv("Kind", f.kind.display().to_string()));
                 detail.push(kv("Capacity", f.capacity.to_string()));
-                detail.push(kv("Occupancy", format!("{occ}/{} ({util:.0}% util)", f.capacity)));
+                detail.push(kv(
+                    "Occupancy",
+                    format!("{occ}/{} ({util:.0}% util)", f.capacity),
+                ));
                 detail.push(kv("Condition", format!("{:.0}%", f.condition * 100.0)));
             }
         }
@@ -1963,8 +2465,10 @@ fn render_map(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
     );
 
     // Incident overlays list.
-    let mut inc_lines: Vec<Line<'static>> =
-        vec![plain(format!("Incident overlays: {} open", open_incidents.len()))];
+    let mut inc_lines: Vec<Line<'static>> = vec![plain(format!(
+        "Incident overlays: {} open",
+        open_incidents.len()
+    ))];
     for inc in open_incidents.iter().take(6) {
         inc_lines.push(Line::from(vec![
             Span::styled("  ! ", Style::default().fg(Color::Red)),
@@ -1972,7 +2476,14 @@ fn render_map(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
                 "#{} {:?} @ {} sev {:.0}%",
                 inc.id,
                 inc.kind,
-                truncate(if inc.location.is_empty() { "unknown" } else { &inc.location }, 20),
+                truncate(
+                    if inc.location.is_empty() {
+                        "unknown"
+                    } else {
+                        &inc.location
+                    },
+                    20
+                ),
                 inc.severity * 100.0
             )),
         ]));
@@ -2005,58 +2516,136 @@ fn render_map(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
 // ---------------------------------------------------------------------------
 
 fn render_incidents(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
-    let chunks = Layout::vertical([Constraint::Length(4), Constraint::Min(4), Constraint::Length(12)]).split(area);
+    let chunks = Layout::vertical([
+        Constraint::Length(4),
+        Constraint::Min(4),
+        Constraint::Length(12),
+    ])
+    .split(area);
     // The driver already supplies newest-first records (see App::visible_incidents).
     let records: Vec<_> = data.incident_records.iter().collect();
     let total = records.len();
-    let idx = if total == 0 { 0 } else { (ui.scroll as usize).min(total - 1) };
+    let idx = if total == 0 {
+        0
+    } else {
+        (ui.scroll as usize).min(total - 1)
+    };
 
     // Severity / status counts.
     let critical = records.iter().filter(|r| r.severity >= 0.75).count();
-    let high = records.iter().filter(|r| r.severity >= 0.4 && r.severity < 0.75).count();
+    let high = records
+        .iter()
+        .filter(|r| r.severity >= 0.4 && r.severity < 0.75)
+        .count();
     let low = records.iter().filter(|r| r.severity < 0.4).count();
     let open = records.iter().filter(|r| !r.resolved).count();
     let resolved = records.iter().filter(|r| r.resolved).count();
 
     let names = name_map(&data.prisoners);
     let summary = vec![
-        kv("Incidents", format!("{} total · {} open · {} resolved", total, open, resolved)),
-        kv("Severity", format!("critical {} · high {} · low {}", critical, high, low)),
-        kv("Contraband (0.05)", format!("{} cases · {} inventory kinds", data.contraband_cases.len(), data.contraband_inventory.len())),
+        kv(
+            "Incidents",
+            format!("{} total · {} open · {} resolved", total, open, resolved),
+        ),
+        kv(
+            "Severity",
+            format!("critical {} · high {} · low {}", critical, high, low),
+        ),
+        kv(
+            "Contraband (0.05)",
+            format!(
+                "{} cases · {} inventory kinds",
+                data.contraband_cases.len(),
+                data.contraband_inventory.len()
+            ),
+        ),
         if records.is_empty() {
-            plain(format!("No structured incidents yet. Incident log has {} events.", data.incident_log.len()))
+            plain(format!(
+                "No structured incidents yet. Incident log has {} events.",
+                data.incident_log.len()
+            ))
         } else {
-            plain(format!("Showing {} newest-first (page {} of {}). Incident log (raw events): {}.", total, idx + 1, total, data.incident_log.len()))
+            plain(format!(
+                "Showing {} newest-first (page {} of {}). Incident log (raw events): {}.",
+                total,
+                idx + 1,
+                total,
+                data.incident_log.len()
+            ))
         },
     ];
-    frame.render_widget(Paragraph::new(summary).block(title_block(" Incident Summary & Filters ")), chunks[0]);
+    frame.render_widget(
+        Paragraph::new(summary).block(title_block(" Incident Summary & Filters ")),
+        chunks[0],
+    );
 
     // Pagination window around the selected cursor.
     let page_size = (chunks[1].height.saturating_sub(3) as usize).max(1);
-    let page_start = if total == 0 { 0 } else { (idx / page_size) * page_size };
+    let page_start = if total == 0 {
+        0
+    } else {
+        (idx / page_size) * page_size
+    };
     let page_end = (page_start + page_size).min(total);
 
-    let items: Vec<ListItem<'static>> = records[page_start..page_end].iter().enumerate().map(|(j, r)| {
-        let i = page_start + j;
-        let marker = if i == idx { "»" } else { " " };
-        let style = if i == idx {
-            Style::default().bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD)
-        } else { Style::default() };
-        let sev_color = if r.severity >= 0.75 { Color::Red } else if r.severity >= 0.4 { Color::Yellow } else { Color::Green };
-        let status = if r.resolved { "RES" } else { "OPEN" };
-        let actor_count = r.involved_prisoners.len();
-        ListItem::new(Line::from(vec![
-            Span::styled(format!("{marker} "), Style::default().fg(Color::Yellow)),
-            Span::styled(format!("[{}] ", r.at), Style::default().fg(Color::DarkGray)),
-            Span::styled(format!("{:<14}", truncate(&r.kind, 14)), Style::default().fg(Color::Red)),
-            Span::styled(format!("sev {:.0}% ", r.severity * 100.0), Style::default().fg(sev_color)),
-            Span::styled(format!("{status:<4} "), Style::default().fg(if r.resolved { Color::Green } else { Color::Magenta })),
-            Span::styled(format!("actors:{} ", actor_count), Style::default().fg(Color::Cyan)),
-            Span::raw(truncate(&r.location, 30)),
-        ])).style(style)
-    }).collect();
+    let items: Vec<ListItem<'static>> = records[page_start..page_end]
+        .iter()
+        .enumerate()
+        .map(|(j, r)| {
+            let i = page_start + j;
+            let marker = if i == idx { "»" } else { " " };
+            let style = if i == idx {
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            let sev_color = if r.severity >= 0.75 {
+                Color::Red
+            } else if r.severity >= 0.4 {
+                Color::Yellow
+            } else {
+                Color::Green
+            };
+            let status = if r.resolved { "RES" } else { "OPEN" };
+            let actor_count = r.involved_prisoners.len();
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{marker} "), Style::default().fg(Color::Yellow)),
+                Span::styled(format!("[{}] ", r.at), Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("{:<14}", truncate(&r.kind, 14)),
+                    Style::default().fg(Color::Red),
+                ),
+                Span::styled(
+                    format!("sev {:.0}% ", r.severity * 100.0),
+                    Style::default().fg(sev_color),
+                ),
+                Span::styled(
+                    format!("{status:<4} "),
+                    Style::default().fg(if r.resolved {
+                        Color::Green
+                    } else {
+                        Color::Magenta
+                    }),
+                ),
+                Span::styled(
+                    format!("actors:{} ", actor_count),
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::raw(truncate(&r.location, 30)),
+            ]))
+            .style(style)
+        })
+        .collect();
     frame.render_widget(
-        List::new(items).block(title_block(format!(" Incident Reports — {}..{} of {} (newest first) ", page_start + 1, page_end, total))),
+        List::new(items).block(title_block(format!(
+            " Incident Reports — {}..{} of {} (newest first) ",
+            page_start + 1,
+            page_end,
+            total
+        ))),
         chunks[1],
     );
 
@@ -2082,32 +2671,54 @@ fn render_incidents(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
         let mut cur = r.cause;
         let mut seen = std::collections::HashSet::new();
         while let Some(cid) = cur {
-            if !seen.insert(cid) { break; }
+            if !seen.insert(cid) {
+                break;
+            }
             if let Some(c) = data.incident_records.iter().find(|x| x.id == cid) {
-                chain.push(format!("#{} {} sev {:.0}%", c.id, truncate(&c.kind, 14), c.severity * 100.0));
+                chain.push(format!(
+                    "#{} {} sev {:.0}%",
+                    c.id,
+                    truncate(&c.kind, 14),
+                    c.severity * 100.0
+                ));
                 cur = c.cause;
             } else {
                 chain.push(format!("#{} (missing)", cid));
                 break;
             }
-            if chain.len() > 8 { break; }
+            if chain.len() > 8 {
+                break;
+            }
         }
         chain.reverse();
         chain.push(format!("[#{} {} CURRENT]", r.id, truncate(&r.kind, 14)));
         let mut fwd = r.consequence;
         let mut seen_f = std::collections::HashSet::new();
         while let Some(cid) = fwd {
-            if !seen_f.insert(cid) { break; }
+            if !seen_f.insert(cid) {
+                break;
+            }
             if let Some(c) = data.incident_records.iter().find(|x| x.id == cid) {
-                chain.push(format!("#{} {} sev {:.0}%", c.id, truncate(&c.kind, 14), c.severity * 100.0));
+                chain.push(format!(
+                    "#{} {} sev {:.0}%",
+                    c.id,
+                    truncate(&c.kind, 14),
+                    c.severity * 100.0
+                ));
                 fwd = c.consequence;
             } else {
                 chain.push(format!("#{} (missing)", cid));
                 break;
             }
-            if chain.len() > 16 { break; }
+            if chain.len() > 16 {
+                break;
+            }
         }
-        let outcome = if r.resolved { "resolved" } else { "open / unresolved" };
+        let outcome = if r.resolved {
+            "resolved"
+        } else {
+            "open / unresolved"
+        };
         let witnesses = if r.witnesses.is_empty() {
             "none".to_string()
         } else {
@@ -2120,12 +2731,18 @@ fn render_incidents(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
         let cause = r
             .causal_chain
             .first()
-            .map(|link| format!(
-                "{} #{}: {}",
-                if link.is_incident { "incident" } else { "event" },
-                link.source_id,
-                truncate(&link.description, 40)
-            ))
+            .map(|link| {
+                format!(
+                    "{} #{}: {}",
+                    if link.is_incident {
+                        "incident"
+                    } else {
+                        "event"
+                    },
+                    link.source_id,
+                    truncate(&link.description, 40)
+                )
+            })
             .or_else(|| r.cause.map(|id| format!("incident #{id}")))
             .unwrap_or_else(|| "none recorded".to_string());
         let responses_ok = r.response_actions.iter().filter(|a| a.success).count();
@@ -2133,12 +2750,27 @@ fn render_incidents(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
         let validation = if r.response_actions.is_empty() {
             "no staff response recorded".to_string()
         } else {
-            format!("{} response(s): {} ok / {} failed", r.response_actions.len(), responses_ok, responses_failed)
+            format!(
+                "{} response(s): {} ok / {} failed",
+                r.response_actions.len(),
+                responses_ok,
+                responses_failed
+            )
         };
         let mut d = vec![
             kv("ID / kind", format!("#{} {}", r.id, truncate(&r.kind, 24))),
-            kv("At / severity", format!("{} · {:.0}%", r.at, r.severity * 100.0)),
-            kv("Location", if r.location.is_empty() { "unknown".into() } else { r.location.clone() }),
+            kv(
+                "At / severity",
+                format!("{} · {:.0}%", r.at, r.severity * 100.0),
+            ),
+            kv(
+                "Location",
+                if r.location.is_empty() {
+                    "unknown".into()
+                } else {
+                    r.location.clone()
+                },
+            ),
             kv("Cause", cause),
             kv("Actors", participants),
             kv("Witnesses", witnesses),
@@ -2154,7 +2786,11 @@ fn render_incidents(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
             for link in r.causal_chain.iter().take(8) {
                 d.push(plain(format!(
                     "  {} #{}: {}",
-                    if link.is_incident { "incident" } else { "event" },
+                    if link.is_incident {
+                        "incident"
+                    } else {
+                        "event"
+                    },
                     link.source_id,
                     truncate(&link.description, 60)
                 )));
@@ -2182,20 +2818,33 @@ fn render_incidents(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
             r.involved_prisoners.clone()
         };
         for pid in history_ids {
-            let pname = names.get(&pid).cloned().unwrap_or_else(|| format!("P{}", pid));
+            let pname = names
+                .get(&pid)
+                .cloned()
+                .unwrap_or_else(|| format!("P{}", pid));
             let history: Vec<String> = data
                 .incident_records
                 .iter()
                 .filter(|rr| rr.id != r.id && rr.involved_prisoners.contains(&pid))
                 .rev()
                 .take(5)
-                .map(|rr| format!("#{} {} sev {:.0}% {}", rr.id, truncate(&rr.kind, 12), rr.severity * 100.0, if rr.resolved { "RES" } else { "OPEN" }))
+                .map(|rr| {
+                    format!(
+                        "#{} {} sev {:.0}% {}",
+                        rr.id,
+                        truncate(&rr.kind, 12),
+                        rr.severity * 100.0,
+                        if rr.resolved { "RES" } else { "OPEN" }
+                    )
+                })
                 .collect();
             d.push(plain(format!("--- History for {} (P{}) ---", pname, pid)));
             if history.is_empty() {
                 d.push(plain("  no prior incidents"));
             } else {
-                for h in history { d.push(plain(format!("  {h}"))); }
+                for h in history {
+                    d.push(plain(format!("  {h}")));
+                }
             }
         }
         d
@@ -2213,28 +2862,73 @@ fn render_incidents(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
         Some(false) => "open",
         Some(true) => "resolved",
     };
-    detail.push(plain(format!("--- Contraband Cases (0.05) sev:{sev_filter} status:{res_filter} ---")));
-    detail.push(plain("Keys: f next case · F resolve selected · m severity · o open/resolved"));
+    detail.push(plain(format!(
+        "--- Contraband Cases (0.05) sev:{sev_filter} status:{res_filter} ---"
+    )));
+    detail.push(plain(
+        "Keys: f next case · F resolve selected · m severity · o open/resolved",
+    ));
     if data.contraband_cases.is_empty() {
         detail.push(plain("No contraband cases recorded."));
     } else {
         if let Some(sel) = ui.selected_contraband {
             if let Some(c) = data.contraband_cases.iter().find(|c| c.case_id == sel) {
-                let holder = c.holder.map(|h| names.get(&h.raw()).cloned().unwrap_or_else(|| format!("P{}", h.raw()))).unwrap_or_else(|| "unknown".into());
+                let holder = c
+                    .holder
+                    .map(|h| {
+                        names
+                            .get(&h.raw())
+                            .cloned()
+                            .unwrap_or_else(|| format!("P{}", h.raw()))
+                    })
+                    .unwrap_or_else(|| "unknown".into());
                 detail.push(Line::from(vec![
                     Span::styled("Selected: ", Style::default().fg(Color::Cyan)),
-                    Span::raw(format!("#{} {} holder {} ", c.case_id, c.item.as_deref().unwrap_or("Unknown"), holder)),
-                    Span::styled(if c.resolved { "RESOLVED" } else { "OPEN" }, Style::default().fg(if c.resolved { Color::Green } else { Color::Red }).add_modifier(Modifier::BOLD)),
+                    Span::raw(format!(
+                        "#{} {} holder {} ",
+                        c.case_id,
+                        c.item.as_deref().unwrap_or("Unknown"),
+                        holder
+                    )),
+                    Span::styled(
+                        if c.resolved { "RESOLVED" } else { "OPEN" },
+                        Style::default()
+                            .fg(if c.resolved { Color::Green } else { Color::Red })
+                            .add_modifier(Modifier::BOLD),
+                    ),
                 ]));
             }
         }
         for c in data.contraband_cases.iter().rev().take(5) {
-            let marker = if Some(c.case_id) == ui.selected_contraband { "»" } else { " " };
-            let holder = c.holder.map(|h| names.get(&h.raw()).cloned().unwrap_or_else(|| format!("P{}", h.raw()))).unwrap_or_else(|| "unknown".into());
-            detail.push(plain(format!("{marker}#{} d{} {} holder {} sev {:.0}%{}", c.case_id, c.at.as_days(), c.item.as_deref().unwrap_or("Unknown"), holder, c.severity * 100.0, if c.resolved { " RES" } else { " OPEN" })));
+            let marker = if Some(c.case_id) == ui.selected_contraband {
+                "»"
+            } else {
+                " "
+            };
+            let holder = c
+                .holder
+                .map(|h| {
+                    names
+                        .get(&h.raw())
+                        .cloned()
+                        .unwrap_or_else(|| format!("P{}", h.raw()))
+                })
+                .unwrap_or_else(|| "unknown".into());
+            detail.push(plain(format!(
+                "{marker}#{} d{} {} holder {} sev {:.0}%{}",
+                c.case_id,
+                c.at.as_days(),
+                c.item.as_deref().unwrap_or("Unknown"),
+                holder,
+                c.severity * 100.0,
+                if c.resolved { " RES" } else { " OPEN" }
+            )));
         }
     }
-    frame.render_widget(Paragraph::new(detail).block(title_block(" Incident Detail & Outcome ")), chunks[2]);
+    frame.render_widget(
+        Paragraph::new(detail).block(title_block(" Incident Detail & Outcome ")),
+        chunks[2],
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2242,50 +2936,113 @@ fn render_incidents(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
 // ---------------------------------------------------------------------------
 
 fn render_decisions(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
-    let chunks = Layout::vertical([Constraint::Length(4), Constraint::Min(4), Constraint::Length(10)]).split(area);
+    let chunks = Layout::vertical([
+        Constraint::Length(4),
+        Constraint::Min(4),
+        Constraint::Length(10),
+    ])
+    .split(area);
     // The driver already supplies newest-first records (see App::visible_decisions).
     let entries: Vec<_> = data.decision_audit.iter().collect();
     let idx = (ui.scroll as usize).min(entries.len().saturating_sub(1));
 
-    let accepted = entries.iter().filter(|d| d.validation.starts_with("accepted")).count();
-    let repaired = entries.iter().filter(|d| d.validation.starts_with("repaired")).count();
-    let rejected = entries.iter().filter(|d| d.validation.starts_with("rejected")).count();
+    let accepted = entries
+        .iter()
+        .filter(|d| d.validation.starts_with("accepted"))
+        .count();
+    let repaired = entries
+        .iter()
+        .filter(|d| d.validation.starts_with("repaired"))
+        .count();
+    let rejected = entries
+        .iter()
+        .filter(|d| d.validation.starts_with("rejected"))
+        .count();
     let other = entries.len().saturating_sub(accepted + repaired + rejected);
 
     let df = ui.decision_validation_filter.as_deref().unwrap_or("all");
     let summary = vec![
-        kv("Decisions", format!("{} total · accepted {} · repaired {} · rejected {} · other {}", entries.len(), accepted, repaired, rejected, other)),
-        kv("Filter", format!("validation={df} (d to cycle) · green=accepted yellow=repaired red=rejected")),
+        kv(
+            "Decisions",
+            format!(
+                "{} total · accepted {} · repaired {} · rejected {} · other {}",
+                entries.len(),
+                accepted,
+                repaired,
+                rejected,
+                other
+            ),
+        ),
+        kv(
+            "Filter",
+            format!("validation={df} (d to cycle) · green=accepted yellow=repaired red=rejected"),
+        ),
         plain("Validation/reason/source shown in detail. Entries newest-first."),
-        if entries.is_empty() { plain("No decisions recorded. Pending data contract: decision_audit empty.") } else { plain(format!("Distinct actors: {}.", entries.iter().map(|d| d.actor.clone()).collect::<std::collections::HashSet<_>>().len())) },
-    ];
-    frame.render_widget(Paragraph::new(summary).block(title_block(" Decision Audit Summary & Filters ")), chunks[0]);
-
-    let items: Vec<ListItem<'static>> = entries.iter().enumerate().map(|(i, d)| {
-        let marker = if i == idx { "»" } else { " " };
-        let style = if i == idx {
-            Style::default().bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD)
-        } else { Style::default() };
-        let vcolor = if d.validation.starts_with("accepted") {
-            Color::Green
-        } else if d.validation.starts_with("repaired") {
-            Color::Yellow
-        } else if d.validation.starts_with("rejected") {
-            Color::Red
+        if entries.is_empty() {
+            plain("No decisions recorded. Pending data contract: decision_audit empty.")
         } else {
-            Color::Gray
-        };
-        ListItem::new(Line::from(vec![
-            Span::styled(format!("{marker} "), Style::default().fg(Color::Yellow)),
-            Span::styled(format!("[{}] ", d.time), Style::default().fg(Color::DarkGray)),
-            Span::styled(format!("{:<12}", truncate(&d.actor, 12)), Style::default().fg(Color::Cyan)),
-            Span::styled(format!("{:<10}", d.validation), Style::default().fg(vcolor)),
-            Span::styled(format!("{:<8}", truncate(&d.source, 8)), Style::default().fg(Color::Magenta)),
-            Span::raw(truncate(&d.summary, 55)),
-        ])).style(style)
-    }).collect();
+            plain(format!(
+                "Distinct actors: {}.",
+                entries
+                    .iter()
+                    .map(|d| d.actor.clone())
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
+            ))
+        },
+    ];
     frame.render_widget(
-        List::new(items).block(title_block(format!(" Decision Audit — {} entries (newest first) ", entries.len()))),
+        Paragraph::new(summary).block(title_block(" Decision Audit Summary & Filters ")),
+        chunks[0],
+    );
+
+    let items: Vec<ListItem<'static>> = entries
+        .iter()
+        .enumerate()
+        .map(|(i, d)| {
+            let marker = if i == idx { "»" } else { " " };
+            let style = if i == idx {
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            let vcolor = if d.validation.starts_with("accepted") {
+                Color::Green
+            } else if d.validation.starts_with("repaired") {
+                Color::Yellow
+            } else if d.validation.starts_with("rejected") {
+                Color::Red
+            } else {
+                Color::Gray
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{marker} "), Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    format!("[{}] ", d.time),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    format!("{:<12}", truncate(&d.actor, 12)),
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::styled(format!("{:<10}", d.validation), Style::default().fg(vcolor)),
+                Span::styled(
+                    format!("{:<8}", truncate(&d.source, 8)),
+                    Style::default().fg(Color::Magenta),
+                ),
+                Span::raw(truncate(&d.summary, 55)),
+            ]))
+            .style(style)
+        })
+        .collect();
+    frame.render_widget(
+        List::new(items).block(title_block(format!(
+            " Decision Audit — {} entries (newest first) ",
+            entries.len()
+        ))),
         chunks[1],
     );
 
@@ -2298,10 +3055,22 @@ fn render_decisions(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
     };
     let detail = if let Some(d) = selected {
         let outcome = format!("{:?}", d.outcome);
-        let proposed = if d.action.is_empty() { d.summary.clone() } else { d.action.clone() };
-        let provenance = if d.source.is_empty() { "unknown".to_string() } else { d.source.clone() };
+        let proposed = if d.action.is_empty() {
+            d.summary.clone()
+        } else {
+            d.action.clone()
+        };
+        let provenance = if d.source.is_empty() {
+            "unknown".to_string()
+        } else {
+            d.source.clone()
+        };
         let cause = if d.reason.is_empty() {
-            if d.rationale.is_empty() { "none recorded".to_string() } else { truncate(&d.rationale, 120) }
+            if d.rationale.is_empty() {
+                "none recorded".to_string()
+            } else {
+                truncate(&d.rationale, 120)
+            }
         } else {
             truncate(&d.reason, 120)
         };
@@ -2312,13 +3081,29 @@ fn render_decisions(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
             kv("Proposed action", truncate(&proposed, 80)),
             kv("Validation", d.validation.clone()),
             kv("Outcome", outcome),
-            kv("Rationale", if d.rationale.is_empty() { "none recorded".into() } else { truncate(&d.rationale, 120) }),
-            kv("Repair reason", if d.repair_reason.is_empty() { "none".into() } else { truncate(&d.repair_reason, 120) }),
+            kv(
+                "Rationale",
+                if d.rationale.is_empty() {
+                    "none recorded".into()
+                } else {
+                    truncate(&d.rationale, 120)
+                },
+            ),
+            kv(
+                "Repair reason",
+                if d.repair_reason.is_empty() {
+                    "none".into()
+                } else {
+                    truncate(&d.repair_reason, 120)
+                },
+            ),
             kv("Summary", truncate(&d.summary, 120)),
             plain("↑/↓ scroll list; detail follows the cursor."),
         ]
     } else {
-        vec![plain("No decisions recorded. Pending data contract: decision_audit empty.")]
+        vec![plain(
+            "No decisions recorded. Pending data contract: decision_audit empty.",
+        )]
     };
     frame.render_widget(
         Paragraph::new(detail)
@@ -2350,57 +3135,69 @@ mod tests {
 
     fn view_data_from_world(world: &alc_world::World) -> ViewData {
         let observation = sumo::Observation::capture(world);
-        let prisoners = world.prisoners.iter().map(|p| PrisonerSummary {
-            id: p.id,
-            name: p.name.clone(),
-            age: p.age,
-            classification: p.classification,
-            sentence_served_days: p.sentence_served_days,
-            sentence_days: p.sentence_days,
-            gang_affiliation: p.gang_affiliation,
-            reputation: p.reputation,
-            condition: p.condition.clone(),
-            traits: p.traits.clone(),
-            needs: p.needs.clone(),
-            goals: p.goals.clone(),
-            schedule: p.schedule.clone(),
-            skills: p.skills.clone(),
-            memory_summary: p.memory_summary.clone(),
-        }).collect();
-        let gangs = world.gangs.iter().map(|g| GangSummary {
-            id: g.id.0,
-            name: g.name.clone(),
-            leader: g.leader,
-            members: g.members.clone(),
-            reputation: g.reputation,
-            resources: g.resources,
-            culture: g.culture.clone(),
-            formed_at: g.formed_at,
-            active: g.active,
-            hierarchy: g.hierarchy.clone(),
-            rivalries: g.rivalries.iter().map(|id| (id.0, 1.0)).collect(),
-            alliances: g.alliances.iter().map(|id| (id.0, 1.0)).collect(),
-            internal_disputes: g.internal_disputes.clone(),
-            goals: g.goals.clone(),
-        }).collect();
-        let guards = world.guards.iter().map(|g| GuardSummary {
-            id: g.id.0,
-            name: g.name.clone(),
-            rank: g.rank,
-            post: g.post,
-            authority: g.authority,
-            shift: g.shift,
-            current_task: g.current_task.clone(),
-            competence: g.competence,
-            experience: g.experience,
-            morale: g.morale,
-            fatigue: g.fatigue,
-            stress: g.stress,
-            loyalty: g.loyalty,
-            integrity: g.integrity,
-            personality: g.personality,
-            history: g.history.clone(),
-        }).collect();
+        let prisoners = world
+            .prisoners
+            .iter()
+            .map(|p| PrisonerSummary {
+                id: p.id,
+                name: p.name.clone(),
+                age: p.age,
+                classification: p.classification,
+                sentence_served_days: p.sentence_served_days,
+                sentence_days: p.sentence_days,
+                gang_affiliation: p.gang_affiliation,
+                reputation: p.reputation,
+                condition: p.condition.clone(),
+                traits: p.traits.clone(),
+                needs: p.needs.clone(),
+                goals: p.goals.clone(),
+                schedule: p.schedule.clone(),
+                skills: p.skills.clone(),
+                memory_summary: p.memory_summary.clone(),
+            })
+            .collect();
+        let gangs = world
+            .gangs
+            .iter()
+            .map(|g| GangSummary {
+                id: g.id.0,
+                name: g.name.clone(),
+                leader: g.leader,
+                members: g.members.clone(),
+                reputation: g.reputation,
+                resources: g.resources,
+                culture: g.culture.clone(),
+                formed_at: g.formed_at,
+                active: g.active,
+                hierarchy: g.hierarchy.clone(),
+                rivalries: g.rivalries.iter().map(|id| (id.0, 1.0)).collect(),
+                alliances: g.alliances.iter().map(|id| (id.0, 1.0)).collect(),
+                internal_disputes: g.internal_disputes.clone(),
+                goals: g.goals.clone(),
+            })
+            .collect();
+        let guards = world
+            .guards
+            .iter()
+            .map(|g| GuardSummary {
+                id: g.id.0,
+                name: g.name.clone(),
+                rank: g.rank,
+                post: g.post,
+                authority: g.authority,
+                shift: g.shift,
+                current_task: g.current_task.clone(),
+                competence: g.competence,
+                experience: g.experience,
+                morale: g.morale,
+                fatigue: g.fatigue,
+                stress: g.stress,
+                loyalty: g.loyalty,
+                integrity: g.integrity,
+                personality: g.personality,
+                history: g.history.clone(),
+            })
+            .collect();
         let warden = WardenSummary {
             name: world.warden.name.clone(),
             philosophy: world.warden.philosophy.clone(),
@@ -2418,7 +3215,7 @@ mod tests {
             ledger: world.economy.ledger.clone(),
         };
         let mut social_edges = Vec::new();
-        for ((a,b), edge) in world.social.iter() {
+        for ((a, b), edge) in world.social.iter() {
             social_edges.push(SocialEdge {
                 prisoner_a: alc_core::PrisonerId(a),
                 prisoner_b: alc_core::PrisonerId(b),
@@ -2431,14 +3228,18 @@ mod tests {
                 threat_score: (edge.hostility + edge.rivalry + edge.fear) / 3.0,
             });
         }
-        let facilities = world.facilities.iter().map(|f| FacilitySummary {
-            id: f.id.0,
-            kind: f.kind,
-            wing: 0,
-            capacity: f.capacity,
-            condition: f.condition,
-            staff_required: 0,
-        }).collect();
+        let facilities = world
+            .facilities
+            .iter()
+            .map(|f| FacilitySummary {
+                id: f.id.0,
+                kind: f.kind,
+                wing: 0,
+                capacity: f.capacity,
+                condition: f.condition,
+                staff_required: 0,
+            })
+            .collect();
         let events: Vec<WorldEvent> = world.events.recent().cloned().collect();
         ViewData {
             observation,
@@ -2452,6 +3253,7 @@ mod tests {
             warden,
             economy,
             social_edges,
+            social_roles: Vec::new(),
             facilities,
             construction_queue: Vec::new(),
             events,
@@ -2552,14 +3354,50 @@ mod tests {
         let data = view_data_from_world(&world);
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
         for mode in [ViewMode::Financial, ViewMode::SocialNetwork] {
-            let ui = UiState { mode, scroll: u16::MAX, ..UiState::new() };
-            terminal.draw(|frame| draw(frame, &data, &ui, &status(false))).unwrap();
+            let ui = UiState {
+                mode,
+                scroll: u16::MAX,
+                ..UiState::new()
+            };
+            terminal
+                .draw(|frame| draw(frame, &data, &ui, &status(false)))
+                .unwrap();
         }
     }
 
     #[test]
+    fn social_network_renders_detected_role_rows() {
+        let world = alc_world::World::new(11);
+        let mut data = view_data_from_world(&world);
+        let prisoner = data.prisoners[0].id;
+        data.social_roles = vec![SocialRoleSummary {
+            prisoner,
+            role: "Broker".to_string(),
+            strength: 0.42,
+        }];
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let ui = UiState {
+            mode: ViewMode::SocialNetwork,
+            ..UiState::new()
+        };
+        terminal
+            .draw(|frame| draw(frame, &data, &ui, &status(false)))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut rendered = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                rendered.push_str(buf[(x, y)].symbol());
+            }
+        }
+        assert!(rendered.contains("Broker"));
+    }
+
+    #[test]
     fn mode_index_mapping_is_total() {
-        for i in 0..11 { assert!(mode_from_index(i).is_some()); }
+        for i in 0..11 {
+            assert!(mode_from_index(i).is_some());
+        }
         assert_eq!(mode_from_index(11), None);
         assert_eq!(mode_from_index(usize::MAX), None);
     }
@@ -2596,9 +3434,13 @@ mod tests {
         let world = alc_world::World::new(3);
         let data = view_data_from_world(&world);
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-        terminal.draw(|frame| draw(frame, &data, &UiState::new(), &status(false))).unwrap();
+        terminal
+            .draw(|frame| draw(frame, &data, &UiState::new(), &status(false)))
+            .unwrap();
         let buf = terminal.backend().buffer();
-        let hint_row: String = (0..buf.area.width).map(|x| buf[(x, 1)].symbol().to_string()).collect();
+        let hint_row: String = (0..buf.area.width)
+            .map(|x| buf[(x, 1)].symbol().to_string())
+            .collect();
         assert!(hint_row.contains("1-9"));
         assert!(hint_row.contains("q"));
         assert!(hint_row.contains("+/-"));
@@ -2619,14 +3461,25 @@ mod tests {
         let data = view_data_from_world(&world);
         let mut terminal = Terminal::new(TestBackend::new(140, 30)).unwrap();
         for scroll in [250u16, 499] {
-            let ui = UiState { mode: ViewMode::Financial, scroll, ..UiState::new() };
-            terminal.draw(|frame| draw(frame, &data, &ui, &status(false))).unwrap();
+            let ui = UiState {
+                mode: ViewMode::Financial,
+                scroll,
+                ..UiState::new()
+            };
+            terminal
+                .draw(|frame| draw(frame, &data, &ui, &status(false)))
+                .unwrap();
             let buf = terminal.backend().buffer();
             let mut rendered = String::new();
             for y in 0..buf.area.height {
-                for x in 0..buf.area.width { rendered.push_str(buf[(x, y)].symbol()); }
+                for x in 0..buf.area.width {
+                    rendered.push_str(buf[(x, y)].symbol());
+                }
             }
-            assert!(rendered.contains("ENTRY_"), "ledger rows missing at cursor {scroll}");
+            assert!(
+                rendered.contains("ENTRY_"),
+                "ledger rows missing at cursor {scroll}"
+            );
         }
     }
 
@@ -2646,7 +3499,13 @@ mod tests {
         assert_eq!(fitted.iter().map(Span::width).sum::<usize>(), 4);
         let one = fit_spans(vec![Span::raw("abcdefgh")], 3);
         assert_eq!(one.iter().map(Span::width).sum::<usize>(), 3);
-        assert_eq!(fit_spans(vec![Span::raw("")], 5).iter().map(Span::width).sum::<usize>(), 0);
+        assert_eq!(
+            fit_spans(vec![Span::raw("")], 5)
+                .iter()
+                .map(Span::width)
+                .sum::<usize>(),
+            0
+        );
     }
 
     #[test]
@@ -2654,7 +3513,10 @@ mod tests {
         let world = alc_world::World::new(7);
         let data = view_data_from_world(&world);
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
-        let ui = UiState { mode: ViewMode::Map, ..UiState::new() };
+        let ui = UiState {
+            mode: ViewMode::Map,
+            ..UiState::new()
+        };
         terminal
             .draw(|frame| draw(frame, &data, &ui, &status(false)))
             .unwrap();
@@ -2673,11 +3535,20 @@ mod tests {
     #[test]
     fn map_view_renders_nav_edges_and_legend_counts() {
         let world = alc_world::World::new(7);
-        assert!(world.facilities.len() >= 2, "expected bootstrapped facilities");
+        assert!(
+            world.facilities.len() >= 2,
+            "expected bootstrapped facilities"
+        );
         let data = view_data_from_world(&world);
-        assert!(!data.map_frame.edges.is_empty(), "expected placeholder nav edges from MapFrame");
+        assert!(
+            !data.map_frame.edges.is_empty(),
+            "expected placeholder nav edges from MapFrame"
+        );
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
-        let ui = UiState { mode: ViewMode::Map, ..UiState::new() };
+        let ui = UiState {
+            mode: ViewMode::Map,
+            ..UiState::new()
+        };
         terminal
             .draw(|frame| draw(frame, &data, &ui, &status(false)))
             .unwrap();
@@ -2689,7 +3560,10 @@ mod tests {
             }
         }
         // Nav edges are visible on the grid as '·' (sightline) / 'x' (restricted).
-        assert!(rendered.contains('·'), "no sightline edge glyph on map grid");
+        assert!(
+            rendered.contains('·'),
+            "no sightline edge glyph on map grid"
+        );
         assert!(rendered.contains("Edges:"), "legend missing edge counts");
     }
 
@@ -2707,7 +3581,10 @@ mod tests {
         }
         let data = view_data_from_world(&world);
         let mut terminal = Terminal::new(TestBackend::new(140, 45)).unwrap();
-        let ui = UiState { mode: ViewMode::Financial, ..UiState::new() };
+        let ui = UiState {
+            mode: ViewMode::Financial,
+            ..UiState::new()
+        };
         terminal
             .draw(|frame| draw(frame, &data, &ui, &status(false)))
             .unwrap();
@@ -2727,7 +3604,10 @@ mod tests {
             "Daily net / forecast",
             "D29",
         ] {
-            assert!(rendered.contains(needle), "financial panel missing {needle}");
+            assert!(
+                rendered.contains(needle),
+                "financial panel missing {needle}"
+            );
         }
     }
 
@@ -2781,8 +3661,20 @@ mod tests {
             .get(&7)
             .cloned()
             .unwrap_or_else(|| "P7".to_string());
-        for needle in ["Cause", "prior argument", "Actors", actor_label.as_str(), "Validation", "1 ok / 0 failed", "Outcome", "Disciplinary"] {
-            assert!(rendered.contains(needle), "incident detail missing {needle}");
+        for needle in [
+            "Cause",
+            "prior argument",
+            "Actors",
+            actor_label.as_str(),
+            "Validation",
+            "1 ok / 0 failed",
+            "Outcome",
+            "Disciplinary",
+        ] {
+            assert!(
+                rendered.contains(needle),
+                "incident detail missing {needle}"
+            );
         }
     }
 
@@ -2802,10 +3694,25 @@ mod tests {
             repair_reason: "clamped to socialize".to_string(),
             ..Default::default()
         }];
-        let ui = UiState { mode: ViewMode::DecisionAudit, ..UiState::new() };
+        let ui = UiState {
+            mode: ViewMode::DecisionAudit,
+            ..UiState::new()
+        };
         let rendered = render_text(&data, &ui, 160, 60);
-        for needle in ["Cause", "guard nearby", "Actors", "prisoner:7", "Validation", "rejected: guard nearby", "Outcome", "Repair reason"] {
-            assert!(rendered.contains(needle), "decision detail missing {needle}");
+        for needle in [
+            "Cause",
+            "guard nearby",
+            "Actors",
+            "prisoner:7",
+            "Validation",
+            "rejected: guard nearby",
+            "Outcome",
+            "Repair reason",
+        ] {
+            assert!(
+                rendered.contains(needle),
+                "decision detail missing {needle}"
+            );
         }
     }
 
@@ -2832,8 +3739,14 @@ mod tests {
             ..UiState::new()
         };
         let rendered = render_text(&data, &ui, 160, 60);
-        assert!(rendered.contains("DETAIL_TOKEN_1"), "detail must follow the cursor");
-        assert!(!rendered.contains("DETAIL_TOKEN_0"), "stale key must not override the cursor");
+        assert!(
+            rendered.contains("DETAIL_TOKEN_1"),
+            "detail must follow the cursor"
+        );
+        assert!(
+            !rendered.contains("DETAIL_TOKEN_0"),
+            "stale key must not override the cursor"
+        );
     }
 
     #[test]

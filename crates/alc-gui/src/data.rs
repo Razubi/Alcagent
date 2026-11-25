@@ -14,7 +14,7 @@ use alc_core::PrisonerId;
 use alc_events::{EventKind, WorldEvent};
 use alc_guard::{AuthorityLevel, Guard, GuardRank, PostType};
 use alc_prisoner::{
-    Activity, Classification, Needs, ResolvedBlock, ScheduleTemplate, SchedulePolicy,
+    Activity, Classification, Needs, ResolvedBlock, SchedulePolicy, ScheduleTemplate,
     current_block, resolve_schedule,
 };
 use alc_warden::WardenAction;
@@ -24,7 +24,7 @@ use sumo::{
     AgentObservation, BudgetSnapshot, ConstructionSummary, DecisionAuditRecord, EconomySummary,
     GangSummary, GuardSummary, IncidentRecord, MapFrame, PawnPosition, PolicySummary,
     PostReleaseSummary, PrisonerSummary, RehabOverview, RehabProgramInfo, ScheduleTimeline,
-    SocialEdge, Stats, WardenSummary,
+    SocialEdge, SocialRoleSummary, Stats, WardenSummary,
 };
 
 // ---------------------------------------------------------------------------
@@ -103,11 +103,19 @@ pub struct IncidentRow {
 pub fn incident_report_rows(events: &[WorldEvent]) -> Vec<IncidentRow> {
     let mut counts: HashMap<IncidentKind, u32> = HashMap::new();
     for e in events {
-        *counts.entry(IncidentKind::from_event_kind(e.kind)).or_insert(0) += 1;
+        *counts
+            .entry(IncidentKind::from_event_kind(e.kind))
+            .or_insert(0) += 1;
     }
-    let mut rows: Vec<IncidentRow> =
-        counts.into_iter().map(|(kind, count)| IncidentRow { kind, count }).collect();
-    rows.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.kind.label().cmp(b.kind.label())));
+    let mut rows: Vec<IncidentRow> = counts
+        .into_iter()
+        .map(|(kind, count)| IncidentRow { kind, count })
+        .collect();
+    rows.sort_by(|a, b| {
+        b.count
+            .cmp(&a.count)
+            .then_with(|| a.kind.label().cmp(b.kind.label()))
+    });
     rows
 }
 
@@ -181,7 +189,11 @@ impl PolicyChangeKind {
                 policies.security_level as f64
             }
             PolicyChangeKind::LockdownOn | PolicyChangeKind::LockdownOff => {
-                if policies.lockdown { 1.0 } else { 0.0 }
+                if policies.lockdown {
+                    1.0
+                } else {
+                    0.0
+                }
             }
             PolicyChangeKind::PrivilegesUp | PolicyChangeKind::PrivilegesDown => {
                 policies.privileges_level as f64
@@ -283,7 +295,10 @@ pub fn guard_posts_summary(world: &World) -> Vec<(String, usize)> {
         }
     }
     posts.sort_by_key(|(p, _)| format!("{p:?}"));
-    posts.into_iter().map(|(p, n)| (format!("{p:?}"), n)).collect()
+    posts
+        .into_iter()
+        .map(|(p, n)| (format!("{p:?}"), n))
+        .collect()
 }
 
 /// Fraction of required facility staff actually staffed today
@@ -324,7 +339,11 @@ pub fn daily_schedule_rows(world: &World) -> Vec<ScheduleRow> {
             name: p.name.clone(),
             classification: p.classification,
             current: world.current_activity.get(&p.id).copied(),
-            resolved: resolve_schedule(p, &ScheduleTemplate::default_medium(), &schedule_policy(world)),
+            resolved: resolve_schedule(
+                p,
+                &ScheduleTemplate::default_medium(),
+                &schedule_policy(world),
+            ),
         })
         .collect()
 }
@@ -427,7 +446,12 @@ pub fn pct(v: f32) -> String {
 /// the most recent `take` history entries, newest first.
 #[must_use]
 pub fn history_newest_first(history: &[String], take: usize) -> Vec<&str> {
-    history.iter().rev().take(take).map(String::as_str).collect()
+    history
+        .iter()
+        .rev()
+        .take(take)
+        .map(String::as_str)
+        .collect()
 }
 
 /// Needs as labelled (label, value) pairs for the prisoner detail panel.
@@ -490,7 +514,11 @@ pub fn short_class(c: Classification) -> &'static str {
 
 #[must_use]
 pub fn name_map(world: &World) -> HashMap<PrisonerId, String> {
-    world.prisoners.iter().map(|p| (p.id, p.name.clone())).collect()
+    world
+        .prisoners
+        .iter()
+        .map(|p| (p.id, p.name.clone()))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -513,6 +541,7 @@ pub struct Snapshot {
     pub warden: WardenSummary,
     pub economy: EconomySummary,
     pub social_edges: Vec<SocialEdge>,
+    pub social_roles: Vec<SocialRoleSummary>,
     pub facilities: Vec<FacilityView>,
     pub construction: Vec<ConstructionSummary>,
     pub events: Vec<sumo::WorldEvent>,
@@ -601,6 +630,7 @@ pub fn capture(sim: &sumo::Sim, selected_prisoner: Option<PrisonerId>) -> Snapsh
         warden: sim.warden(),
         economy: sim.economy(),
         social_edges: sim.social_edges(),
+        social_roles: sim.social_roles(),
         facilities,
         construction: sim.construction_queue(),
         events,
@@ -698,7 +728,10 @@ pub fn zoom_at(
 #[must_use]
 pub fn pawn_world_pos(pawn: &PawnPosition, positions: &HashMap<u64, (f32, f32)>) -> (f32, f32) {
     if let (Some(progress), Some(target)) = (pawn.edge_progress, pawn.target_node) {
-        let start = positions.get(&pawn.node_id).copied().unwrap_or((100.0, 100.0));
+        let start = positions
+            .get(&pawn.node_id)
+            .copied()
+            .unwrap_or((100.0, 100.0));
         let end = positions.get(&target).copied().unwrap_or(start);
         let t = progress.clamp(0.0, 1.0);
         (
@@ -706,7 +739,10 @@ pub fn pawn_world_pos(pawn: &PawnPosition, positions: &HashMap<u64, (f32, f32)>)
             start.1 + (end.1 - start.1) * t,
         )
     } else {
-        positions.get(&pawn.node_id).copied().unwrap_or((100.0, 100.0))
+        positions
+            .get(&pawn.node_id)
+            .copied()
+            .unwrap_or((100.0, 100.0))
     }
 }
 
@@ -720,7 +756,11 @@ pub fn incident_node(location: &str) -> Option<u64> {
     for marker in ["facility", "node", "wing", "#"] {
         if let Some(idx) = lower.find(marker) {
             let tail = &location[idx + marker.len()..];
-            let digits: String = tail.trim_start().chars().take_while(|c| c.is_ascii_digit()).collect();
+            let digits: String = tail
+                .trim_start()
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
             if let Ok(id) = digits.parse::<u64>() {
                 return Some(id);
             }
@@ -783,7 +823,12 @@ pub fn incident_detail_rows(
     names: &HashMap<u64, String>,
 ) -> Vec<(String, String)> {
     let name = |id: u64| names.get(&id).cloned().unwrap_or_else(|| format!("#{id}"));
-    let actors: Vec<String> = record.involved_prisoners.iter().copied().map(name).collect();
+    let actors: Vec<String> = record
+        .involved_prisoners
+        .iter()
+        .copied()
+        .map(name)
+        .collect();
     let witnesses: Vec<String> = record.witnesses.iter().copied().map(name).collect();
     let cause = record
         .causal_chain
@@ -791,7 +836,11 @@ pub fn incident_detail_rows(
         .map(|link| {
             format!(
                 "{} #{}: {}",
-                if link.is_incident { "incident" } else { "event" },
+                if link.is_incident {
+                    "incident"
+                } else {
+                    "event"
+                },
                 link.source_id,
                 link.description
             )
@@ -803,16 +852,41 @@ pub fn incident_detail_rows(
     let validation = if record.response_actions.is_empty() {
         "no staff response recorded".to_string()
     } else {
-        format!("{} response(s): {} ok / {} failed", record.response_actions.len(), ok, failed)
+        format!(
+            "{} response(s): {} ok / {} failed",
+            record.response_actions.len(),
+            ok,
+            failed
+        )
     };
     vec![
-        ("ID / kind".to_string(), format!("#{} · {}", record.id, record.kind)),
+        (
+            "ID / kind".to_string(),
+            format!("#{} · {}", record.id, record.kind),
+        ),
         ("Time".to_string(), record.at.to_string()),
-        ("Severity".to_string(), format!("{:.0}%", record.severity * 100.0)),
+        (
+            "Severity".to_string(),
+            format!("{:.0}%", record.severity * 100.0),
+        ),
         ("Location".to_string(), record.location.clone()),
         ("Cause".to_string(), cause),
-        ("Actors".to_string(), if actors.is_empty() { "-".into() } else { actors.join(", ") }),
-        ("Witnesses".to_string(), if witnesses.is_empty() { "-".into() } else { witnesses.join(", ") }),
+        (
+            "Actors".to_string(),
+            if actors.is_empty() {
+                "-".into()
+            } else {
+                actors.join(", ")
+            },
+        ),
+        (
+            "Witnesses".to_string(),
+            if witnesses.is_empty() {
+                "-".into()
+            } else {
+                witnesses.join(", ")
+            },
+        ),
         ("Validation".to_string(), validation),
         (
             "Outcome".to_string(),
@@ -830,13 +904,20 @@ pub fn incident_detail_rows(
 #[must_use]
 pub fn decision_detail_rows(record: &DecisionAuditRecord) -> Vec<(String, String)> {
     let cause = if record.reason.is_empty() {
-        if record.rationale.is_empty() { "none recorded".to_string() } else { record.rationale.clone() }
+        if record.rationale.is_empty() {
+            "none recorded".to_string()
+        } else {
+            record.rationale.clone()
+        }
     } else {
         record.reason.clone()
     };
     let mut rows = vec![
         ("Time".to_string(), record.time.to_string()),
-        ("Actors".to_string(), format!("{} · {}", record.actor, record.source)),
+        (
+            "Actors".to_string(),
+            format!("{} · {}", record.actor, record.source),
+        ),
         ("Cause".to_string(), cause),
         ("Action".to_string(), record.action.clone()),
         ("Validation".to_string(), record.validation.clone()),
@@ -991,7 +1072,10 @@ mod tests {
         let rows: Vec<GuardRosterRow> = world.guards.iter().map(guard_roster_row).collect();
         assert_eq!(rows.len(), world.guards.len());
         assert!(!rows.is_empty());
-        assert!(rows.iter().all(|r| r.credibility >= 0.0 && r.credibility <= 1.0));
+        assert!(
+            rows.iter()
+                .all(|r| r.credibility >= 0.0 && r.credibility <= 1.0)
+        );
         assert!(rows.iter().all(|r| r.fatigue >= 0.0 && r.fatigue <= 1.0));
         assert!(rows.iter().all(|r| r.stress >= 0.0 && r.stress <= 1.0));
 
@@ -1006,7 +1090,11 @@ mod tests {
         let s = sim(0xDADA);
         let stats = s.stats_since(SimTime::EPOCH);
         let rows = stats_dashboard_rows(&stats);
-        assert!(rows.len() >= 13, "expected >= 13 stat rows, got {}", rows.len());
+        assert!(
+            rows.len() >= 13,
+            "expected >= 13 stat rows, got {}",
+            rows.len()
+        );
         let labels: Vec<&str> = rows.iter().map(|(l, _)| *l).collect();
         for want in [
             "Admissions",
@@ -1026,7 +1114,10 @@ mod tests {
         ] {
             assert!(labels.contains(&want), "missing stat row {want}");
         }
-        let pop_row = rows.iter().find(|(l, _)| *l == "Current population").unwrap();
+        let pop_row = rows
+            .iter()
+            .find(|(l, _)| *l == "Current population")
+            .unwrap();
         assert_eq!(pop_row.1, stats.current_population.to_string());
         assert_eq!(pop_row.1.parse::<u32>().unwrap(), s.world().population());
     }
@@ -1051,11 +1142,26 @@ mod tests {
 
     #[test]
     fn activity_to_facility_mapping_covers_major_activities() {
-        assert_eq!(activity_to_facility_kind(Activity::Breakfast), FacilityKind::Kitchen);
-        assert_eq!(activity_to_facility_kind(Activity::Work), FacilityKind::Workshop);
-        assert_eq!(activity_to_facility_kind(Activity::Yard), FacilityKind::Yard);
-        assert_eq!(activity_to_facility_kind(Activity::Sleep), FacilityKind::CellBlock);
-        assert_eq!(activity_to_facility_kind(Activity::Medical), FacilityKind::Medical);
+        assert_eq!(
+            activity_to_facility_kind(Activity::Breakfast),
+            FacilityKind::Kitchen
+        );
+        assert_eq!(
+            activity_to_facility_kind(Activity::Work),
+            FacilityKind::Workshop
+        );
+        assert_eq!(
+            activity_to_facility_kind(Activity::Yard),
+            FacilityKind::Yard
+        );
+        assert_eq!(
+            activity_to_facility_kind(Activity::Sleep),
+            FacilityKind::CellBlock
+        );
+        assert_eq!(
+            activity_to_facility_kind(Activity::Medical),
+            FacilityKind::Medical
+        );
     }
 
     #[test]
@@ -1140,11 +1246,16 @@ mod tests {
         assert_eq!(snap.prisoners.len(), s.world().prisoners.len());
         assert_eq!(snap.guards.len(), s.world().guards.len());
         assert_eq!(snap.facilities.len(), s.world().facilities.len());
+        assert_eq!(snap.social_roles, s.social_roles());
         assert_eq!(snap.map.facility_positions.len(), snap.facilities.len());
         assert!(snap.facilities.iter().all(|f| f.utilisation() <= 1.0));
         assert!(snap.selected_agent.is_some());
         assert!(snap.selected_schedule.is_some());
-        assert!(snap.violations.is_empty(), "engine invariants: {:?}", snap.violations);
+        assert!(
+            snap.violations.is_empty(),
+            "engine invariants: {:?}",
+            snap.violations
+        );
     }
 
     #[test]

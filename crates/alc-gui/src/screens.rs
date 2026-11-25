@@ -2,12 +2,11 @@
 //! snapshot and only queues [`Command`]s through [`panels::RenderCtx`].
 
 use crate::{
+    CONSTRUCTION_KINDS, ViewMode,
     app::Command,
-    data,
-    map_view,
+    data, map_view,
     panels::{self, RenderCtx},
     theme,
-    ViewMode, CONSTRUCTION_KINDS,
 };
 use eframe::egui::{self, Color32, FontId};
 use std::collections::HashMap;
@@ -42,7 +41,10 @@ fn columns<'a>(
 }
 
 fn names(snap: &data::Snapshot) -> HashMap<u64, String> {
-    snap.prisoners.iter().map(|p| (p.id.raw(), p.name.clone())).collect()
+    snap.prisoners
+        .iter()
+        .map(|p| (p.id.raw(), p.name.clone()))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -60,17 +62,41 @@ fn overview(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
             panels::section(ui, "Vital signs", |ui| {
                 theme::kv(ui, "Simulation time", obs.at.to_string());
                 theme::kv(ui, "Days simulated", obs.days_simulated.to_string());
-                theme::kv(ui, "Population", format!("{} / {} capacity", obs.population, obs.capacity));
-                theme::kv(ui, "Guards / Facilities", format!("{} / {}", obs.guards, obs.facilities));
-                theme::kv(ui, "Active gangs", format!("{} ({} members)", obs.gangs, obs.gang_members));
+                theme::kv(
+                    ui,
+                    "Population",
+                    format!("{} / {} capacity", obs.population, obs.capacity),
+                );
+                theme::kv(
+                    ui,
+                    "Guards / Facilities",
+                    format!("{} / {}", obs.guards, obs.facilities),
+                );
+                theme::kv(
+                    ui,
+                    "Active gangs",
+                    format!("{} ({} members)", obs.gangs, obs.gang_members),
+                );
                 theme::kv(ui, "Warden", &obs.warden_name);
-                theme::kv(ui, "Philosophy", data::short_truncate(&obs.warden_philosophy, 52));
+                theme::kv(
+                    ui,
+                    "Philosophy",
+                    data::short_truncate(&obs.warden_philosophy, 52),
+                );
                 theme::kv(ui, "Policy band", format!("{:?}", snap.policy.policy));
                 theme::metric_bar(ui, "Security", snap.policy.security_level, false);
                 theme::metric_bar(ui, "Privileges", snap.policy.privileges_level, true);
                 theme::metric_bar(ui, "Economy health", snap.budget.health, true);
-                theme::kv(ui, "Lockdown / Intake", format!("{} / {}", snap.policy.lockdown, snap.policy.intake_paused));
-                theme::kv(ui, "Invariant violations", snap.violations.len().to_string());
+                theme::kv(
+                    ui,
+                    "Lockdown / Intake",
+                    format!("{} / {}", snap.policy.lockdown, snap.policy.intake_paused),
+                );
+                theme::kv(
+                    ui,
+                    "Invariant violations",
+                    snap.violations.len().to_string(),
+                );
             });
             panels::section(ui, "Activity since start", |ui| {
                 for (label, value) in data::stats_dashboard_rows(&snap.stats) {
@@ -80,19 +106,22 @@ fn overview(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
         },
         |ui, _ctx| {
             panels::section(ui, "Recent events", |ui| {
-                egui::ScrollArea::vertical().id_salt("overview_events").max_height(220.0).show(ui, |ui| {
-                    for event in snap.events.iter().rev().take(40) {
-                        ui.add(egui::Label::new(
-                            egui::RichText::new(format!(
-                                "[{}] {:?} — {}",
-                                event.at,
-                                event.kind,
-                                data::short_truncate(&event.summary, 64)
-                            ))
-                            .small(),
-                        ));
-                    }
-                });
+                egui::ScrollArea::vertical()
+                    .id_salt("overview_events")
+                    .max_height(220.0)
+                    .show(ui, |ui| {
+                        for event in snap.events.iter().rev().take(40) {
+                            ui.add(egui::Label::new(
+                                egui::RichText::new(format!(
+                                    "[{}] {:?} — {}",
+                                    event.at,
+                                    event.kind,
+                                    data::short_truncate(&event.summary, 64)
+                                ))
+                                .small(),
+                            ));
+                        }
+                    });
             });
             panels::section(ui, "Leaderboard (reputation)", |ui| {
                 let mut board: Vec<(String, f32)> = snap
@@ -106,24 +135,30 @@ fn overview(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                 }
             });
             panels::section(ui, "Facilities", |ui| {
-                egui::Grid::new("overview_facilities").striped(true).show(ui, |ui| {
-                    ui.label("ID");
-                    ui.label("Kind");
-                    ui.label("Wing");
-                    ui.label("Cap");
-                    ui.label("Used");
-                    ui.label("Cond");
-                    ui.end_row();
-                    for f in &snap.facilities {
-                        ui.label(f.id.to_string());
-                        ui.label(f.kind.display());
-                        ui.label(f.wing.to_string());
-                        ui.label(f.capacity.to_string());
-                        ui.add(egui::ProgressBar::new(f.utilisation()).desired_width(70.0));
-                        ui.add(egui::ProgressBar::new(f.condition).desired_width(70.0).fill(theme::good_colour(f.condition)));
+                egui::Grid::new("overview_facilities")
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.label("ID");
+                        ui.label("Kind");
+                        ui.label("Wing");
+                        ui.label("Cap");
+                        ui.label("Used");
+                        ui.label("Cond");
                         ui.end_row();
-                    }
-                });
+                        for f in &snap.facilities {
+                            ui.label(f.id.to_string());
+                            ui.label(f.kind.display());
+                            ui.label(f.wing.to_string());
+                            ui.label(f.capacity.to_string());
+                            ui.add(egui::ProgressBar::new(f.utilisation()).desired_width(70.0));
+                            ui.add(
+                                egui::ProgressBar::new(f.condition)
+                                    .desired_width(70.0)
+                                    .fill(theme::good_colour(f.condition)),
+                            );
+                            ui.end_row();
+                        }
+                    });
             });
         },
     );
@@ -144,19 +179,33 @@ fn prisoner(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
             let list: Vec<_> = snap
                 .prisoners
                 .iter()
-                .filter(|p| q.is_empty() || p.name.to_lowercase().contains(&q) || p.id.raw().to_string().contains(&q))
+                .filter(|p| {
+                    q.is_empty()
+                        || p.name.to_lowercase().contains(&q)
+                        || p.id.raw().to_string().contains(&q)
+                })
                 .collect();
-            egui::ScrollArea::vertical().id_salt("prisoner_list").show(ui, |ui| {
-                for p in &list {
-                    let selected = ctx.state.selected_prisoner == Some(p.id);
-                    if ui.selectable_label(
-                        selected,
-                        format!("{} · {} [{}]", p.id.raw(), data::short_truncate(&p.name, 18), data::short_class(p.classification)),
-                    ).clicked() {
-                        ctx.state.selected_prisoner = Some(p.id);
+            egui::ScrollArea::vertical()
+                .id_salt("prisoner_list")
+                .show(ui, |ui| {
+                    for p in &list {
+                        let selected = ctx.state.selected_prisoner == Some(p.id);
+                        if ui
+                            .selectable_label(
+                                selected,
+                                format!(
+                                    "{} · {} [{}]",
+                                    p.id.raw(),
+                                    data::short_truncate(&p.name, 18),
+                                    data::short_class(p.classification)
+                                ),
+                            )
+                            .clicked()
+                        {
+                            ctx.state.selected_prisoner = Some(p.id);
+                        }
                     }
-                }
-            });
+                });
         },
         |ui, ctx| {
             let Some(id) = ctx.state.selected_prisoner else {
@@ -324,51 +373,117 @@ fn gang(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
         ctx,
         |ui, ctx| {
             let q = ctx.state.search.to_lowercase();
-            egui::ScrollArea::vertical().id_salt("gang_list").show(ui, |ui| {
-                for g in &snap.gangs {
-                    if !q.is_empty() && !g.name.to_lowercase().contains(&q) && !g.id.to_string().contains(&q) {
-                        continue;
+            egui::ScrollArea::vertical()
+                .id_salt("gang_list")
+                .show(ui, |ui| {
+                    for g in &snap.gangs {
+                        if !q.is_empty()
+                            && !g.name.to_lowercase().contains(&q)
+                            && !g.id.to_string().contains(&q)
+                        {
+                            continue;
+                        }
+                        let selected = ctx.state.selected_gang == Some(g.id);
+                        if ui
+                            .selectable_label(
+                                selected,
+                                format!(
+                                    "#{} {} · {} members{}",
+                                    g.id,
+                                    data::short_truncate(&g.name, 16),
+                                    g.members.len(),
+                                    if g.active { "" } else { " (inactive)" }
+                                ),
+                            )
+                            .clicked()
+                        {
+                            ctx.state.selected_gang = Some(g.id);
+                        }
                     }
-                    let selected = ctx.state.selected_gang == Some(g.id);
-                    if ui.selectable_label(selected, format!("#{} {} · {} members{}", g.id, data::short_truncate(&g.name, 16), g.members.len(), if g.active { "" } else { " (inactive)" })).clicked() {
-                        ctx.state.selected_gang = Some(g.id);
-                    }
-                }
-            });
+                });
         },
         |ui, ctx| {
             let Some(id) = ctx.state.selected_gang else {
                 ui.label("Select a gang to inspect its hierarchy and relations.");
                 return;
             };
-            let Some(g) = snap.gangs.iter().find(|g| g.id == id) else { return };
-            egui::ScrollArea::vertical().id_salt("gang_detail").show(ui, |ui| {
-                ui.heading(&g.name);
-                theme::kv(ui, "Leader", g.leader.map_or_else(|| "none".into(), |l| name_map.get(&l.raw()).cloned().unwrap_or_else(|| format!("prisoner #{}", l.raw()))));
-                theme::kv(ui, "Members", g.members.len().to_string());
-                theme::kv(ui, "Culture", &g.culture);
-                theme::metric_bar(ui, "Reputation", g.reputation, true);
-                theme::metric_bar(ui, "Resources", g.resources, false);
-                theme::kv(ui, "Formed", g.formed_at.to_string());
-                panels::section(ui, "Hierarchy", |ui| {
-                    egui::Grid::new("gang_hierarchy").striped(true).show(ui, |ui| {
-                        ui.label("Member"); ui.label("Rank"); ui.label("Commit"); ui.label("Influence"); ui.end_row();
-                        for m in &g.hierarchy {
-                            ui.label(name_map.get(&m.prisoner.raw()).cloned().unwrap_or_else(|| format!("#{}", m.prisoner.raw())));
-                            ui.label(format!("{:?}", m.rank));
-                            ui.label(format!("{:.2}", m.commitment));
-                            ui.label(format!("{:.2}", m.influence));
-                            ui.end_row();
-                        }
+            let Some(g) = snap.gangs.iter().find(|g| g.id == id) else {
+                return;
+            };
+            egui::ScrollArea::vertical()
+                .id_salt("gang_detail")
+                .show(ui, |ui| {
+                    ui.heading(&g.name);
+                    theme::kv(
+                        ui,
+                        "Leader",
+                        g.leader.map_or_else(
+                            || "none".into(),
+                            |l| {
+                                name_map
+                                    .get(&l.raw())
+                                    .cloned()
+                                    .unwrap_or_else(|| format!("prisoner #{}", l.raw()))
+                            },
+                        ),
+                    );
+                    theme::kv(ui, "Members", g.members.len().to_string());
+                    theme::kv(ui, "Culture", &g.culture);
+                    theme::metric_bar(ui, "Reputation", g.reputation, true);
+                    theme::metric_bar(ui, "Resources", g.resources, false);
+                    theme::kv(ui, "Formed", g.formed_at.to_string());
+                    panels::section(ui, "Hierarchy", |ui| {
+                        egui::Grid::new("gang_hierarchy")
+                            .striped(true)
+                            .show(ui, |ui| {
+                                ui.label("Member");
+                                ui.label("Rank");
+                                ui.label("Commit");
+                                ui.label("Influence");
+                                ui.end_row();
+                                for m in &g.hierarchy {
+                                    ui.label(
+                                        name_map
+                                            .get(&m.prisoner.raw())
+                                            .cloned()
+                                            .unwrap_or_else(|| format!("#{}", m.prisoner.raw())),
+                                    );
+                                    ui.label(format!("{:?}", m.rank));
+                                    ui.label(format!("{:.2}", m.commitment));
+                                    ui.label(format!("{:.2}", m.influence));
+                                    ui.end_row();
+                                }
+                            });
+                    });
+                    panels::section(ui, "Relations & goals", |ui| {
+                        theme::kv(
+                            ui,
+                            "Rivalries",
+                            format!(
+                                "{:?}",
+                                g.rivalries.iter().map(|(id, _)| *id).collect::<Vec<_>>()
+                            ),
+                        );
+                        theme::kv(
+                            ui,
+                            "Alliances",
+                            format!(
+                                "{:?}",
+                                g.alliances.iter().map(|(id, _)| *id).collect::<Vec<_>>()
+                            ),
+                        );
+                        theme::kv(
+                            ui,
+                            "Disputes",
+                            if g.internal_disputes.is_empty() {
+                                "none".into()
+                            } else {
+                                g.internal_disputes.join("; ")
+                            },
+                        );
+                        theme::kv(ui, "Goals", g.goals.join(", "));
                     });
                 });
-                panels::section(ui, "Relations & goals", |ui| {
-                    theme::kv(ui, "Rivalries", format!("{:?}", g.rivalries.iter().map(|(id, _)| *id).collect::<Vec<_>>()));
-                    theme::kv(ui, "Alliances", format!("{:?}", g.alliances.iter().map(|(id, _)| *id).collect::<Vec<_>>()));
-                    theme::kv(ui, "Disputes", if g.internal_disputes.is_empty() { "none".into() } else { g.internal_disputes.join("; ") });
-                    theme::kv(ui, "Goals", g.goals.join(", "));
-                });
-            });
         },
     );
 }
@@ -384,44 +499,75 @@ fn staff(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
         ctx,
         |ui, ctx| {
             let q = ctx.state.search.to_lowercase();
-            egui::ScrollArea::vertical().id_salt("staff_list").show(ui, |ui| {
-                for g in &snap.guards {
-                    if !q.is_empty() && !g.name.to_lowercase().contains(&q) && !g.id.to_string().contains(&q) {
-                        continue;
+            egui::ScrollArea::vertical()
+                .id_salt("staff_list")
+                .show(ui, |ui| {
+                    for g in &snap.guards {
+                        if !q.is_empty()
+                            && !g.name.to_lowercase().contains(&q)
+                            && !g.id.to_string().contains(&q)
+                        {
+                            continue;
+                        }
+                        let selected = ctx.state.selected_guard == Some(g.id);
+                        if ui
+                            .selectable_label(
+                                selected,
+                                format!(
+                                    "#{} {} · {:?} · {:?}",
+                                    g.id,
+                                    data::short_truncate(&g.name, 14),
+                                    g.rank,
+                                    g.post
+                                ),
+                            )
+                            .clicked()
+                        {
+                            ctx.state.selected_guard = Some(g.id);
+                        }
                     }
-                    let selected = ctx.state.selected_guard == Some(g.id);
-                    if ui.selectable_label(selected, format!("#{} {} · {:?} · {:?}", g.id, data::short_truncate(&g.name, 14), g.rank, g.post)).clicked() {
-                        ctx.state.selected_guard = Some(g.id);
-                    }
-                }
-            });
+                });
         },
         |ui, ctx| {
             let Some(id) = ctx.state.selected_guard else {
                 ui.label("Select a guard to inspect their post, condition and duty log.");
                 return;
             };
-            let Some(g) = snap.guards.iter().find(|g| g.id == id) else { return };
-            egui::ScrollArea::vertical().id_salt("staff_detail").show(ui, |ui| {
-                ui.heading(&g.name);
-                theme::kv(ui, "Rank / Post", format!("{:?} / {:?}", g.rank, g.post));
-                theme::kv(ui, "Authority / Shift", format!("{:?} / {}", g.authority, g.shift));
-                theme::kv(ui, "Current task", &g.current_task);
-                theme::kv(ui, "Report credibility", format!("{:.2}", (g.competence + g.integrity) * 0.5));
-                theme::metric_bar(ui, "Competence", g.competence, true);
-                theme::metric_bar(ui, "Experience", g.experience, true);
-                theme::metric_bar(ui, "Morale", g.morale, true);
-                theme::metric_bar(ui, "Fatigue", g.fatigue, false);
-                theme::metric_bar(ui, "Stress", g.stress, false);
-                theme::metric_bar(ui, "Loyalty", g.loyalty, true);
-                theme::metric_bar(ui, "Integrity", g.integrity, true);
-                panels::section(ui, "Recent duty log", |ui| {
-                    for entry in g.history.iter().rev().take(12) {
-                        ui.add(egui::Label::new(egui::RichText::new(entry).small()));
-                    }
-                    if g.history.is_empty() { ui.label("No notable duty events yet."); }
+            let Some(g) = snap.guards.iter().find(|g| g.id == id) else {
+                return;
+            };
+            egui::ScrollArea::vertical()
+                .id_salt("staff_detail")
+                .show(ui, |ui| {
+                    ui.heading(&g.name);
+                    theme::kv(ui, "Rank / Post", format!("{:?} / {:?}", g.rank, g.post));
+                    theme::kv(
+                        ui,
+                        "Authority / Shift",
+                        format!("{:?} / {}", g.authority, g.shift),
+                    );
+                    theme::kv(ui, "Current task", &g.current_task);
+                    theme::kv(
+                        ui,
+                        "Report credibility",
+                        format!("{:.2}", (g.competence + g.integrity) * 0.5),
+                    );
+                    theme::metric_bar(ui, "Competence", g.competence, true);
+                    theme::metric_bar(ui, "Experience", g.experience, true);
+                    theme::metric_bar(ui, "Morale", g.morale, true);
+                    theme::metric_bar(ui, "Fatigue", g.fatigue, false);
+                    theme::metric_bar(ui, "Stress", g.stress, false);
+                    theme::metric_bar(ui, "Loyalty", g.loyalty, true);
+                    theme::metric_bar(ui, "Integrity", g.integrity, true);
+                    panels::section(ui, "Recent duty log", |ui| {
+                        for entry in g.history.iter().rev().take(12) {
+                            ui.add(egui::Label::new(egui::RichText::new(entry).small()));
+                        }
+                        if g.history.is_empty() {
+                            ui.label("No notable duty events yet.");
+                        }
+                    });
                 });
-            });
         },
     );
 }
@@ -444,60 +590,144 @@ fn warden(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
             panels::section(ui, "Leadership traits", |ui| {
                 let t = &w.traits;
                 for (label, value) in [
-                    ("Strictness", t.strictness), ("Compassion", t.compassion),
-                    ("Political ambition", t.political_ambition), ("Financial discipline", t.financial_discipline),
-                    ("Risk tolerance", t.risk_tolerance), ("Reform orientation", t.reform_orientation),
-                    ("Authoritarian", t.authoritarian_tendencies), ("Staff loyalty", t.staff_loyalty),
-                    ("Corruption risk", t.corruption_susceptibility), ("Reputation focus", t.reputation_concerns),
+                    ("Strictness", t.strictness),
+                    ("Compassion", t.compassion),
+                    ("Political ambition", t.political_ambition),
+                    ("Financial discipline", t.financial_discipline),
+                    ("Risk tolerance", t.risk_tolerance),
+                    ("Reform orientation", t.reform_orientation),
+                    ("Authoritarian", t.authoritarian_tendencies),
+                    ("Staff loyalty", t.staff_loyalty),
+                    ("Corruption risk", t.corruption_susceptibility),
+                    ("Reputation focus", t.reputation_concerns),
                     ("Competence", t.competence),
                 ] {
-                    theme::metric_bar(ui, label, value, !matches!(label, "Strictness" | "Political ambition" | "Risk tolerance" | "Authoritarian" | "Corruption risk" | "Reputation focus"));
+                    theme::metric_bar(
+                        ui,
+                        label,
+                        value,
+                        !matches!(
+                            label,
+                            "Strictness"
+                                | "Political ambition"
+                                | "Risk tolerance"
+                                | "Authoritarian"
+                                | "Corruption risk"
+                                | "Reputation focus"
+                        ),
+                    );
                 }
             });
             panels::section(ui, "Pending actions", |ui| {
-                if w.pending_actions.is_empty() { ui.label("No pending actions."); }
+                if w.pending_actions.is_empty() {
+                    ui.label("No pending actions.");
+                }
                 for action in w.pending_actions.iter().take(12) {
                     ui.label(format!("• {} — {action:?}", action.label()));
                 }
             });
             panels::section(ui, "Quick warden actions", |ui| {
-                if ui.button("Hire 1 guard").clicked() { ctx.emit(Command::WardenAction(alc_warden::WardenAction::HireGuards { count: 1 })); }
-                if ui.button("Fire 1 guard").clicked() { ctx.emit(Command::WardenAction(alc_warden::WardenAction::FireGuards { count: 1 })); }
-                if ui.button("Request funding").clicked() { ctx.emit(Command::WardenAction(alc_warden::WardenAction::RequestFunding { amount_major: 100 })); }
-                if ui.button("Reduce expenses").clicked() { ctx.emit(Command::WardenAction(alc_warden::WardenAction::ReduceExpenses)); }
-                if ui.button("Negotiate with representatives").clicked() { ctx.emit(Command::WardenAction(alc_warden::WardenAction::NegotiateWithRepresentatives)); }
+                if ui.button("Hire 1 guard").clicked() {
+                    ctx.emit(Command::WardenAction(
+                        alc_warden::WardenAction::HireGuards { count: 1 },
+                    ));
+                }
+                if ui.button("Fire 1 guard").clicked() {
+                    ctx.emit(Command::WardenAction(
+                        alc_warden::WardenAction::FireGuards { count: 1 },
+                    ));
+                }
+                if ui.button("Request funding").clicked() {
+                    ctx.emit(Command::WardenAction(
+                        alc_warden::WardenAction::RequestFunding { amount_major: 100 },
+                    ));
+                }
+                if ui.button("Reduce expenses").clicked() {
+                    ctx.emit(Command::WardenAction(
+                        alc_warden::WardenAction::ReduceExpenses,
+                    ));
+                }
+                if ui.button("Negotiate with representatives").clicked() {
+                    ctx.emit(Command::WardenAction(
+                        alc_warden::WardenAction::NegotiateWithRepresentatives,
+                    ));
+                }
             });
         },
         |ui, ctx| {
             panels::section(ui, "Policy controls", |ui| {
                 ui.horizontal(|ui| {
-                    for policy in [sumo::Policy::Normal, sumo::Policy::Enhanced, sumo::Policy::Lockdown] {
-                        if ui.add(egui::Button::new(format!("{policy:?}")).selected(snap.policy.policy == policy)).clicked() {
+                    for policy in [
+                        sumo::Policy::Normal,
+                        sumo::Policy::Enhanced,
+                        sumo::Policy::Lockdown,
+                    ] {
+                        if ui
+                            .add(
+                                egui::Button::new(format!("{policy:?}"))
+                                    .selected(snap.policy.policy == policy),
+                            )
+                            .clicked()
+                        {
                             ctx.emit(Command::SetPolicyBand(policy));
                         }
                     }
                 });
-                if ui.add(egui::Button::new(format!("Lockdown: {}", snap.policy.lockdown)).selected(snap.policy.lockdown)).clicked() {
+                if ui
+                    .add(
+                        egui::Button::new(format!("Lockdown: {}", snap.policy.lockdown))
+                            .selected(snap.policy.lockdown),
+                    )
+                    .clicked()
+                {
                     ctx.emit(Command::SetLockdown(!snap.policy.lockdown));
                 }
-                if ui.add(egui::Button::new(format!("Intake: {}", if snap.policy.intake_paused { "paused" } else { "open" })).selected(snap.policy.intake_paused)).clicked() {
+                if ui
+                    .add(
+                        egui::Button::new(format!(
+                            "Intake: {}",
+                            if snap.policy.intake_paused {
+                                "paused"
+                            } else {
+                                "open"
+                            }
+                        ))
+                        .selected(snap.policy.intake_paused),
+                    )
+                    .clicked()
+                {
                     ctx.emit(Command::SetIntakePaused(!snap.policy.intake_paused));
                 }
                 let mut security = snap.policy.security_level;
-                if ui.add(egui::Slider::new(&mut security, 0.0..=1.0).text("Security")).changed() {
+                if ui
+                    .add(egui::Slider::new(&mut security, 0.0..=1.0).text("Security"))
+                    .changed()
+                {
                     ctx.emit(Command::SetSecurity(security));
                 }
                 let mut privileges = snap.policy.privileges_level;
-                if ui.add(egui::Slider::new(&mut privileges, 0.0..=1.0).text("Privileges")).changed() {
+                if ui
+                    .add(egui::Slider::new(&mut privileges, 0.0..=1.0).text("Privileges"))
+                    .changed()
+                {
                     ctx.emit(Command::SetPrivileges(privileges));
                 }
                 let mut funding = snap.policy.rehab_funding_multiplier;
-                if ui.add(egui::Slider::new(&mut funding, 0.0..=3.0).text("Rehab funding")).changed() {
+                if ui
+                    .add(egui::Slider::new(&mut funding, 0.0..=3.0).text("Rehab funding"))
+                    .changed()
+                {
                     ctx.emit(Command::SetRehabFunding(funding));
                 }
                 ui.horizontal(|ui| {
-                    for mode in [sumo::PolicyMode::Deterministic, sumo::PolicyMode::Council, sumo::PolicyMode::Shadow] {
-                        if ui.button(format!("{mode:?}")).clicked() { ctx.emit(Command::SetPolicyMode(mode)); }
+                    for mode in [
+                        sumo::PolicyMode::Deterministic,
+                        sumo::PolicyMode::Council,
+                        sumo::PolicyMode::Shadow,
+                    ] {
+                        if ui.button(format!("{mode:?}")).clicked() {
+                            ctx.emit(Command::SetPolicyMode(mode));
+                        }
                     }
                 });
             });
@@ -506,7 +736,11 @@ fn warden(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                     .selected_text(CONSTRUCTION_KINDS[ctx.state.construction_kind_index].display())
                     .show_ui(ui, |ui| {
                         for (i, kind) in CONSTRUCTION_KINDS.iter().enumerate() {
-                            ui.selectable_value(&mut ctx.state.construction_kind_index, i, kind.display());
+                            ui.selectable_value(
+                                &mut ctx.state.construction_kind_index,
+                                i,
+                                kind.display(),
+                            );
                         }
                     });
                 ui.horizontal(|ui| {
@@ -522,18 +756,39 @@ fn warden(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                         capacity: ctx.state.build_capacity,
                     });
                 }
-                egui::ScrollArea::vertical().id_salt("construction_queue").max_height(200.0).show(ui, |ui| {
-                    for p in &snap.construction {
-                        ui.horizontal(|ui| {
-                            ui.label(format!("#{} {} W{} {}/{}d ({:?})", p.id, p.kind.display(), p.wing, p.progress_days, p.total_days, p.status));
-                            if ui.button("+1d").clicked() { ctx.emit(Command::AdvanceConstruction(p.id, 1)); }
-                            if ui.small_button("Approve").clicked() { ctx.emit(Command::ApproveConstruction(p.id)); }
-                            if ui.small_button("Cancel").clicked() { ctx.emit(Command::CancelConstruction(p.id)); }
-                            if ui.small_button("Fail").clicked() { ctx.emit(Command::FailConstruction(p.id)); }
-                        });
-                    }
-                    if snap.construction.is_empty() { ui.label("No projects queued."); }
-                });
+                egui::ScrollArea::vertical()
+                    .id_salt("construction_queue")
+                    .max_height(200.0)
+                    .show(ui, |ui| {
+                        for p in &snap.construction {
+                            ui.horizontal(|ui| {
+                                ui.label(format!(
+                                    "#{} {} W{} {}/{}d ({:?})",
+                                    p.id,
+                                    p.kind.display(),
+                                    p.wing,
+                                    p.progress_days,
+                                    p.total_days,
+                                    p.status
+                                ));
+                                if ui.button("+1d").clicked() {
+                                    ctx.emit(Command::AdvanceConstruction(p.id, 1));
+                                }
+                                if ui.small_button("Approve").clicked() {
+                                    ctx.emit(Command::ApproveConstruction(p.id));
+                                }
+                                if ui.small_button("Cancel").clicked() {
+                                    ctx.emit(Command::CancelConstruction(p.id));
+                                }
+                                if ui.small_button("Fail").clicked() {
+                                    ctx.emit(Command::FailConstruction(p.id));
+                                }
+                            });
+                        }
+                        if snap.construction.is_empty() {
+                            ui.label("No projects queued.");
+                        }
+                    });
             });
         },
     );
@@ -554,19 +809,48 @@ fn financial(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
             panels::section(ui, "Treasury", |ui| {
                 theme::kv(ui, "Cash on hand", format!("${:.2}", b.cash_major));
                 theme::kv(ui, "Health", format!("{:.0}%", b.health * 100.0));
-                theme::kv(ui, "Funding / prisoner / day", format!("${:.2}", b.funding_per_prisoner_per_day));
-                theme::kv(ui, "Base daily grant", format!("${:.2}", b.base_daily_grant));
-                theme::kv(ui, "Population / capacity", format!("{} / {}", b.population, b.capacity));
+                theme::kv(
+                    ui,
+                    "Funding / prisoner / day",
+                    format!("${:.2}", b.funding_per_prisoner_per_day),
+                );
+                theme::kv(
+                    ui,
+                    "Base daily grant",
+                    format!("${:.2}", b.base_daily_grant),
+                );
+                theme::kv(
+                    ui,
+                    "Population / capacity",
+                    format!("{} / {}", b.population, b.capacity),
+                );
                 theme::kv(ui, "Crowding threshold", b.crowding_threshold.to_string());
                 theme::kv(ui, "Runway", format!("{:.0} days", b.runway_days));
-                theme::kv(ui, "Projected revenue / day", format!("${:.2}", b.projected_daily_revenue));
-                theme::kv(ui, "Projected expense / day", format!("${:.2}", b.projected_daily_expense));
-                theme::kv(ui, "Trailing daily expense", format!("${:.2}", b.trailing_daily_expense_avg));
+                theme::kv(
+                    ui,
+                    "Projected revenue / day",
+                    format!("${:.2}", b.projected_daily_revenue),
+                );
+                theme::kv(
+                    ui,
+                    "Projected expense / day",
+                    format!("${:.2}", b.projected_daily_expense),
+                );
+                theme::kv(
+                    ui,
+                    "Trailing daily expense",
+                    format!("${:.2}", b.trailing_daily_expense_avg),
+                );
             });
             panels::section(ui, "Warnings", |ui| {
-                if b.warnings.is_empty() { ui.label("No financial warnings."); }
+                if b.warnings.is_empty() {
+                    ui.label("No financial warnings.");
+                }
                 for warning in &b.warnings {
-                    ui.add(egui::Label::new(egui::RichText::new(format!("⚠ {warning}")).color(theme::severity_colour(0.8))));
+                    ui.add(egui::Label::new(
+                        egui::RichText::new(format!("⚠ {warning}"))
+                            .color(theme::severity_colour(0.8)),
+                    ));
                 }
             });
             panels::section(ui, "Economy summary", |ui| {
@@ -577,27 +861,49 @@ fn financial(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
         },
         |ui, _ctx| {
             panels::section(ui, "Budget by account (30d)", |ui| {
-                egui::Grid::new("budget_lines").striped(true).show(ui, |ui| {
-                    ui.label("Account"); ui.label("In"); ui.label("Out"); ui.label("Net"); ui.end_row();
-                    for line in &b.lines {
-                        ui.label(&line.account);
-                        ui.label(format!("{:.2}", line.inflow_major));
-                        ui.label(format!("{:.2}", line.outflow_major));
-                        ui.add(egui::Label::new(egui::RichText::new(format!("{:.2}", line.net_major)).color(if line.net_major >= 0.0 { theme::good_colour(1.0) } else { theme::severity_colour(1.0) })));
+                egui::Grid::new("budget_lines")
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.label("Account");
+                        ui.label("In");
+                        ui.label("Out");
+                        ui.label("Net");
                         ui.end_row();
-                    }
-                });
+                        for line in &b.lines {
+                            ui.label(&line.account);
+                            ui.label(format!("{:.2}", line.inflow_major));
+                            ui.label(format!("{:.2}", line.outflow_major));
+                            ui.add(egui::Label::new(
+                                egui::RichText::new(format!("{:.2}", line.net_major)).color(
+                                    if line.net_major >= 0.0 {
+                                        theme::good_colour(1.0)
+                                    } else {
+                                        theme::severity_colour(1.0)
+                                    },
+                                ),
+                            ));
+                            ui.end_row();
+                        }
+                    });
             });
             panels::section(ui, "Recent ledger", |ui| {
-                egui::ScrollArea::vertical().id_salt("ledger").max_height(260.0).show(ui, |ui| {
-                    for entry in snap.economy.ledger.iter().rev().take(30) {
-                        ui.add(egui::Label::new(egui::RichText::new(format!(
-                            "t={} {:?} {:+.2} — {}",
-                            entry.at_secs, entry.account, entry.amount.as_major(),
-                            data::short_truncate(&entry.note, 46)
-                        )).small()));
-                    }
-                });
+                egui::ScrollArea::vertical()
+                    .id_salt("ledger")
+                    .max_height(260.0)
+                    .show(ui, |ui| {
+                        for entry in snap.economy.ledger.iter().rev().take(30) {
+                            ui.add(egui::Label::new(
+                                egui::RichText::new(format!(
+                                    "t={} {:?} {:+.2} — {}",
+                                    entry.at_secs,
+                                    entry.account,
+                                    entry.amount.as_major(),
+                                    data::short_truncate(&entry.note, 46)
+                                ))
+                                .small(),
+                            ));
+                        }
+                    });
             });
         },
     );
@@ -613,20 +919,39 @@ fn timeline(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
         ui,
         ctx,
         |ui, ctx| {
-            ui.add(egui::TextEdit::singleline(&mut ctx.state.event_kind_filter).hint_text("Filter by kind or text"));
+            ui.add(
+                egui::TextEdit::singleline(&mut ctx.state.event_kind_filter)
+                    .hint_text("Filter by kind or text"),
+            );
             let filter = ctx.state.event_kind_filter.to_lowercase();
-            egui::ScrollArea::vertical().id_salt("timeline_list").show(ui, |ui| {
-                for event in snap.events.iter().rev() {
-                    let kind = format!("{:?}", event.kind);
-                    if !filter.is_empty() && !kind.to_lowercase().contains(&filter) && !event.summary.to_lowercase().contains(&filter) {
-                        continue;
+            egui::ScrollArea::vertical()
+                .id_salt("timeline_list")
+                .show(ui, |ui| {
+                    for event in snap.events.iter().rev() {
+                        let kind = format!("{:?}", event.kind);
+                        if !filter.is_empty()
+                            && !kind.to_lowercase().contains(&filter)
+                            && !event.summary.to_lowercase().contains(&filter)
+                        {
+                            continue;
+                        }
+                        let selected = ctx.state.selected_event == Some(event.id);
+                        if ui
+                            .selectable_label(
+                                selected,
+                                format!(
+                                    "[{}] {:<16} {}",
+                                    event.at,
+                                    data::short_truncate(&kind, 15),
+                                    data::short_truncate(&event.summary, 52)
+                                ),
+                            )
+                            .clicked()
+                        {
+                            ctx.state.selected_event = Some(event.id);
+                        }
                     }
-                    let selected = ctx.state.selected_event == Some(event.id);
-                    if ui.selectable_label(selected, format!("[{}] {:<16} {}", event.at, data::short_truncate(&kind, 15), data::short_truncate(&event.summary, 52))).clicked() {
-                        ctx.state.selected_event = Some(event.id);
-                    }
-                }
-            });
+                });
         },
         |ui, ctx| {
             if let Some(id) = ctx.state.selected_event {
@@ -650,7 +975,10 @@ fn timeline(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
 fn social_network(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
     let snap = ctx.snapshot;
     let (rect, response) = ui.allocate_exact_size(
-        egui::vec2((ui.available_width() - 340.0).max(260.0), (ui.available_height() - 120.0).max(220.0)),
+        egui::vec2(
+            (ui.available_width() - 340.0).max(260.0),
+            (ui.available_height() - 120.0).max(220.0),
+        ),
         egui::Sense::click(),
     );
     let painter = ui.painter().with_clip_rect(rect);
@@ -662,55 +990,143 @@ fn social_network(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
         let center = rect.center();
         for (i, p) in snap.prisoners.iter().enumerate() {
             let angle = (i as f32 / n as f32) * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
-            positions.insert(p.id.raw(), center + egui::vec2(angle.cos() * radius, angle.sin() * radius));
+            positions.insert(
+                p.id.raw(),
+                center + egui::vec2(angle.cos() * radius, angle.sin() * radius),
+            );
         }
     }
     for edge in &snap.social_edges {
-        let Some(&a) = positions.get(&edge.prisoner_a.raw()) else { continue };
-        let Some(&b) = positions.get(&edge.prisoner_b.raw()) else { continue };
+        let Some(&a) = positions.get(&edge.prisoner_a.raw()) else {
+            continue;
+        };
+        let Some(&b) = positions.get(&edge.prisoner_b.raw()) else {
+            continue;
+        };
         let colour = if edge.threat_score > edge.bond_score {
             Color32::from_rgba_unmultiplied(255, 90, 90, 150)
         } else {
             Color32::from_rgba_unmultiplied(110, 220, 160, 130)
         };
-        painter.line_segment([a, b], egui::Stroke::new(1.0 + edge.bond_score * 2.5, colour));
+        painter.line_segment(
+            [a, b],
+            egui::Stroke::new(1.0 + edge.bond_score * 2.5, colour),
+        );
     }
     for p in &snap.prisoners {
-        let Some(&pos) = positions.get(&p.id.raw()) else { continue };
+        let Some(&pos) = positions.get(&p.id.raw()) else {
+            continue;
+        };
         let selected = ctx.state.selected_prisoner == Some(p.id);
-        painter.circle_filled(pos, if selected { 9.0 } else { 6.0 }, if selected { theme::ACCENT } else { theme::PRISONER });
-        painter.text(pos + egui::vec2(8.0, 0.0), egui::Align2::LEFT_CENTER, &p.name, FontId::proportional(9.0), Color32::WHITE);
+        painter.circle_filled(
+            pos,
+            if selected { 9.0 } else { 6.0 },
+            if selected {
+                theme::ACCENT
+            } else {
+                theme::PRISONER
+            },
+        );
+        painter.text(
+            pos + egui::vec2(8.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            &p.name,
+            FontId::proportional(9.0),
+            Color32::WHITE,
+        );
     }
     if response.clicked() {
         if let Some(pos) = response.hover_pos() {
             let mut best = (f32::MAX, None);
             for (id, p) in &positions {
                 let d = (*p).distance(pos);
-                if d < best.0 { best = (d, Some(*id)); }
+                if d < best.0 {
+                    best = (d, Some(*id));
+                }
             }
             if best.0 < 14.0 {
                 if let Some(id) = best.1 {
-                    ctx.state.selected_prisoner = snap.prisoners.iter().find(|p| p.id.raw() == id).map(|p| p.id);
+                    ctx.state.selected_prisoner = snap
+                        .prisoners
+                        .iter()
+                        .find(|p| p.id.raw() == id)
+                        .map(|p| p.id);
                 }
             }
         }
     }
 
     ui.separator();
+    let name_map = names(snap);
+    let q = ctx.state.search.to_lowercase();
     ui.horizontal(|ui| {
         ui.label("Social edges");
-        ui.label(format!("{} edges · {} prisoners", snap.social_edges.len(), n));
+        ui.label(format!(
+            "{} edges · {} prisoners",
+            snap.social_edges.len(),
+            n
+        ));
     });
-    egui::ScrollArea::vertical().id_salt("social_edges").max_height(180.0).show(ui, |ui| {
-        let name_map = names(snap);
-        let q = ctx.state.search.to_lowercase();
-        for edge in snap.social_edges.iter().take(200) {
-            let a = name_map.get(&edge.prisoner_a.raw()).map_or_else(|| format!("#{}", edge.prisoner_a.raw()), Clone::clone);
-            let b = name_map.get(&edge.prisoner_b.raw()).map_or_else(|| format!("#{}", edge.prisoner_b.raw()), Clone::clone);
-            let label = format!("{} ↔ {} · bond {:.2} · threat {:.2} · trust {:.2}", a, b, edge.bond_score, edge.threat_score, edge.trust);
-            if !q.is_empty() && !label.to_lowercase().contains(&q) { continue; }
-            ui.add(egui::Label::new(egui::RichText::new(label).small()));
-        }
+    egui::ScrollArea::vertical()
+        .id_salt("social_edges")
+        .max_height(180.0)
+        .show(ui, |ui| {
+            for edge in snap.social_edges.iter().take(200) {
+                let a = name_map
+                    .get(&edge.prisoner_a.raw())
+                    .map_or_else(|| format!("#{}", edge.prisoner_a.raw()), Clone::clone);
+                let b = name_map
+                    .get(&edge.prisoner_b.raw())
+                    .map_or_else(|| format!("#{}", edge.prisoner_b.raw()), Clone::clone);
+                let label = format!(
+                    "{} ↔ {} · bond {:.2} · threat {:.2} · trust {:.2}",
+                    a, b, edge.bond_score, edge.threat_score, edge.trust
+                );
+                if !q.is_empty() && !label.to_lowercase().contains(&q) {
+                    continue;
+                }
+                ui.add(egui::Label::new(egui::RichText::new(label).small()));
+            }
+        });
+
+    panels::section(ui, "Emergent social roles", |ui| {
+        ui.label(format!(
+            "Detected: {} · first 120 shown",
+            snap.social_roles.len()
+        ));
+        let mut shown = 0usize;
+        egui::ScrollArea::vertical()
+            .id_salt("social_roles")
+            .max_height(120.0)
+            .show(ui, |ui| {
+                for row in &snap.social_roles {
+                    let name = name_map
+                        .get(&row.prisoner.raw())
+                        .map_or_else(|| format!("#{}", row.prisoner.raw()), Clone::clone);
+                    let label = format!(
+                        "#{} {} · {} {:.0}%",
+                        row.prisoner.raw(),
+                        data::short_truncate(&name, 18),
+                        row.role,
+                        (row.strength * 100.0).clamp(0.0, 100.0)
+                    );
+                    if !q.is_empty() && !label.to_lowercase().contains(&q) {
+                        continue;
+                    }
+                    ui.add(egui::Label::new(egui::RichText::new(label).small()));
+                    shown += 1;
+                    if shown >= 120 {
+                        break;
+                    }
+                }
+                if shown == 0 {
+                    ui.label(if q.is_empty() {
+                        "No social roles detected yet."
+                    } else {
+                        "No detected roles match this search."
+                    });
+                }
+            });
     });
 }
 
@@ -722,38 +1138,75 @@ fn incidents(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
     let snap = ctx.snapshot;
     ui.horizontal(|ui| {
         ui.label("Minimum severity");
-        ui.add(egui::Slider::new(&mut ctx.state.incident_min_severity, 0.0..=1.0));
+        ui.add(egui::Slider::new(
+            &mut ctx.state.incident_min_severity,
+            0.0..=1.0,
+        ));
         ui.checkbox(&mut ctx.state.incident_open_only, "Open only");
     });
     let rows = data::incident_report_rows(&snap.events);
-    let summary: Vec<String> = rows.iter().map(|r| format!("{}: {}", r.kind.label(), r.count)).collect();
-    theme::kv(ui, "Buckets", if summary.is_empty() { "none".into() } else { summary.join(" · ") });
+    let summary: Vec<String> = rows
+        .iter()
+        .map(|r| format!("{}: {}", r.kind.label(), r.count))
+        .collect();
+    theme::kv(
+        ui,
+        "Buckets",
+        if summary.is_empty() {
+            "none".into()
+        } else {
+            summary.join(" · ")
+        },
+    );
     let name_map = names(snap);
     columns(
         ui,
         ctx,
         |ui, ctx| {
-            egui::ScrollArea::vertical().id_salt("incident_list").show(ui, |ui| {
-                for record in snap.incidents.iter().rev() {
-                    if record.severity < ctx.state.incident_min_severity { continue; }
-                    if ctx.state.incident_open_only && record.resolved { continue; }
-                    let selected = ctx.state.selected_incident == Some(record.id);
-                    if ui.selectable_label(selected, format!("#{} {} sev {:.0}% {} · {}", record.id, data::short_truncate(&record.kind, 14), record.severity * 100.0, record.at, data::short_truncate(&record.location, 20))).clicked() {
-                        ctx.state.selected_incident = Some(record.id);
+            egui::ScrollArea::vertical()
+                .id_salt("incident_list")
+                .show(ui, |ui| {
+                    for record in snap.incidents.iter().rev() {
+                        if record.severity < ctx.state.incident_min_severity {
+                            continue;
+                        }
+                        if ctx.state.incident_open_only && record.resolved {
+                            continue;
+                        }
+                        let selected = ctx.state.selected_incident == Some(record.id);
+                        if ui
+                            .selectable_label(
+                                selected,
+                                format!(
+                                    "#{} {} sev {:.0}% {} · {}",
+                                    record.id,
+                                    data::short_truncate(&record.kind, 14),
+                                    record.severity * 100.0,
+                                    record.at,
+                                    data::short_truncate(&record.location, 20)
+                                ),
+                            )
+                            .clicked()
+                        {
+                            ctx.state.selected_incident = Some(record.id);
+                        }
                     }
-                }
-                if snap.incidents.is_empty() { ui.label("No structured incidents recorded yet."); }
-            });
+                    if snap.incidents.is_empty() {
+                        ui.label("No structured incidents recorded yet.");
+                    }
+                });
         },
         |ui, ctx| {
             let selected = ctx
                 .state
                 .selected_incident
                 .and_then(|id| snap.incidents.iter().find(|r| r.id == id))
-                .or_else(|| snap.incidents.iter().rev().find(|r| {
-                    r.severity >= ctx.state.incident_min_severity
-                        && (!ctx.state.incident_open_only || !r.resolved)
-                }));
+                .or_else(|| {
+                    snap.incidents.iter().rev().find(|r| {
+                        r.severity >= ctx.state.incident_min_severity
+                            && (!ctx.state.incident_open_only || !r.resolved)
+                    })
+                });
             if let Some(record) = selected {
                 ui.heading("Incident detail");
                 panels::incident_detail(ui, record, &name_map);
@@ -775,9 +1228,21 @@ fn audit(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
     let snap = ctx.snapshot;
     ui.horizontal(|ui| {
         ui.label("Validation");
-        for filter in [None::<&str>, Some("accepted"), Some("repaired"), Some("rejected")] {
+        for filter in [
+            None::<&str>,
+            Some("accepted"),
+            Some("repaired"),
+            Some("rejected"),
+        ] {
             let label = filter.unwrap_or("all");
-            if ui.add(egui::Button::new(label).selected(ctx.state.decision_validation_filter == filter.map(str::to_string))).clicked() {
+            if ui
+                .add(
+                    egui::Button::new(label).selected(
+                        ctx.state.decision_validation_filter == filter.map(str::to_string),
+                    ),
+                )
+                .clicked()
+            {
                 ctx.state.decision_validation_filter = filter.map(str::to_string);
             }
         }
@@ -786,30 +1251,55 @@ fn audit(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
     let visible: Vec<_> = snap
         .decision_audit
         .iter()
-        .filter(|record| filter.as_deref().is_none_or(|f| data::validation_matches(&record.validation, f)))
+        .filter(|record| {
+            filter
+                .as_deref()
+                .is_none_or(|f| data::validation_matches(&record.validation, f))
+        })
         .collect();
     let selected_key = ctx.state.selected_decision.clone();
     columns(
         ui,
         ctx,
         |ui, ctx| {
-            egui::ScrollArea::vertical().id_salt("audit_list").show(ui, |ui| {
-                for record in visible.iter().rev() {
-                    let key = data::decision_key(record);
-                    let selected = selected_key.as_deref() == Some(key.as_str());
-                    if ui.selectable_label(selected, format!("{} {} · {} · {}", record.time, data::short_truncate(&record.actor, 16), data::short_truncate(&record.action, 16), record.validation)).clicked() {
-                        ctx.state.selected_decision = Some(key);
+            egui::ScrollArea::vertical()
+                .id_salt("audit_list")
+                .show(ui, |ui| {
+                    for record in visible.iter().rev() {
+                        let key = data::decision_key(record);
+                        let selected = selected_key.as_deref() == Some(key.as_str());
+                        if ui
+                            .selectable_label(
+                                selected,
+                                format!(
+                                    "{} {} · {} · {}",
+                                    record.time,
+                                    data::short_truncate(&record.actor, 16),
+                                    data::short_truncate(&record.action, 16),
+                                    record.validation
+                                ),
+                            )
+                            .clicked()
+                        {
+                            ctx.state.selected_decision = Some(key);
+                        }
                     }
-                }
-                if visible.is_empty() { ui.label("No decisions audited yet."); }
-            });
+                    if visible.is_empty() {
+                        ui.label("No decisions audited yet.");
+                    }
+                });
         },
         |ui, ctx| {
             let selected = ctx
                 .state
                 .selected_decision
                 .as_deref()
-                .and_then(|key| visible.iter().copied().find(|r| data::decision_key(r) == key))
+                .and_then(|key| {
+                    visible
+                        .iter()
+                        .copied()
+                        .find(|r| data::decision_key(r) == key)
+                })
                 .or_else(|| visible.last().copied());
             if let Some(record) = selected {
                 ui.heading("Decision detail");

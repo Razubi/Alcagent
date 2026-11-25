@@ -28,9 +28,9 @@ pub mod autosave;
 
 pub mod decisions;
 
+pub use crate::decisions::{DecisionProposal, DecisionType};
 /// Re-export decision types for convenience and doctest accessibility.
 pub use alc_agents::ValidationResult;
-pub use crate::decisions::{DecisionProposal, DecisionType};
 
 /// Council of drives: deterministic institutional decision evaluation (R3).
 pub mod council;
@@ -39,18 +39,18 @@ pub mod drivers;
 
 pub mod map_frame;
 /// Re-export map frame types for UI rendering.
-pub use crate::map_frame::{MapFrame, PawnPosition, NavEdge};
+pub use crate::map_frame::{MapFrame, NavEdge, PawnPosition};
 
 pub mod observation;
 /// Re-export observation types for UI and external consumers.
-pub use crate::observation::{Observation, Stats, AgentObservation};
+pub use crate::observation::{AgentObservation, Observation, Stats};
 
 pub mod parole;
 
 pub mod incidents;
 
 /// Re-export structured incident query types for UI/CLI consumers (0.05).
-pub use crate::incidents::{filter_incidents, Incident, IncidentFilter};
+pub use crate::incidents::{Incident, IncidentFilter, filter_incidents};
 
 pub mod invariants;
 
@@ -62,30 +62,38 @@ pub use alc_world::World;
 pub use alc_core::SimTime;
 pub use alc_events::WorldEvent;
 
-
 pub mod state;
 pub mod views;
-pub use state::{Policy, PolicyMode, PolicyState, PolicySummary, DecisionAuditRecord, IncidentRecord, EngineState};
+pub use state::{
+    DecisionAuditRecord, EngineState, IncidentRecord, Policy, PolicyMode, PolicyState,
+    PolicySummary,
+};
 pub use views::*;
 
 // Re-exported for internal modules that historically imported these from crate root.
+pub use crate::decisions::DecisionOutcome;
+pub use crate::parole::{ParoleConditions, ParoleLedger, ParoleStatus};
 pub use alc_agents::Decision;
 pub use alc_core::{GuardId, PrisonerId};
 pub use alc_events::EventBus;
 pub use alc_warden::WardenAction;
-pub use crate::decisions::DecisionOutcome;
-pub use crate::parole::{ParoleLedger, ParoleStatus, ParoleConditions};
 
+use crate::autosave::AutosaveScheduler;
+use crate::views::{
+    REHAB_PROGRAMS, ReleaseEventInfo, contraband_severity_for_label, detect_contraband_item,
+    parse_f32_after, parse_guard_cause, parse_plan_flag, rehab_state_for, write_back_rehab_state,
+};
 use alc_core::TimeSpeed;
+use alc_events::EventKind;
 use alc_guard::GuardReport;
 use alc_persistence::{SaveError, SaveManager};
 use alc_prisoner::NeedTag;
+use alc_prisoner::{
+    AttendanceContext, SchedulePolicy, ScheduleTemplate, attendance_probability, current_block,
+    resolve_schedule,
+};
+use alc_social::rehab::{RehabProgram, enroll_in_program};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use crate::views::{contraband_severity_for_label, detect_contraband_item, parse_f32_after, parse_guard_cause, parse_plan_flag, rehab_state_for, write_back_rehab_state, ReleaseEventInfo, REHAB_PROGRAMS};
-use crate::autosave::AutosaveScheduler;
-use alc_prisoner::{attendance_probability, current_block, resolve_schedule, AttendanceContext, SchedulePolicy, ScheduleTemplate};
-use alc_social::rehab::{enroll_in_program, RehabProgram};
-use alc_events::EventKind;
 use std::path::{Path, PathBuf};
 
 /// The simulation engine: owns the world and drives it over time.
@@ -271,15 +279,15 @@ impl Sim {
         );
     }
 
-    
-
     /// Set the simulation speed.
     pub fn set_speed(&mut self, speed: TimeSpeed) {
         self.speed = speed;
         self.world.speed = speed;
     }
     /// Get the current simulation speed.
-    pub fn speed(&self) -> TimeSpeed { self.speed }
+    pub fn speed(&self) -> TimeSpeed {
+        self.speed
+    }
 
     /// Advance one tick. No-op while paused.
     pub fn tick(&mut self) {
@@ -348,27 +356,37 @@ impl Sim {
     /// a prisoner as perpetually "due" after a world-level grant or denial.
     fn mirror_parole_events(&mut self, events: &[WorldEvent]) {
         for event in events {
-            let Some(&raw_id) = event.actors.first() else { continue };
+            let Some(&raw_id) = event.actors.first() else {
+                continue;
+            };
             let id = PrisonerId(raw_id);
             match event.kind {
                 EventKind::ParoleHearing => {
                     if !self.engine_state.parole.has(id) {
-                        self.engine_state.parole.set(id, ParoleStatus::Scheduled, event.at);
+                        self.engine_state
+                            .parole
+                            .set(id, ParoleStatus::Scheduled, event.at);
                     }
                     if self.engine_state.parole.hearing_at(id).is_none() {
                         self.engine_state.parole.set_hearing_at(id, event.at);
                     }
                 }
                 EventKind::ParoleGranted => {
-                    if !matches!(self.engine_state.parole.status(id), Some(ParoleStatus::Denied)) {
-                        self.engine_state.parole.set(id, ParoleStatus::Granted, event.at);
+                    if !matches!(
+                        self.engine_state.parole.status(id),
+                        Some(ParoleStatus::Denied)
+                    ) {
+                        self.engine_state
+                            .parole
+                            .set(id, ParoleStatus::Granted, event.at);
                         if self.engine_state.parole.conditions(id).is_none() {
                             let conditions = ParoleConditions::deterministic(id, 0.5, 0.5);
                             self.engine_state.parole.set_conditions(id, conditions);
                         }
                         if self.engine_state.parole.decision_reason(id).is_none() {
-                            let reason = event.causes.first().cloned()
-                                .unwrap_or_else(|| "world parole board granted release".to_string());
+                            let reason = event.causes.first().cloned().unwrap_or_else(|| {
+                                "world parole board granted release".to_string()
+                            });
                             self.engine_state.parole.set_decision_reason(id, reason);
                         }
                         if !self.world.prisoners.iter().any(|p| p.id == id)
@@ -379,9 +397,17 @@ impl Sim {
                     }
                 }
                 EventKind::ParoleDenied => {
-                    if !matches!(self.engine_state.parole.status(id), Some(ParoleStatus::Granted)) {
-                        self.engine_state.parole.set(id, ParoleStatus::Denied, event.at);
-                        let reason = event.causes.first().cloned()
+                    if !matches!(
+                        self.engine_state.parole.status(id),
+                        Some(ParoleStatus::Granted)
+                    ) {
+                        self.engine_state
+                            .parole
+                            .set(id, ParoleStatus::Denied, event.at);
+                        let reason = event
+                            .causes
+                            .first()
+                            .cloned()
                             .unwrap_or_else(|| "world parole board denied release".to_string());
                         self.engine_state.parole.set_decision_reason(id, reason);
                     }
@@ -525,7 +551,10 @@ impl Sim {
                 if inc.cause.is_some_and(|id| !live_incidents.contains(&id)) {
                     inc.cause = None;
                 }
-                if inc.consequence.is_some_and(|id| !live_incidents.contains(&id)) {
+                if inc
+                    .consequence
+                    .is_some_and(|id| !live_incidents.contains(&id))
+                {
                     inc.consequence = None;
                 }
                 if !inc.causal_chain.is_empty() {
@@ -550,7 +579,13 @@ impl Sim {
         if self.engine_state.resolved_contraband_cases.len() > MAX {
             // Keep highest ids (most recent) when trimming.
             while self.engine_state.resolved_contraband_cases.len() > MAX {
-                if let Some(first) = self.engine_state.resolved_contraband_cases.iter().next().copied() {
+                if let Some(first) = self
+                    .engine_state
+                    .resolved_contraband_cases
+                    .iter()
+                    .next()
+                    .copied()
+                {
                     self.engine_state.resolved_contraband_cases.remove(&first);
                     self.engine_state.resolved_contraband_at.remove(&first);
                 } else {
@@ -560,7 +595,13 @@ impl Sim {
         }
         if self.engine_state.resolved_contraband_at.len() > MAX {
             while self.engine_state.resolved_contraband_at.len() > MAX {
-                if let Some(first) = self.engine_state.resolved_contraband_at.keys().next().copied() {
+                if let Some(first) = self
+                    .engine_state
+                    .resolved_contraband_at
+                    .keys()
+                    .next()
+                    .copied()
+                {
                     self.engine_state.resolved_contraband_at.remove(&first);
                     self.engine_state.resolved_contraband_cases.remove(&first);
                 } else {
@@ -586,14 +627,22 @@ impl Sim {
     }
 
     /// Get a reference to the world state.
-    pub fn world(&self) -> &World { &self.world }
+    pub fn world(&self) -> &World {
+        &self.world
+    }
     /// Get a mutable reference to the world state.
-    pub fn world_mut(&mut self) -> &mut World { &mut self.world }
+    pub fn world_mut(&mut self) -> &mut World {
+        &mut self.world
+    }
     /// Get the number of days simulated.
-    pub fn days_simulated(&self) -> u64 { self.world.days_simulated }
+    pub fn days_simulated(&self) -> u64 {
+        self.world.days_simulated
+    }
 
     /// Get the world's event bus.
-    pub fn events(&self) -> &EventBus { &self.world.events }
+    pub fn events(&self) -> &EventBus {
+        &self.world.events
+    }
 
     /// Get events since a point in time.
     pub fn events_since(&self, at: SimTime) -> Vec<WorldEvent> {
@@ -649,7 +698,8 @@ impl Sim {
         // Build a temporary Decision from the DecisionType and target,
         // then validate it through the pipeline.
         let decision = decision_type.to_decision(target);
-        let estimated_outcome = crate::decisions::validate_with_engine_rules(&self.world, prisoner_id, &decision);
+        let estimated_outcome =
+            crate::decisions::validate_with_engine_rules(&self.world, prisoner_id, &decision);
         let trace_hash_before = self.trace_hash();
 
         // Brain-inspector enrichment: attach evaluator drives, confidence and
@@ -681,7 +731,11 @@ impl Sim {
     /// `propose_decision` builds) and returns `ValidationResult::Accepted`
     /// or `ValidationResult::Rejected` with a reason. Does not modify any
     /// world state, emit events, or change budget or trace_hash.
-    pub fn validate_only(&self, prisoner_id: PrisonerId, proposal: &crate::decisions::DecisionProposal) -> ValidationResult {
+    pub fn validate_only(
+        &self,
+        prisoner_id: PrisonerId,
+        proposal: &crate::decisions::DecisionProposal,
+    ) -> ValidationResult {
         // Verify the prisoner exists before building a context.
         if !self.world.prisoners.iter().any(|p| p.id == prisoner_id) {
             return ValidationResult::Rejected {
@@ -768,15 +822,24 @@ impl Sim {
             None => String::new(),
         };
         if need_tags.is_empty() {
-            format!("Prisoner {} has no specific need driving this decision{target_note}", prisoner.id.raw())
+            format!(
+                "Prisoner {} has no specific need driving this decision{target_note}",
+                prisoner.id.raw()
+            )
         } else {
             let tags: Vec<String> = need_tags.iter().map(|t| format!("{:?}", t)).collect();
-            format!("Prisoner {} decision driven by needs: {:?}{target_note}", prisoner.id.raw(), tags)
+            format!(
+                "Prisoner {} decision driven by needs: {:?}{target_note}",
+                prisoner.id.raw(),
+                tags
+            )
         }
     }
 
     /// Get a read-only snapshot of the world for observers and UI.
-    pub fn observation(&self) -> Observation { Observation::capture(&self.world) }
+    pub fn observation(&self) -> Observation {
+        Observation::capture(&self.world)
+    }
 
     /// Get a point-in-time map frame of all pawn positions for the live map (R1).
     ///
@@ -809,65 +872,77 @@ impl Sim {
 
     /// Get all prisoners as summary types for the prisoner view.
     pub fn prisoners(&self) -> Vec<PrisonerSummary> {
-        self.world.prisoners.iter().map(|p| PrisonerSummary {
-            id: p.id,
-            name: p.name.clone(),
-            age: p.age,
-            classification: p.classification,
-            sentence_served_days: p.sentence_served_days,
-            sentence_days: p.sentence_days,
-            gang_affiliation: p.gang_affiliation,
-            reputation: p.reputation,
-            condition: p.condition.clone(),
-            traits: p.traits.clone(),
-            needs: p.needs.clone(),
-            goals: p.goals.clone(),
-            schedule: p.schedule.clone(),
-            skills: p.skills.clone(),
-            memory_summary: p.memory_summary.clone(),
-        }).collect()
+        self.world
+            .prisoners
+            .iter()
+            .map(|p| PrisonerSummary {
+                id: p.id,
+                name: p.name.clone(),
+                age: p.age,
+                classification: p.classification,
+                sentence_served_days: p.sentence_served_days,
+                sentence_days: p.sentence_days,
+                gang_affiliation: p.gang_affiliation,
+                reputation: p.reputation,
+                condition: p.condition.clone(),
+                traits: p.traits.clone(),
+                needs: p.needs.clone(),
+                goals: p.goals.clone(),
+                schedule: p.schedule.clone(),
+                skills: p.skills.clone(),
+                memory_summary: p.memory_summary.clone(),
+            })
+            .collect()
     }
 
     /// Get all gangs as summary types for the gang view.
     pub fn gangs(&self) -> Vec<GangSummary> {
-        self.world.gangs.iter().map(|g| GangSummary {
-            id: g.id.0,
-            name: g.name.clone(),
-            leader: g.leader,
-            members: g.members.clone(),
-            reputation: g.reputation,
-            resources: g.resources,
-            culture: g.culture.clone(),
-            formed_at: g.formed_at,
-            active: g.active,
-            hierarchy: g.hierarchy.clone(),
-            rivalries: g.rivalries.iter().map(|id| (id.0, 1.0)).collect(), // simplified
-            alliances: g.alliances.iter().map(|id| (id.0, 1.0)).collect(), // simplified
-            internal_disputes: g.internal_disputes.clone(),
-            goals: g.goals.clone(),
-        }).collect()
+        self.world
+            .gangs
+            .iter()
+            .map(|g| GangSummary {
+                id: g.id.0,
+                name: g.name.clone(),
+                leader: g.leader,
+                members: g.members.clone(),
+                reputation: g.reputation,
+                resources: g.resources,
+                culture: g.culture.clone(),
+                formed_at: g.formed_at,
+                active: g.active,
+                hierarchy: g.hierarchy.clone(),
+                rivalries: g.rivalries.iter().map(|id| (id.0, 1.0)).collect(), // simplified
+                alliances: g.alliances.iter().map(|id| (id.0, 1.0)).collect(), // simplified
+                internal_disputes: g.internal_disputes.clone(),
+                goals: g.goals.clone(),
+            })
+            .collect()
     }
 
     /// Get all guards as summary types for the staff view.
     pub fn guards(&self) -> Vec<GuardSummary> {
-        self.world.guards.iter().map(|g| GuardSummary {
-            id: g.id.0,
-            name: g.name.clone(),
-            rank: g.rank,
-            post: g.post,
-            authority: g.authority,
-            shift: g.shift,
-            current_task: g.current_task.clone(),
-            competence: g.competence,
-            experience: g.experience,
-            morale: g.morale,
-            fatigue: g.fatigue,
-            stress: g.stress,
-            loyalty: g.loyalty,
-            integrity: g.integrity,
-            personality: g.personality,
-            history: g.history.clone(),
-        }).collect()
+        self.world
+            .guards
+            .iter()
+            .map(|g| GuardSummary {
+                id: g.id.0,
+                name: g.name.clone(),
+                rank: g.rank,
+                post: g.post,
+                authority: g.authority,
+                shift: g.shift,
+                current_task: g.current_task.clone(),
+                competence: g.competence,
+                experience: g.experience,
+                morale: g.morale,
+                fatigue: g.fatigue,
+                stress: g.stress,
+                loyalty: g.loyalty,
+                integrity: g.integrity,
+                personality: g.personality,
+                history: g.history.clone(),
+            })
+            .collect()
     }
 
     /// Get the warden as summary for the warden view.
@@ -888,7 +963,11 @@ impl Sim {
         EconomySummary {
             cash_major: self.world.economy.cash.as_major(),
             health: self.world.economy.health(),
-            funding_per_prisoner_per_day: self.world.economy.funding_per_prisoner_per_day.as_major(),
+            funding_per_prisoner_per_day: self
+                .world
+                .economy
+                .funding_per_prisoner_per_day
+                .as_major(),
             crowding_threshold: self.world.economy.crowding_threshold,
             ledger: self.world.economy.ledger.clone(),
         }
@@ -914,16 +993,83 @@ impl Sim {
         edges
     }
 
+    /// Get detected emergent social roles for the Social Network view.
+    ///
+    /// Recomputed from the authoritative social graph and gang roster. Rows
+    /// are ordered by prisoner id then role label, and every strength is
+    /// clamped to `0.0..=1.0`.
+    pub fn social_roles(&self) -> Vec<SocialRoleSummary> {
+        let prisoner_ids: Vec<PrisonerId> = self.world.prisoners.iter().map(|p| p.id).collect();
+        let detected =
+            alc_social::detect_roles(&self.world.social, &prisoner_ids, &self.world.gangs);
+
+        let mut rows: Vec<SocialRoleSummary> = detected
+            .into_iter()
+            .flat_map(|(prisoner, roles)| {
+                roles
+                    .into_iter()
+                    .map(move |(role, strength)| SocialRoleSummary {
+                        prisoner,
+                        role: format!("{role:?}"),
+                        strength: strength.clamp(0.0, 1.0),
+                    })
+            })
+            .collect();
+
+        // Dyad classifiers are part of the social-network analysis surface too:
+        // expose them beside the aggregate roles so the observer can see who
+        // is a friend, rival, or enemy of whom without reading raw dyads.
+        let denom = prisoner_ids.len().saturating_sub(1).max(1) as f32;
+        for &prisoner in &prisoner_ids {
+            let graph = &self.world.social;
+            for (label, matches) in [
+                (
+                    "Friend",
+                    alc_social::friends_of(graph, prisoner, &prisoner_ids),
+                ),
+                (
+                    "Rival",
+                    alc_social::rivals_of(graph, prisoner, &prisoner_ids),
+                ),
+                (
+                    "Enemy",
+                    alc_social::enemies_of(graph, prisoner, &prisoner_ids),
+                ),
+            ] {
+                if matches.is_empty() {
+                    continue;
+                }
+                rows.push(SocialRoleSummary {
+                    prisoner,
+                    role: label.to_string(),
+                    strength: (matches.len() as f32 / denom).clamp(0.0, 1.0),
+                });
+            }
+        }
+
+        rows.sort_by(|a, b| {
+            a.prisoner
+                .raw()
+                .cmp(&b.prisoner.raw())
+                .then_with(|| a.role.cmp(&b.role))
+        });
+        rows
+    }
+
     /// Get facilities for the map view.
     pub fn facilities(&self) -> Vec<FacilitySummary> {
-        self.world.facilities.iter().map(|f| FacilitySummary {
-            id: f.id.0,
-            kind: f.kind,
-            wing: 0, // Would need to derive from location
-            capacity: f.capacity,
-            condition: f.condition,
-            staff_required: 0, // Would need to calculate
-        }).collect()
+        self.world
+            .facilities
+            .iter()
+            .map(|f| FacilitySummary {
+                id: f.id.0,
+                kind: f.kind,
+                wing: 0, // Would need to derive from location
+                capacity: f.capacity,
+                condition: f.condition,
+                staff_required: 0, // Would need to calculate
+            })
+            .collect()
     }
 
     /// Construction queue for observer UI (0.05).
@@ -932,33 +1078,45 @@ impl Sim {
     /// audit and pruned only after 365 simulated days; completed facilities also
     /// appear in [`Sim::facilities`].
     pub fn construction_queue(&self) -> Vec<ConstructionSummary> {
-        self.world.construction_queue.iter().map(|p| ConstructionSummary {
-            id: p.id,
-            kind: p.kind,
-            wing: p.wing,
-            capacity: p.capacity,
-            total_days: p.total_days,
-            progress_days: p.progress_days,
-            cost: p.cost,
-            started_day: p.started_day,
-            status: p.status,
-            terminal_reason: p.terminal_reason.clone(),
-            staff_allocated: p.staff_allocated,
-            materials_ready: p.materials_ready,
-            prereqs_met: p.prereqs_met,
-        }).collect()
+        self.world
+            .construction_queue
+            .iter()
+            .map(|p| ConstructionSummary {
+                id: p.id,
+                kind: p.kind,
+                wing: p.wing,
+                capacity: p.capacity,
+                total_days: p.total_days,
+                progress_days: p.progress_days,
+                cost: p.cost,
+                started_day: p.started_day,
+                status: p.status,
+                terminal_reason: p.terminal_reason.clone(),
+                staff_allocated: p.staff_allocated,
+                materials_ready: p.materials_ready,
+                prereqs_met: p.prereqs_met,
+            })
+            .collect()
     }
 
     /// Queue a construction project through the world API (observer/control, 0.05).
     ///
     /// Returns the project id. Emits construction start through the world and
     /// records a decision-audit entry.
-    pub fn enqueue_construction(&mut self, kind: alc_world::FacilityKind, wing: u32, capacity: u32) -> u64 {
+    pub fn enqueue_construction(
+        &mut self,
+        kind: alc_world::FacilityKind,
+        wing: u32,
+        capacity: u32,
+    ) -> u64 {
         let id = self.world.enqueue_construction(kind, wing, capacity);
         self.audit_control(
             "warden/control",
             "EnqueueConstruction",
-            format!("Queued construction {:?} wing={} cap={} (project {})", kind, wing, capacity, id),
+            format!(
+                "Queued construction {:?} wing={} cap={} (project {})",
+                kind, wing, capacity, id
+            ),
             "accepted",
             "delegated to World::enqueue_construction",
         );
@@ -977,9 +1135,16 @@ impl Sim {
         self.audit_control(
             "observer/control",
             "ApproveConstruction",
-            format!("Construction project {project_id} {}", if ok { "approved" } else { "not approvable" }),
+            format!(
+                "Construction project {project_id} {}",
+                if ok { "approved" } else { "not approvable" }
+            ),
             if ok { "accepted" } else { "rejected" },
-            if ok { reason } else { "unknown or non-requested construction project".to_string() },
+            if ok {
+                reason
+            } else {
+                "unknown or non-requested construction project".to_string()
+            },
         );
         ok
     }
@@ -992,21 +1157,45 @@ impl Sim {
     /// existed and was advanceable.
     pub fn advance_construction(&mut self, project_id: u64, days: u32) -> bool {
         if days == 0 {
-            self.audit_control_rejected("observer/control", "AdvanceConstruction", format!("Construction project {project_id} advance ignored"), "days must be > 0");
+            self.audit_control_rejected(
+                "observer/control",
+                "AdvanceConstruction",
+                format!("Construction project {project_id} advance ignored"),
+                "days must be > 0",
+            );
             return false;
         }
         let before = self.world.events.recent().map(|e| e.id).max().unwrap_or(0);
-        let proj = self.world.construction_queue.iter().find(|p| p.id == project_id).cloned();
+        let proj = self
+            .world
+            .construction_queue
+            .iter()
+            .find(|p| p.id == project_id)
+            .cloned();
         let Some(proj) = proj else {
-            self.audit_control_rejected("observer/control", "AdvanceConstruction", format!("Construction project {project_id} not found"), "unknown construction project");
+            self.audit_control_rejected(
+                "observer/control",
+                "AdvanceConstruction",
+                format!("Construction project {project_id} not found"),
+                "unknown construction project",
+            );
             return false;
         };
         let prev_progress = proj.progress_days;
         let total = proj.total_days;
         let ok = self.world.advance_construction(project_id, days);
         self.pump_events_into_engine_log(before);
-        let after_progress = self.world.construction_queue.iter().find(|p| p.id == project_id).map(|p| p.progress_days).unwrap_or(total);
-        let completed = self.world.construction_queue.iter()
+        let after_progress = self
+            .world
+            .construction_queue
+            .iter()
+            .find(|p| p.id == project_id)
+            .map(|p| p.progress_days)
+            .unwrap_or(total);
+        let completed = self
+            .world
+            .construction_queue
+            .iter()
             .find(|p| p.id == project_id)
             .is_some_and(|p| p.status == alc_world::ConstructionStatus::Completed);
         self.audit_control(
@@ -1028,9 +1217,16 @@ impl Sim {
         self.audit_control(
             "observer/control",
             "CancelConstruction",
-            format!("Construction project {project_id} {}", if ok { "cancelled" } else { "not cancelled" }),
+            format!(
+                "Construction project {project_id} {}",
+                if ok { "cancelled" } else { "not cancelled" }
+            ),
             if ok { "accepted" } else { "rejected" },
-            if ok { reason } else { "unknown or terminal construction project".to_string() },
+            if ok {
+                reason
+            } else {
+                "unknown or terminal construction project".to_string()
+            },
         );
         ok
     }
@@ -1044,9 +1240,16 @@ impl Sim {
         self.audit_control(
             "observer/control",
             "FailConstruction",
-            format!("Construction project {project_id} {}", if ok { "failed" } else { "not failed" }),
+            format!(
+                "Construction project {project_id} {}",
+                if ok { "failed" } else { "not failed" }
+            ),
             if ok { "accepted" } else { "rejected" },
-            if ok { reason } else { "unknown or terminal construction project".to_string() },
+            if ok {
+                reason
+            } else {
+                "unknown or terminal construction project".to_string()
+            },
         );
         ok
     }
@@ -1255,7 +1458,10 @@ impl Sim {
                 .as_deref()
                 .map(contraband_severity_for_label)
                 .unwrap_or(0.5);
-            let resolved = self.engine_state.resolved_contraband_cases.contains(&event.id);
+            let resolved = self
+                .engine_state
+                .resolved_contraband_cases
+                .contains(&event.id);
             cases.push(ContrabandCaseSummary {
                 case_id: event.id,
                 at: event.at,
@@ -1266,7 +1472,11 @@ impl Sim {
                 summary: event.summary.clone(),
                 causes: event.causes.clone(),
                 resolved,
-                resolved_at: self.engine_state.resolved_contraband_at.get(&event.id).copied(),
+                resolved_at: self
+                    .engine_state
+                    .resolved_contraband_at
+                    .get(&event.id)
+                    .copied(),
             });
         }
         cases.sort_by_key(|c| c.case_id);
@@ -1598,7 +1808,10 @@ impl Sim {
         let name = prisoner.name.clone();
         let day = self.world.days_simulated;
         let recs = self.world.rehab_records.entry(prisoner_id).or_default();
-        if !recs.iter().any(|r| r.program == program && !r.completed && !r.dropped) {
+        if !recs
+            .iter()
+            .any(|r| r.program == program && !r.completed && !r.dropped)
+        {
             recs.push(alc_world::RehabProgramRecord {
                 program,
                 enrolled_day: day,
@@ -1632,13 +1845,17 @@ impl Sim {
 
     /// Enroll by program key (UI/control convenience).
     pub fn enroll_rehab_by_key(&mut self, prisoner_id: PrisonerId, key: &str) -> bool {
-        let Some(program) = REHAB_PROGRAMS.iter().copied().find(|p| p.key() == key) else { return false; };
+        let Some(program) = REHAB_PROGRAMS.iter().copied().find(|p| p.key() == key) else {
+            return false;
+        };
         self.enroll_rehab(prisoner_id, program)
     }
 
     /// Drop a rehab program by key (UI/control convenience).
     pub fn drop_rehab_by_key(&mut self, prisoner_id: PrisonerId, key: &str) -> bool {
-        let Some(program) = REHAB_PROGRAMS.iter().copied().find(|p| p.key() == key) else { return false; };
+        let Some(program) = REHAB_PROGRAMS.iter().copied().find(|p| p.key() == key) else {
+            return false;
+        };
         self.drop_rehab(prisoner_id, program)
     }
 
@@ -1662,7 +1879,11 @@ impl Sim {
         }
         let name = prisoner.name.clone();
         if let Some(recs) = self.world.rehab_records.get_mut(&prisoner_id) {
-            if let Some(rec) = recs.iter_mut().rev().find(|r| r.program == program && !r.completed && !r.dropped) {
+            if let Some(rec) = recs
+                .iter_mut()
+                .rev()
+                .find(|r| r.program == program && !r.completed && !r.dropped)
+            {
                 rec.dropped = true;
             }
         }
@@ -1802,7 +2023,11 @@ impl Sim {
 
     /// Compute the average population since a given time.
     fn avg_population_since(&self, at: SimTime) -> f64 {
-        let pts: Vec<&(SimTime, u32)> = self.population_history().iter().filter(|(t, _)| *t >= at).collect();
+        let pts: Vec<&(SimTime, u32)> = self
+            .population_history()
+            .iter()
+            .filter(|(t, _)| *t >= at)
+            .collect();
         if pts.is_empty() {
             f64::from(self.world.population())
         } else {
@@ -1842,7 +2067,11 @@ impl Sim {
         self.audit_control(
             "observer/control",
             "EnableAutosave",
-            format!("Autosave enabled every {} day(s) at {}", interval_days, dir.display()),
+            format!(
+                "Autosave enabled every {} day(s) at {}",
+                interval_days,
+                dir.display()
+            ),
             "accepted",
             "autosave scheduler configured",
         );
@@ -1945,7 +2174,8 @@ impl Sim {
         if !crate::invariants::invariant_suspicion_claim_records_reference_existing_pawns(w) {
             errs.push("suspicion_claim_records_reference_existing_pawns violation".to_string());
         }
-        if !crate::invariants::invariant_policy_state_matches_world_policies(&self.engine_state, w) {
+        if !crate::invariants::invariant_policy_state_matches_world_policies(&self.engine_state, w)
+        {
             errs.push("policy_state_matches_world_policies violation".to_string());
         }
         if !crate::invariants::invariant_logs_and_incident_store_bounded(self) {
@@ -2014,12 +2244,20 @@ impl Sim {
     ///
     /// Marks a released prisoner's reintegration status. Returns the previous
     /// status if the prisoner was already tracked.
-    pub fn set_post_release(&mut self, prisoner: alc_core::PrisonerId, success: bool) -> Option<bool> {
+    pub fn set_post_release(
+        &mut self,
+        prisoner: alc_core::PrisonerId,
+        success: bool,
+    ) -> Option<bool> {
         let prev = self.engine_state.post_release.insert(prisoner, success);
         self.audit_control(
             "observer/control",
             "SetPostRelease",
-            format!("Prisoner {} post-release success={}", prisoner.raw(), success),
+            format!(
+                "Prisoner {} post-release success={}",
+                prisoner.raw(),
+                success
+            ),
             "accepted",
             "post-release status updated",
         );
@@ -2044,7 +2282,7 @@ impl Sim {
             let old_security = self.world.policies.security_level;
             self.engine_state.policy_state.policy = policy;
             self.engine_state.policy_state.last_changed = self.world.time;
-            
+
             // Sync with world.policies to affect simulation behavior
             match policy {
                 Policy::Normal => {
@@ -2103,15 +2341,24 @@ impl Sim {
             // Sync with world.policies to affect simulation behavior
             self.world.policies.lockdown = lockdown;
             if lockdown {
-                self.world.policies.security_level = (self.world.policies.security_level + 0.2).min(1.0);
-                self.world.policies.privileges_level = (self.world.policies.privileges_level - 0.2).max(0.1);
-                self.engine_state.policy_state.security_level = std::cmp::min(5, self.engine_state.policy_state.security_level + 1);
+                self.world.policies.security_level =
+                    (self.world.policies.security_level + 0.2).min(1.0);
+                self.world.policies.privileges_level =
+                    (self.world.policies.privileges_level - 0.2).max(0.1);
+                self.engine_state.policy_state.security_level =
+                    std::cmp::min(5, self.engine_state.policy_state.security_level + 1);
             } else {
-                self.world.policies.security_level = (self.world.policies.security_level - 0.1).max(0.3);
-                self.world.policies.privileges_level = (self.world.policies.privileges_level + 0.1).min(0.5);
+                self.world.policies.security_level =
+                    (self.world.policies.security_level - 0.1).max(0.3);
+                self.world.policies.privileges_level =
+                    (self.world.policies.privileges_level + 0.1).min(0.5);
             }
-            
-            self.world.audit_policy_change("lockdown", if lockdown { 0.0 } else { 1.0 }, if lockdown { 1.0 } else { 0.0 });
+
+            self.world.audit_policy_change(
+                "lockdown",
+                if lockdown { 0.0 } else { 1.0 },
+                if lockdown { 1.0 } else { 0.0 },
+            );
             self.audit_control(
                 "warden/control",
                 "SetLockdown",
@@ -2130,7 +2377,9 @@ impl Sim {
             security_level: self.world.policies.security_level,
             privileges_level: self.world.policies.privileges_level,
             rehab_funding_multiplier: self.world.policies.rehab_funding_multiplier,
-            intake_paused: self.world.policies.lockdown || self.world.policies.security_level >= 0.9 || self.world.policies.intake_paused,
+            intake_paused: self.world.policies.lockdown
+                || self.world.policies.security_level >= 0.9
+                || self.world.policies.intake_paused,
         }
     }
 
@@ -2140,17 +2389,24 @@ impl Sim {
         let repaired = !level.is_finite() || (level - clamped).abs() > f32::EPSILON;
         let level = clamped;
         let old = self.world.policies.security_level;
-        if (old - level).abs() < f32::EPSILON { return; }
+        if (old - level).abs() < f32::EPSILON {
+            return;
+        }
         self.world.policies.security_level = level;
         self.sync_policy_band_from_world();
         self.engine_state.policy_state.last_changed = self.world.time;
-        self.world.audit_policy_change("security_level", old, self.world.policies.security_level);
+        self.world
+            .audit_policy_change("security_level", old, self.world.policies.security_level);
         self.audit_control(
             "warden/control",
             "SetSecurityLevel",
             format!("Security level {:.2} -> {:.2}", old, level),
             if repaired { "repaired" } else { "accepted" },
-            if repaired { "input clamped to 0.0..=1.0; policy band synced" } else { "world.policies.security_level updated; policy band synced" },
+            if repaired {
+                "input clamped to 0.0..=1.0; policy band synced"
+            } else {
+                "world.policies.security_level updated; policy band synced"
+            },
         );
     }
 
@@ -2160,16 +2416,23 @@ impl Sim {
         let repaired = !level.is_finite() || (level - clamped).abs() > f32::EPSILON;
         let level = clamped;
         let old = self.world.policies.privileges_level;
-        if (old - level).abs() < f32::EPSILON { return; }
+        if (old - level).abs() < f32::EPSILON {
+            return;
+        }
         self.world.policies.privileges_level = level;
         self.engine_state.policy_state.last_changed = self.world.time;
-        self.world.audit_policy_change("privileges_level", old, level);
+        self.world
+            .audit_policy_change("privileges_level", old, level);
         self.audit_control(
             "warden/control",
             "SetPrivilegesLevel",
             format!("Privileges {:.2} -> {:.2}", old, level),
             if repaired { "repaired" } else { "accepted" },
-            if repaired { "input clamped to 0.0..=1.0" } else { "world.policies.privileges_level updated" },
+            if repaired {
+                "input clamped to 0.0..=1.0"
+            } else {
+                "world.policies.privileges_level updated"
+            },
         );
     }
 
@@ -2180,25 +2443,38 @@ impl Sim {
         let repaired = !multiplier.is_finite() || (multiplier - clamped).abs() > f32::EPSILON;
         let multiplier = clamped;
         let old = self.world.policies.rehab_funding_multiplier;
-        if (old - multiplier).abs() < f32::EPSILON { return; }
+        if (old - multiplier).abs() < f32::EPSILON {
+            return;
+        }
         self.world.policies.rehab_funding_multiplier = multiplier;
         self.engine_state.policy_state.last_changed = self.world.time;
-        self.world.audit_policy_change("rehab_funding_multiplier", old, multiplier);
+        self.world
+            .audit_policy_change("rehab_funding_multiplier", old, multiplier);
         self.audit_control(
             "warden/control",
             "SetRehabFunding",
             format!("Rehab funding {:.2} -> {:.2}", old, multiplier),
             if repaired { "repaired" } else { "accepted" },
-            if repaired { "input clamped to 0.0..=3.0" } else { "world.policies.rehab_funding_multiplier updated" },
+            if repaired {
+                "input clamped to 0.0..=3.0"
+            } else {
+                "world.policies.rehab_funding_multiplier updated"
+            },
         );
     }
 
     /// Manually pause or resume intake (0.05 policy control).
     pub fn set_intake_paused(&mut self, paused: bool) {
-        if self.world.policies.intake_paused == paused { return; }
+        if self.world.policies.intake_paused == paused {
+            return;
+        }
         self.world.policies.intake_paused = paused;
         self.engine_state.policy_state.last_changed = self.world.time;
-        self.world.audit_policy_change("intake_paused", if paused { 0.0 } else { 1.0 }, if paused { 1.0 } else { 0.0 });
+        self.world.audit_policy_change(
+            "intake_paused",
+            if paused { 0.0 } else { 1.0 },
+            if paused { 1.0 } else { 0.0 },
+        );
         self.audit_control(
             "warden/control",
             "SetIntakePaused",
@@ -2229,11 +2505,30 @@ impl Sim {
         let w = &self.world;
         let mut s = String::from("sumo — prison world\n");
         s.push_str(&format!("time: {}  days: {}\n", w.time, w.days_simulated));
-        s.push_str(&format!("population: {} / {}\n", w.population(), w.capacity()));
-        s.push_str(&format!("guards: {}  facilities: {}\n", w.guards.len(), w.facilities.len()));
-        s.push_str(&format!("warden: {} ({})\n", w.warden.name, w.warden.philosophy));
-        s.push_str(&format!("cash: ${:.2}  health: {:.2}\n", w.economy.cash.as_major(), w.economy.health()));
-        s.push_str(&format!("events: {}  speed: {:?}\n", w.events.len(), self.speed));
+        s.push_str(&format!(
+            "population: {} / {}\n",
+            w.population(),
+            w.capacity()
+        ));
+        s.push_str(&format!(
+            "guards: {}  facilities: {}\n",
+            w.guards.len(),
+            w.facilities.len()
+        ));
+        s.push_str(&format!(
+            "warden: {} ({})\n",
+            w.warden.name, w.warden.philosophy
+        ));
+        s.push_str(&format!(
+            "cash: ${:.2}  health: {:.2}\n",
+            w.economy.cash.as_major(),
+            w.economy.health()
+        ));
+        s.push_str(&format!(
+            "events: {}  speed: {:?}\n",
+            w.events.len(),
+            self.speed
+        ));
         s
     }
 
@@ -2279,13 +2574,21 @@ impl Sim {
     }
 
     /// Set the simulation speed to paused.
-    pub fn pause(&mut self) { self.set_speed(TimeSpeed::Paused); }
+    pub fn pause(&mut self) {
+        self.set_speed(TimeSpeed::Paused);
+    }
     /// Set the simulation speed to real time.
-    pub fn resume(&mut self) { self.set_speed(TimeSpeed::RealTime); }
+    pub fn resume(&mut self) {
+        self.set_speed(TimeSpeed::RealTime);
+    }
 
     /// Event-driven advance: tick until an event matching `pred` appears
     /// after `after`, or the simulation pauses. Returns the event if found.
-    pub fn wait_for_event(&mut self, after: SimTime, pred: impl Fn(&WorldEvent) -> bool) -> Option<WorldEvent> {
+    pub fn wait_for_event(
+        &mut self,
+        after: SimTime,
+        pred: impl Fn(&WorldEvent) -> bool,
+    ) -> Option<WorldEvent> {
         loop {
             if let Some(e) = self.events_since(after).into_iter().find(|e| pred(e)) {
                 return Some(e);
@@ -2356,7 +2659,9 @@ impl Sim {
         // between the two is an invariant violation).
         self.sync_policy_from_world();
         if let WardenAction::AdjustParoleRecommendation { prisoner, lean } = &action {
-            self.engine_state.parole.set_adjustment(PrisonerId(*prisoner), *lean);
+            self.engine_state
+                .parole
+                .set_adjustment(PrisonerId(*prisoner), *lean);
         }
         self.record_decision_audit(DecisionAuditRecord {
             time: at,
@@ -2418,21 +2723,36 @@ impl Sim {
     /// Validated: the prisoner must exist, be eligible and have no prior
     /// decision. Rejections are audited rather than silently returning `None`.
     pub fn start_parole_hearing(&mut self, id: PrisonerId) -> Option<u64> {
-        let eligible = self.world.prisoners.iter().any(|p| p.id == id && p.is_eligible_for_parole());
+        let eligible = self
+            .world
+            .prisoners
+            .iter()
+            .any(|p| p.id == id && p.is_eligible_for_parole());
         if !eligible || self.engine_state.parole.status(id).is_some() {
             self.audit_control_rejected(
                 "observer/control",
                 "StartParoleHearing",
                 format!("Parole hearing for prisoner {} refused", id.raw()),
-                if eligible { "prisoner already has a parole record" } else { "prisoner is absent or ineligible" },
+                if eligible {
+                    "prisoner already has a parole record"
+                } else {
+                    "prisoner is absent or ineligible"
+                },
             );
             return None;
         }
-        self.engine_state.parole.set(id, ParoleStatus::Scheduled, self.world.time);
+        self.engine_state
+            .parole
+            .set(id, ParoleStatus::Scheduled, self.world.time);
         self.engine_state.parole.set_hearing_at(id, self.world.time);
         self.world.events.emit(
-            WorldEvent::new(0, self.world.time, EventKind::ParoleHearing, format!("Parole hearing scheduled for prisoner {}", id.raw()))
-                .with_actor(id.raw()),
+            WorldEvent::new(
+                0,
+                self.world.time,
+                EventKind::ParoleHearing,
+                format!("Parole hearing scheduled for prisoner {}", id.raw()),
+            )
+            .with_actor(id.raw()),
         );
         let event_id = self.world.events.recent().last().map(|e| e.id);
         self.audit_control(
@@ -2464,64 +2784,138 @@ impl Sim {
     /// emitting `ParoleGranted`. Use [`Self::release_on_parole`] to carry the
     /// grant through to an actual release from custody.
     pub fn grant_parole(&mut self, id: PrisonerId) -> Option<u64> {
-        let eligible = self.world.prisoners.iter().any(|p| p.id == id && p.is_eligible_for_parole());
-        if !eligible || matches!(self.engine_state.parole.status(id), Some(ParoleStatus::Granted) | Some(ParoleStatus::Denied)) {
+        let eligible = self
+            .world
+            .prisoners
+            .iter()
+            .any(|p| p.id == id && p.is_eligible_for_parole());
+        if !eligible
+            || matches!(
+                self.engine_state.parole.status(id),
+                Some(ParoleStatus::Granted) | Some(ParoleStatus::Denied)
+            )
+        {
             self.audit_control_rejected(
                 "observer/control",
                 "GrantParole",
                 format!("Parole grant for prisoner {} refused", id.raw()),
-                if eligible { "prisoner already has a terminal parole decision" } else { "prisoner is absent or ineligible" },
+                if eligible {
+                    "prisoner already has a terminal parole decision"
+                } else {
+                    "prisoner is absent or ineligible"
+                },
             );
             return None;
         }
         let (risk, rehab) = self.parole_decision_inputs(id);
         if self.engine_state.parole.status(id).is_none() {
-            self.engine_state.parole.set(id, ParoleStatus::InHearing, self.world.time);
+            self.engine_state
+                .parole
+                .set(id, ParoleStatus::InHearing, self.world.time);
         }
-        self.engine_state.parole.set(id, ParoleStatus::Granted, self.world.time);
-        self.engine_state.parole.set_conditions(id, ParoleConditions::deterministic(id, risk, rehab));
+        self.engine_state
+            .parole
+            .set(id, ParoleStatus::Granted, self.world.time);
+        self.engine_state
+            .parole
+            .set_conditions(id, ParoleConditions::deterministic(id, risk, rehab));
         let reason = format!("deterministic board decision: risk {risk:.2}, rehab {rehab:.2}");
-        self.engine_state.parole.set_decision_reason(id, reason.clone());
+        self.engine_state
+            .parole
+            .set_decision_reason(id, reason.clone());
         self.world.events.emit(
-            WorldEvent::new(0, self.world.time, EventKind::ParoleGranted, format!("Parole granted to prisoner {}", id.raw()))
-                .with_actor(id.raw())
-                .with_cause(reason.clone()),
+            WorldEvent::new(
+                0,
+                self.world.time,
+                EventKind::ParoleGranted,
+                format!("Parole granted to prisoner {}", id.raw()),
+            )
+            .with_actor(id.raw())
+            .with_cause(reason.clone()),
         );
         let event_id = self.world.events.recent().last().map(|e| e.id);
-        self.audit_control("observer/control", "GrantParole", reason, "accepted", "parole granted by validated engine control");
+        self.audit_control(
+            "observer/control",
+            "GrantParole",
+            reason,
+            "accepted",
+            "parole granted by validated engine control",
+        );
         event_id
     }
 
     /// Deny parole (§15); returns the new event id.
     pub fn deny_parole(&mut self, id: PrisonerId, reason: impl Into<String>) -> Option<u64> {
-        let eligible = self.world.prisoners.iter().any(|p| p.id == id && p.is_eligible_for_parole());
-        if !eligible || matches!(self.engine_state.parole.status(id), Some(ParoleStatus::Granted) | Some(ParoleStatus::Denied)) {
+        let eligible = self
+            .world
+            .prisoners
+            .iter()
+            .any(|p| p.id == id && p.is_eligible_for_parole());
+        if !eligible
+            || matches!(
+                self.engine_state.parole.status(id),
+                Some(ParoleStatus::Granted) | Some(ParoleStatus::Denied)
+            )
+        {
             self.audit_control_rejected(
                 "observer/control",
                 "DenyParole",
                 format!("Parole denial for prisoner {} refused", id.raw()),
-                if eligible { "prisoner already has a terminal parole decision" } else { "prisoner is absent or ineligible" },
+                if eligible {
+                    "prisoner already has a terminal parole decision"
+                } else {
+                    "prisoner is absent or ineligible"
+                },
             );
             return None;
         }
         let reason = reason.into();
-        self.engine_state.parole.set(id, ParoleStatus::Denied, self.world.time);
-        self.engine_state.parole.set_decision_reason(id, reason.clone());
+        self.engine_state
+            .parole
+            .set(id, ParoleStatus::Denied, self.world.time);
+        self.engine_state
+            .parole
+            .set_decision_reason(id, reason.clone());
         self.world.events.emit(
-            WorldEvent::new(0, self.world.time, EventKind::ParoleDenied, format!("Parole denied for prisoner {}: {}", id.raw(), reason))
-                .with_actor(id.raw())
-                .with_cause(reason.clone()),
+            WorldEvent::new(
+                0,
+                self.world.time,
+                EventKind::ParoleDenied,
+                format!("Parole denied for prisoner {}: {}", id.raw(), reason),
+            )
+            .with_actor(id.raw())
+            .with_cause(reason.clone()),
         );
         let event_id = self.world.events.recent().last().map(|e| e.id);
-        self.audit_control("observer/control", "DenyParole", format!("Parole denied for prisoner {}", id.raw()), "accepted", reason);
+        self.audit_control(
+            "observer/control",
+            "DenyParole",
+            format!("Parole denied for prisoner {}", id.raw()),
+            "accepted",
+            reason,
+        );
         event_id
     }
 
     /// Attach or replace validated parole conditions for a decided prisoner.
-    pub fn set_parole_conditions(&mut self, id: PrisonerId, mut conditions: ParoleConditions) -> bool {
-        let decidable = matches!(self.engine_state.parole.status(id), Some(ParoleStatus::Granted) | Some(ParoleStatus::Scheduled) | Some(ParoleStatus::InHearing));
+    pub fn set_parole_conditions(
+        &mut self,
+        id: PrisonerId,
+        mut conditions: ParoleConditions,
+    ) -> bool {
+        let decidable = matches!(
+            self.engine_state.parole.status(id),
+            Some(ParoleStatus::Granted)
+                | Some(ParoleStatus::Scheduled)
+                | Some(ParoleStatus::InHearing)
+        );
         if !decidable {
-            self.audit_control_rejected("observer/control", "SetParoleConditions", format!("Conditions for prisoner {} refused", id.raw()), "no scheduled or granted parole decision");
+            self.audit_control_rejected(
+                "observer/control",
+                "SetParoleConditions",
+                format!("Conditions for prisoner {} refused", id.raw()),
+                "no scheduled or granted parole decision",
+            );
             return false;
         }
         let repaired = !conditions.is_normalized();
@@ -2532,7 +2926,11 @@ impl Sim {
             "SetParoleConditions",
             format!("Parole conditions set for prisoner {}", id.raw()),
             if repaired { "repaired" } else { "accepted" },
-            if repaired { "conditions clamped to validated ranges" } else { "validated conditions persisted" },
+            if repaired {
+                "conditions clamped to validated ranges"
+            } else {
+                "validated conditions persisted"
+            },
         );
         true
     }
@@ -2541,10 +2939,17 @@ impl Sim {
     /// release path. Returns `false` unless the prisoner is still present and
     /// has a stored grant. The release time is recorded in the ledger.
     pub fn release_on_parole(&mut self, id: PrisonerId) -> bool {
-        if !matches!(self.engine_state.parole.status(id), Some(ParoleStatus::Granted))
-            || self.engine_state.parole.released_at(id).is_some()
+        if !matches!(
+            self.engine_state.parole.status(id),
+            Some(ParoleStatus::Granted)
+        ) || self.engine_state.parole.released_at(id).is_some()
         {
-            self.audit_control_rejected("observer/control", "ReleaseOnParole", format!("Release for prisoner {} refused", id.raw()), "no unexecuted parole grant");
+            self.audit_control_rejected(
+                "observer/control",
+                "ReleaseOnParole",
+                format!("Release for prisoner {} refused", id.raw()),
+                "no unexecuted parole grant",
+            );
             return false;
         }
         let before = self.world.events.recent().map(|e| e.id).max().unwrap_or(0);
@@ -2557,19 +2962,36 @@ impl Sim {
         self.pump_events_into_engine_log(before);
         let ok = released.first() == Some(&id);
         if ok {
-            self.engine_state.parole.set_released_at(id, self.world.time);
+            self.engine_state
+                .parole
+                .set_released_at(id, self.world.time);
             // Keep the engine post-release ledger coherent with the world's
             // authoritative release record (same prisoner, same reason).
             let risk = self.engine_state.parole.conditions(id).map_or(0.25, |c| {
                 (0.1 + (c.reporting_per_month as f32 / 12.0) * 0.2
-                    + if c.no_contact_order { 0.2 } else { 0.0 }).clamp(0.0, 1.0)
+                    + if c.no_contact_order { 0.2 } else { 0.0 })
+                .clamp(0.0, 1.0)
             });
-            let plan = self.engine_state.parole.conditions(id)
+            let plan = self
+                .engine_state
+                .parole
+                .conditions(id)
                 .is_some_and(|c| c.treatment_required || c.supervision_months >= 6);
             self.record_post_release(id, "parole", risk, plan);
-            self.audit_control("observer/control", "ReleaseOnParole", format!("Prisoner {} released on parole", id.raw()), "accepted", "grant executed through World::release_on_parole");
+            self.audit_control(
+                "observer/control",
+                "ReleaseOnParole",
+                format!("Prisoner {} released on parole", id.raw()),
+                "accepted",
+                "grant executed through World::release_on_parole",
+            );
         } else {
-            self.audit_control_rejected("observer/control", "ReleaseOnParole", format!("Release for prisoner {} refused", id.raw()), "prisoner not present in custody");
+            self.audit_control_rejected(
+                "observer/control",
+                "ReleaseOnParole",
+                format!("Release for prisoner {} refused", id.raw()),
+                "prisoner not present in custody",
+            );
         }
         ok
     }
@@ -2599,7 +3021,9 @@ impl Sim {
     /// Deterministic rehab progress: relief moves per minute of program
     /// participation (purpose, respect, stimulation, safety, companionship).
     pub fn apply_rehab_progress(&mut self, id: PrisonerId, minutes: u64) -> f32 {
-        let Some(p) = self.world.prisoners.iter_mut().find(|p| p.id == id) else { return 0.0 };
+        let Some(p) = self.world.prisoners.iter_mut().find(|p| p.id == id) else {
+            return 0.0;
+        };
         let m = minutes as f32;
         p.needs.relieve(NeedTag::Purpose, 0.05 * m);
         p.needs.relieve(NeedTag::Respect, 0.04 * m);
@@ -2611,9 +3035,15 @@ impl Sim {
 
     /// Rehab progress score 0..1 (aggregate of key positive needs).
     pub fn rehab_score(&self, id: PrisonerId) -> f32 {
-        let Some(p) = self.world.prisoners.iter().find(|p| p.id == id) else { return 0.0 };
+        let Some(p) = self.world.prisoners.iter().find(|p| p.id == id) else {
+            return 0.0;
+        };
         let n = &p.needs;
-        let deficit = (1.0 - n.purpose) + (1.0 - n.respect) + (1.0 - n.stimulation) + (1.0 - n.safety) + (1.0 - n.companionship);
+        let deficit = (1.0 - n.purpose)
+            + (1.0 - n.respect)
+            + (1.0 - n.stimulation)
+            + (1.0 - n.safety)
+            + (1.0 - n.companionship);
         (1.0 - deficit / 5.0).clamp(0.0, 1.0)
     }
 
@@ -2644,7 +3074,12 @@ impl Sim {
 
     /// Leaderboard: top `n` by reputation.
     pub fn leader_board(&self, n: usize) -> Vec<(String, f32)> {
-        let mut v: Vec<(String, f32)> = self.world.prisoners.iter().map(|p| (p.name.clone(), p.reputation)).collect();
+        let mut v: Vec<(String, f32)> = self
+            .world
+            .prisoners
+            .iter()
+            .map(|p| (p.name.clone(), p.reputation))
+            .collect();
         v.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         v.truncate(n);
         v
@@ -2669,7 +3104,11 @@ impl Sim {
             }
         };
 
-        mix(&format!("t:{}p:{}", self.world.time.secs, self.world.population()));
+        mix(&format!(
+            "t:{}p:{}",
+            self.world.time.secs,
+            self.world.population()
+        ));
         for e in self.world.events.recent() {
             mix(&format!("{:?}:{}@{}", e.kind, e.summary, e.at.secs));
         }
@@ -2679,7 +3118,14 @@ impl Sim {
             let cause_str = inc.cause.map(|c| c.to_string()).unwrap_or_default();
             let conj_str = inc.consequence.map(|c| c.to_string()).unwrap_or_default();
             let kind_str = format!("{:?}", inc.kind);
-            mix(&format!("inc:{}:{}:{}:{}@{}", kind_str, inc.severity.to_bits(), cause_str, conj_str, inc.timestamp.secs));
+            mix(&format!(
+                "inc:{}:{}:{}:{}@{}",
+                kind_str,
+                inc.severity.to_bits(),
+                cause_str,
+                conj_str,
+                inc.timestamp.secs
+            ));
             for pid in &inc.involved_prisoners {
                 mix(&format!("prisoner:{}", pid.raw()));
             }
@@ -2699,7 +3145,6 @@ impl Sim {
         h.wrapping_mul(0x0000_0100_0000_01b3)
     }
 }
-
 
 // Same modules as above, but conditionally compiled.
 // The `gui` feature gate ensures these types only exist when the feature is active.
@@ -2912,7 +3357,10 @@ mod dto_tests {
                 kept_live_link |= link.source_id == live_event.id;
             }
         }
-        assert!(kept_live_link, "resolvable event provenance must be preserved");
+        assert!(
+            kept_live_link,
+            "resolvable event provenance must be preserved"
+        );
         assert!(sim.check_invariants().is_empty());
     }
 }

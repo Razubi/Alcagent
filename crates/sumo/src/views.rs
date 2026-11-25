@@ -165,6 +165,20 @@ pub struct SocialEdge {
     pub threat_score: f32,
 }
 
+/// Emergent social role row for the observer UI (Spec 012).
+///
+/// The role is a string label so UIs do not depend directly on
+/// `alc_social::SocialRole`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SocialRoleSummary {
+    /// Prisoner carrying the role.
+    pub prisoner: PrisonerId,
+    /// Stable role label (`Leader`, `InformantSuspect`, ...).
+    pub role: String,
+    /// Detection strength, clamped to 0.0..=1.0.
+    pub strength: f32,
+}
+
 /// Summary of a facility for the UI map view.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FacilitySummary {
@@ -218,7 +232,9 @@ pub struct ConstructionSummary {
     pub prereqs_met: bool,
 }
 
-fn default_true_sumo() -> bool { true }
+fn default_true_sumo() -> bool {
+    true
+}
 
 /// Post-release outcome row for the observer UI (0.05).
 ///
@@ -503,7 +519,10 @@ pub(crate) fn rehab_state_for(prisoner: &alc_prisoner::Prisoner) -> RehabPrisone
 }
 
 /// Write a processed rehab state back onto the prisoner (world-compatible).
-pub(crate) fn write_back_rehab_state(prisoner: &mut alc_prisoner::Prisoner, state: RehabPrisonerState) {
+pub(crate) fn write_back_rehab_state(
+    prisoner: &mut alc_prisoner::Prisoner,
+    state: RehabPrisonerState,
+) {
     prisoner.skills = state.skills;
     prisoner.condition.hope = state.hope.clamp(0.0, 1.0);
     prisoner.condition.mental_health = state.mental_health.clamp(0.0, 1.0);

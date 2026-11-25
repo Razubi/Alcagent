@@ -10,17 +10,17 @@
 use crate::views::{self, AppStatus};
 use crate::{CONSTRUCTION_KINDS, UiState, ViewMode};
 use alc_core::TimeSpeed;
-use sumo::{MapFrame, Observation, SimTime, Stats};
 use anyhow::Result;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::prelude::Frame;
 use ratatui::{Terminal, backend::CrosstermBackend};
 use std::io;
 use std::time::{Duration, Instant};
+use sumo::{MapFrame, Observation, SimTime, Stats};
 
 /// The slice of the engine the TUI needs. Implement this in the binary crate
 /// for `sumo::Sim` (or any other simulation backend).
@@ -52,6 +52,8 @@ pub trait SimDriver {
     fn economy(&self) -> sumo::EconomySummary;
     /// Get social graph edges for the social network view.
     fn social_edges(&self) -> Vec<sumo::SocialEdge>;
+    /// Get detected emergent social roles for the social network view.
+    fn social_roles(&self) -> Vec<sumo::SocialRoleSummary>;
     /// Get facilities for the map view.
     fn facilities(&self) -> Vec<sumo::FacilitySummary>;
     /// Construction queue for observer UI.
@@ -121,38 +123,75 @@ pub trait SimDriver {
     fn contraband_inventory(&self) -> Vec<sumo::ContrabandInventorySummary>;
     /// Resolve a contraband case by case id. Returns true if state changed.
     /// Default no-op keeps the trait backward-compatible when the driver has no case store.
-    fn resolve_contraband_case(&mut self, _case_id: u64) -> bool { false }
+    fn resolve_contraband_case(&mut self, _case_id: u64) -> bool {
+        false
+    }
     /// Resolve a structured incident by id (0.05 control).
-    fn resolve_incident(&mut self, _incident_id: u64) -> bool { false }
+    fn resolve_incident(&mut self, _incident_id: u64) -> bool {
+        false
+    }
     /// Enqueue a construction project (0.05 control). Returns the project id.
-    fn enqueue_construction(&mut self, _kind: alc_world::FacilityKind, _wing: u32, _capacity: u32) -> u64 { 0 }
+    fn enqueue_construction(
+        &mut self,
+        _kind: alc_world::FacilityKind,
+        _wing: u32,
+        _capacity: u32,
+    ) -> u64 {
+        0
+    }
     /// Cancel a construction project (0.05 control).
-    fn cancel_construction(&mut self, _project_id: u64, _reason: &str) -> bool { false }
+    fn cancel_construction(&mut self, _project_id: u64, _reason: &str) -> bool {
+        false
+    }
     /// Mark a construction project failed (0.05 control).
-    fn fail_construction(&mut self, _project_id: u64, _reason: &str) -> bool { false }
+    fn fail_construction(&mut self, _project_id: u64, _reason: &str) -> bool {
+        false
+    }
     /// Advance a construction project by days (0.05 control).
-    fn advance_construction(&mut self, _project_id: u64, _days: u32) -> bool { false }
+    fn advance_construction(&mut self, _project_id: u64, _days: u32) -> bool {
+        false
+    }
     /// Approve a queued construction request (spec 006 control).
-    fn approve_construction(&mut self, _project_id: u64, _reason: &str) -> bool { false }
+    fn approve_construction(&mut self, _project_id: u64, _reason: &str) -> bool {
+        false
+    }
 
     /// Prisoners eligible for a parole hearing (spec 006 read surface).
-    fn parole_due(&self) -> Vec<u64> { Vec::new() }
+    fn parole_due(&self) -> Vec<u64> {
+        Vec::new()
+    }
     /// Parole status for a prisoner, if a record exists.
-    fn parole_status(&self, _prisoner_id: u64) -> Option<sumo::ParoleStatus> { None }
+    fn parole_status(&self, _prisoner_id: u64) -> Option<sumo::ParoleStatus> {
+        None
+    }
     /// Persisted conditions for a decided prisoner.
-    fn parole_conditions(&self, _prisoner_id: u64) -> Option<sumo::ParoleConditions> { None }
+    fn parole_conditions(&self, _prisoner_id: u64) -> Option<sumo::ParoleConditions> {
+        None
+    }
     /// Persisted decision reason for a prisoner.
-    fn parole_decision_reason(&self, _prisoner_id: u64) -> Option<String> { None }
+    fn parole_decision_reason(&self, _prisoner_id: u64) -> Option<String> {
+        None
+    }
     /// Sim time at which a grant became an actual release.
-    fn parole_released_at(&self, _prisoner_id: u64) -> Option<sumo::SimTime> { None }
+    fn parole_released_at(&self, _prisoner_id: u64) -> Option<sumo::SimTime> {
+        None
+    }
     /// Schedule a parole hearing (validated control).
-    fn start_parole_hearing(&mut self, _prisoner_id: u64) -> bool { false }
+    fn start_parole_hearing(&mut self, _prisoner_id: u64) -> bool {
+        false
+    }
     /// Grant parole (validated control).
-    fn grant_parole(&mut self, _prisoner_id: u64) -> bool { false }
+    fn grant_parole(&mut self, _prisoner_id: u64) -> bool {
+        false
+    }
     /// Deny parole (validated control).
-    fn deny_parole(&mut self, _prisoner_id: u64, _reason: &str) -> bool { false }
+    fn deny_parole(&mut self, _prisoner_id: u64, _reason: &str) -> bool {
+        false
+    }
     /// Execute a grant as an actual release from custody (validated control).
-    fn release_on_parole(&mut self, _prisoner_id: u64) -> bool { false }
+    fn release_on_parole(&mut self, _prisoner_id: u64) -> bool {
+        false
+    }
 
     /// Resolved daily schedule timeline for a prisoner (0.05).
     fn schedule_timeline(&self, prisoner_id: u64) -> Option<sumo::ScheduleTimeline>;
@@ -311,7 +350,8 @@ impl App {
                 self.paused = false;
                 self.driver.set_speed(TimeSpeed::RealTime);
                 if self.autosave_days > 0 {
-                    self.driver.enable_autosave(self.save_dir.clone(), self.autosave_days);
+                    self.driver
+                        .enable_autosave(self.save_dir.clone(), self.autosave_days);
                 }
                 // Clear observer state that references the pre-load world so
                 // stale pins/queries/notifications don't leak into the new
@@ -397,9 +437,7 @@ impl App {
         self.driver
             .events_since(SimTime::EPOCH)
             .into_iter()
-            .filter(|e| {
-                query_matches(&e.summary, q) || query_matches(&format!("{:?}", e.kind), q)
-            })
+            .filter(|e| query_matches(&e.summary, q) || query_matches(&format!("{:?}", e.kind), q))
             .collect()
     }
 
@@ -525,6 +563,11 @@ impl App {
             warden: self.driver.warden(),
             economy: self.driver.economy(),
             social_edges: self.driver.social_edges(),
+            social_roles: if matches!(self.ui.mode, ViewMode::SocialNetwork) {
+                self.driver.social_roles()
+            } else {
+                Vec::new()
+            },
             facilities: self.driver.facilities(),
             construction_queue: self.driver.construction_queue(),
             events: self.visible_events(),
@@ -539,12 +582,27 @@ impl App {
             contraband_cases: self.driver.contraband_cases(),
             contraband_inventory: self.driver.contraband_inventory(),
             budget_snapshot: self.driver.budget_snapshot(),
-            selected_schedule: self.ui.selected_prisoner.and_then(|id| self.driver.schedule_timeline(id)),
+            selected_schedule: self
+                .ui
+                .selected_prisoner
+                .and_then(|id| self.driver.schedule_timeline(id)),
             parole_due: self.driver.parole_due(),
-            selected_parole: self.ui.selected_prisoner.and_then(|id| self.driver.parole_status(id)),
-            selected_parole_conditions: self.ui.selected_prisoner.and_then(|id| self.driver.parole_conditions(id)),
-            selected_parole_reason: self.ui.selected_prisoner.and_then(|id| self.driver.parole_decision_reason(id)),
-            selected_parole_released_at: self.ui.selected_prisoner.and_then(|id| self.driver.parole_released_at(id)),
+            selected_parole: self
+                .ui
+                .selected_prisoner
+                .and_then(|id| self.driver.parole_status(id)),
+            selected_parole_conditions: self
+                .ui
+                .selected_prisoner
+                .and_then(|id| self.driver.parole_conditions(id)),
+            selected_parole_reason: self
+                .ui
+                .selected_prisoner
+                .and_then(|id| self.driver.parole_decision_reason(id)),
+            selected_parole_released_at: self
+                .ui
+                .selected_prisoner
+                .and_then(|id| self.driver.parole_released_at(id)),
         }
     }
 
@@ -574,20 +632,58 @@ impl App {
             // Revalidate the selected construction project against the queue
             // so x/X/> target the queue entry, not a stale id.
             let queue = self.driver.construction_queue();
-            let still_valid = queue.iter().any(|p| Some(p.id) == self.ui.selected_construction);
+            let still_valid = queue
+                .iter()
+                .any(|p| Some(p.id) == self.ui.selected_construction);
             if !queue.is_empty() && !still_valid {
                 self.ui.selected_construction = queue.first().map(|p| p.id);
             }
         }
-        let prisoners = if matches!(self.ui.mode, ViewMode::Prisoner) { self.visible_prisoners() } else { Vec::new() };
-        let gangs = if matches!(self.ui.mode, ViewMode::Gang) { self.visible_gangs() } else { Vec::new() };
-        let guards = if matches!(self.ui.mode, ViewMode::Staff) { self.visible_guards() } else { Vec::new() };
-        let facilities = if matches!(self.ui.mode, ViewMode::Map) { self.driver.facilities() } else { Vec::new() };
-        let events = if matches!(self.ui.mode, ViewMode::EventTimeline) { self.visible_events() } else { Vec::new() };
-        let social = if matches!(self.ui.mode, ViewMode::SocialNetwork) { self.driver.social_edges() } else { Vec::new() };
-        let economy = if matches!(self.ui.mode, ViewMode::Financial) { self.driver.economy() } else { self.driver.economy() };
-        let incidents = if matches!(self.ui.mode, ViewMode::IncidentReports) { self.visible_incidents() } else { Vec::new() };
-        let decisions = if matches!(self.ui.mode, ViewMode::DecisionAudit) { self.visible_decisions() } else { Vec::new() };
+        let prisoners = if matches!(self.ui.mode, ViewMode::Prisoner) {
+            self.visible_prisoners()
+        } else {
+            Vec::new()
+        };
+        let gangs = if matches!(self.ui.mode, ViewMode::Gang) {
+            self.visible_gangs()
+        } else {
+            Vec::new()
+        };
+        let guards = if matches!(self.ui.mode, ViewMode::Staff) {
+            self.visible_guards()
+        } else {
+            Vec::new()
+        };
+        let facilities = if matches!(self.ui.mode, ViewMode::Map) {
+            self.driver.facilities()
+        } else {
+            Vec::new()
+        };
+        let events = if matches!(self.ui.mode, ViewMode::EventTimeline) {
+            self.visible_events()
+        } else {
+            Vec::new()
+        };
+        let social = if matches!(self.ui.mode, ViewMode::SocialNetwork) {
+            self.driver.social_edges()
+        } else {
+            Vec::new()
+        };
+        let economy = if matches!(self.ui.mode, ViewMode::Financial) {
+            self.driver.economy()
+        } else {
+            self.driver.economy()
+        };
+        let incidents = if matches!(self.ui.mode, ViewMode::IncidentReports) {
+            self.visible_incidents()
+        } else {
+            Vec::new()
+        };
+        let decisions = if matches!(self.ui.mode, ViewMode::DecisionAudit) {
+            self.visible_decisions()
+        } else {
+            Vec::new()
+        };
 
         let count = match self.ui.mode {
             ViewMode::Prisoner => prisoners.len(),
@@ -703,11 +799,17 @@ impl App {
                 // Manual save via the driver; errors surface through the status.
                 let _ = self.save_now();
             }
-            KeyCode::Char('x') | KeyCode::Char('X') if !matches!(self.ui.mode, ViewMode::Warden) => {
+            KeyCode::Char('x') | KeyCode::Char('X')
+                if !matches!(self.ui.mode, ViewMode::Warden) =>
+            {
                 // Toggle lockdown through the validated engine control.
                 let lockdown = !self.driver.policy_summary().lockdown;
                 self.driver.set_lockdown(lockdown);
-                self.notify(if lockdown { "Lockdown enabled" } else { "Lockdown lifted" });
+                self.notify(if lockdown {
+                    "Lockdown enabled"
+                } else {
+                    "Lockdown lifted"
+                });
             }
             KeyCode::Char('L') => {
                 self.driver.set_lockdown(true);
@@ -767,19 +869,28 @@ impl App {
                 let mut ps = self.driver.policy_summary();
                 ps.rehab_funding_multiplier = (ps.rehab_funding_multiplier - 0.1).max(0.0);
                 self.driver.set_rehab_funding(ps.rehab_funding_multiplier);
-                self.notify(format!("Rehab funding: {:.2}x", ps.rehab_funding_multiplier));
+                self.notify(format!(
+                    "Rehab funding: {:.2}x",
+                    ps.rehab_funding_multiplier
+                ));
             }
             KeyCode::Char('\'') => {
                 let mut ps = self.driver.policy_summary();
                 ps.rehab_funding_multiplier = (ps.rehab_funding_multiplier + 0.1).min(3.0);
                 self.driver.set_rehab_funding(ps.rehab_funding_multiplier);
-                self.notify(format!("Rehab funding: {:.2}x", ps.rehab_funding_multiplier));
+                self.notify(format!(
+                    "Rehab funding: {:.2}x",
+                    ps.rehab_funding_multiplier
+                ));
             }
             KeyCode::Char('b') | KeyCode::Char('B') => {
                 let ps = self.driver.policy_summary();
                 let next = !ps.intake_paused;
                 self.driver.set_intake_paused(next);
-                self.notify(format!("Intake {}", if next { "paused" } else { "resumed" }));
+                self.notify(format!(
+                    "Intake {}",
+                    if next { "paused" } else { "resumed" }
+                ));
             }
             KeyCode::Char('?') => {
                 self.ui.show_help = !self.ui.show_help;
@@ -812,31 +923,54 @@ impl App {
             }
             KeyCode::Char('V') => {
                 self.ui.pause_on_critical = !self.ui.pause_on_critical;
-                self.notify(format!("Pause-on-critical {}", if self.ui.pause_on_critical { "on" } else { "off" }));
+                self.notify(format!(
+                    "Pause-on-critical {}",
+                    if self.ui.pause_on_critical {
+                        "on"
+                    } else {
+                        "off"
+                    }
+                ));
             }
             KeyCode::Char('c') if matches!(self.ui.mode, ViewMode::Warden) => {
-                self.ui.construction_kind_index = (self.ui.construction_kind_index + 1) % CONSTRUCTION_KINDS.len();
-                self.notify(format!("Construction kind: {:?}", CONSTRUCTION_KINDS[self.ui.construction_kind_index]));
+                self.ui.construction_kind_index =
+                    (self.ui.construction_kind_index + 1) % CONSTRUCTION_KINDS.len();
+                self.notify(format!(
+                    "Construction kind: {:?}",
+                    CONSTRUCTION_KINDS[self.ui.construction_kind_index]
+                ));
             }
             KeyCode::Char('C') if matches!(self.ui.mode, ViewMode::Warden) => {
-                let kind = CONSTRUCTION_KINDS[self.ui.construction_kind_index % CONSTRUCTION_KINDS.len()];
+                let kind =
+                    CONSTRUCTION_KINDS[self.ui.construction_kind_index % CONSTRUCTION_KINDS.len()];
                 let capacity = match kind {
                     alc_world::FacilityKind::CellBlock | alc_world::FacilityKind::Dormitory => 40,
                     _ => 10,
                 };
                 let id = self.driver.enqueue_construction(kind, 1, capacity);
-                self.notify(format!("Queued {} project #{id} (wing 1, cap {capacity})", kind.display()));
+                self.notify(format!(
+                    "Queued {} project #{id} (wing 1, cap {capacity})",
+                    kind.display()
+                ));
                 self.ui.selected_construction = Some(id);
             }
             KeyCode::Char('x') | KeyCode::Char('X') if matches!(self.ui.mode, ViewMode::Warden) => {
                 if let Some(id) = self.ui.selected_construction {
-                    let reason = if matches!(code, KeyCode::Char('X')) { "observer-marked failure" } else { "observer cancellation" };
+                    let reason = if matches!(code, KeyCode::Char('X')) {
+                        "observer-marked failure"
+                    } else {
+                        "observer cancellation"
+                    };
                     let ok = if matches!(code, KeyCode::Char('X')) {
                         self.driver.fail_construction(id, reason)
                     } else {
                         self.driver.cancel_construction(id, reason)
                     };
-                    self.notify(format!("Project #{id} {} {}", reason, if ok { "recorded" } else { "unavailable" }));
+                    self.notify(format!(
+                        "Project #{id} {} {}",
+                        reason,
+                        if ok { "recorded" } else { "unavailable" }
+                    ));
                 } else {
                     self.notify("No construction project selected");
                 }
@@ -844,7 +978,10 @@ impl App {
             KeyCode::Char('>') if matches!(self.ui.mode, ViewMode::Warden) => {
                 if let Some(id) = self.ui.selected_construction {
                     let ok = self.driver.advance_construction(id, 1);
-                    self.notify(format!("Advanced project #{id} by 1 day: {}", if ok { "ok" } else { "unavailable" }));
+                    self.notify(format!(
+                        "Advanced project #{id} by 1 day: {}",
+                        if ok { "ok" } else { "unavailable" }
+                    ));
                 } else {
                     self.notify("No construction project selected");
                 }
@@ -852,7 +989,10 @@ impl App {
             KeyCode::Char('v') if matches!(self.ui.mode, ViewMode::Warden) => {
                 if let Some(id) = self.ui.selected_construction {
                     let ok = self.driver.approve_construction(id, "observer approval");
-                    self.notify(format!("Project #{id} approval: {}", if ok { "recorded" } else { "unavailable" }));
+                    self.notify(format!(
+                        "Project #{id} approval: {}",
+                        if ok { "recorded" } else { "unavailable" }
+                    ));
                 } else {
                     self.notify("No construction project selected");
                 }
@@ -860,10 +1000,17 @@ impl App {
             KeyCode::Char('H' | 'G' | 'J' | 'Y') if matches!(self.ui.mode, ViewMode::Prisoner) => {
                 if let Some(id) = self.ui.selected_prisoner {
                     let (verb, ok) = match code {
-                        KeyCode::Char('H') => ("hearing scheduled", self.driver.start_parole_hearing(id)),
+                        KeyCode::Char('H') => {
+                            ("hearing scheduled", self.driver.start_parole_hearing(id))
+                        }
                         KeyCode::Char('G') => ("parole granted", self.driver.grant_parole(id)),
-                        KeyCode::Char('J') => ("parole denied", self.driver.deny_parole(id, "institutional conduct")),
-                        KeyCode::Char('Y') => ("released on parole", self.driver.release_on_parole(id)),
+                        KeyCode::Char('J') => (
+                            "parole denied",
+                            self.driver.deny_parole(id, "institutional conduct"),
+                        ),
+                        KeyCode::Char('Y') => {
+                            ("released on parole", self.driver.release_on_parole(id))
+                        }
                         _ => unreachable!(),
                     };
                     self.notify(format!(
@@ -918,9 +1065,15 @@ impl App {
                         let catalog = self.driver.rehab_program_catalog();
                         let idx = self.ui.selected_rehab.unwrap_or(0) as usize;
                         if let Some(prog) = catalog.get(idx).or_else(|| catalog.first()) {
-                            self.ui.selected_rehab = Some(catalog.iter().position(|p| p.key == prog.key).unwrap_or(0) as u64);
+                            self.ui.selected_rehab =
+                                Some(catalog.iter().position(|p| p.key == prog.key).unwrap_or(0)
+                                    as u64);
                             let ok = self.driver.enroll_rehab(pid, &prog.key);
-                            self.notify(if ok { format!("Enrolled P{pid} in {}", prog.name) } else { format!("Enroll failed for P{pid} ({})", prog.name) });
+                            self.notify(if ok {
+                                format!("Enrolled P{pid} in {}", prog.name)
+                            } else {
+                                format!("Enroll failed for P{pid} ({})", prog.name)
+                            });
                         } else {
                             self.notify("No rehab programs available");
                         }
@@ -935,14 +1088,23 @@ impl App {
                         let catalog = self.driver.rehab_program_catalog();
                         let idx = self.ui.selected_rehab.unwrap_or(0) as usize;
                         let selected_key = catalog.get(idx).map(|p| p.key.clone());
-                        let rows: Vec<_> = self.driver.rehab_summaries().into_iter().filter(|r| r.prisoner_id.raw() == pid).collect();
+                        let rows: Vec<_> = self
+                            .driver
+                            .rehab_summaries()
+                            .into_iter()
+                            .filter(|r| r.prisoner_id.raw() == pid)
+                            .collect();
                         let target = selected_key
                             .as_ref()
                             .and_then(|k| rows.iter().find(|r| &r.program_key == k))
                             .or_else(|| rows.first());
                         if let Some(row) = target {
                             let ok = self.driver.drop_rehab(pid, &row.program_key);
-                            self.notify(if ok { format!("Dropped P{pid} from {}", row.program) } else { format!("Drop failed for P{pid} ({})", row.program) });
+                            self.notify(if ok {
+                                format!("Dropped P{pid} from {}", row.program)
+                            } else {
+                                format!("Drop failed for P{pid} ({})", row.program)
+                            });
                         } else {
                             self.notify(format!("P{pid} has no active rehab enrollment"));
                         }
@@ -959,7 +1121,9 @@ impl App {
                         self.notify("No contraband cases");
                     } else {
                         let cur = self.ui.selected_contraband;
-                        let idx = cur.and_then(|id| cases.iter().position(|c| c.case_id == id)).unwrap_or(0);
+                        let idx = cur
+                            .and_then(|id| cases.iter().position(|c| c.case_id == id))
+                            .unwrap_or(0);
                         let next = (idx + 1) % cases.len();
                         self.ui.selected_contraband = Some(cases[next].case_id);
                         self.notify(format!("Selected contraband case #{}", cases[next].case_id));
@@ -985,7 +1149,9 @@ impl App {
                     self.ui.cycle_incident_min_severity();
                     let msg = match self.ui.filter().min_severity {
                         None => "Incident severity filter: all".to_string(),
-                        Some(s) if s >= 0.74 => "Incident severity filter: critical (>=75%)".to_string(),
+                        Some(s) if s >= 0.74 => {
+                            "Incident severity filter: critical (>=75%)".to_string()
+                        }
                         Some(_) => "Incident severity filter: high+ (>=40%)".to_string(),
                     };
                     self.ui.scroll = 0;
@@ -1015,12 +1181,8 @@ impl App {
                     self.notify(msg);
                 }
             }
-            KeyCode::Up | KeyCode::Left | KeyCode::Char('k' | 'h') => {
-                self.move_cursor(-1)
-            }
-            KeyCode::Down | KeyCode::Right | KeyCode::Char('j' | 'l') => {
-                self.move_cursor(1)
-            }
+            KeyCode::Up | KeyCode::Left | KeyCode::Char('k' | 'h') => self.move_cursor(-1),
+            KeyCode::Down | KeyCode::Right | KeyCode::Char('j' | 'l') => self.move_cursor(1),
             _ => {}
         }
     }
@@ -1055,7 +1217,11 @@ impl App {
                 self.seen_critical.retain(|&s| s != id);
                 self.notify(format!(
                     "Resolved incident #{id}: {}",
-                    if ok { "recorded" } else { "already resolved / unavailable" }
+                    if ok {
+                        "recorded"
+                    } else {
+                        "already resolved / unavailable"
+                    }
                 ));
             }
             None => self.notify("No open critical incidents"),
@@ -1081,7 +1247,11 @@ impl App {
         };
         let id = queue[idx as usize].id;
         self.ui.selected_construction = Some(id);
-        self.notify(format!("Selected construction project #{id} ({}/{})", idx + 1, queue.len()));
+        self.notify(format!(
+            "Selected construction project #{id} ({}/{})",
+            idx + 1,
+            queue.len()
+        ));
     }
 
     /// Observer safety valve from `run()`: pause once on a *newly seen*
@@ -1154,8 +1324,8 @@ pub fn run_tui(driver: Box<dyn SimDriver>, opts: TuiOptions) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
     struct MockDriver {
         sim: sumo::Sim,
@@ -1185,40 +1355,106 @@ mod tests {
     }
 
     impl SimDriver for MockDriver {
-        fn tick(&mut self) { self.ticks += 1; self.sim.tick(); }
-        fn observation(&self) -> sumo::Observation { self.sim.observation() }
-        fn map_frame(&self) -> sumo::MapFrame { self.sim.map_frame() }
-        fn stats_since(&self, at: sumo::SimTime) -> sumo::Stats { self.sim.stats_since(at) }
-        fn events_since(&self, at: sumo::SimTime) -> Vec<sumo::WorldEvent> { self.sim.events_since(at) }
-        fn prisoners(&self) -> Vec<sumo::PrisonerSummary> { self.sim.prisoners() }
-        fn gangs(&self) -> Vec<sumo::GangSummary> { self.sim.gangs() }
-        fn guards(&self) -> Vec<sumo::GuardSummary> { self.sim.guards() }
-        fn warden(&self) -> sumo::WardenSummary { self.sim.warden() }
-        fn economy(&self) -> sumo::EconomySummary { self.sim.economy() }
-        fn social_edges(&self) -> Vec<sumo::SocialEdge> { self.sim.social_edges() }
-        fn facilities(&self) -> Vec<sumo::FacilitySummary> { self.sim.facilities() }
-        fn construction_queue(&self) -> Vec<sumo::ConstructionSummary> { self.sim.construction_queue() }
-        fn speed(&self) -> TimeSpeed { self.sim.speed() }
-        fn set_speed(&mut self, speed: TimeSpeed) { self.sim.set_speed(speed); }
-        fn policy_mode(&self) -> sumo::PolicyMode { self.sim.policy_mode() }
-        fn set_policy_mode(&mut self, mode: sumo::PolicyMode) { self.sim.set_policy_mode(mode); }
-        fn sim_time(&self) -> sumo::SimTime { self.sim.world.time }
-        fn days_simulated(&self) -> u64 { self.sim.world.days_simulated }
-        fn set_lockdown(&mut self, lockdown: bool) { self.lockdown = lockdown; }
-        fn set_policy(&mut self, policy: sumo::Policy) { self.sim.set_policy(policy); }
-        fn policy_summary(&self) -> sumo::PolicySummary { let mut ps = self.sim.policy_summary(); ps.lockdown = self.lockdown; ps }
-        fn set_security_level(&mut self, level: f32) { self.sim.set_security_level(level); }
-        fn set_privileges_level(&mut self, level: f32) { self.sim.set_privileges_level(level); }
-        fn set_rehab_funding(&mut self, multiplier: f32) { self.sim.set_rehab_funding(multiplier); }
-        fn set_intake_paused(&mut self, paused: bool) { self.sim.set_intake_paused(paused); }
-        fn save(&self, _dir: &std::path::Path) -> Result<(), String> { Ok(()) }
+        fn tick(&mut self) {
+            self.ticks += 1;
+            self.sim.tick();
+        }
+        fn observation(&self) -> sumo::Observation {
+            self.sim.observation()
+        }
+        fn map_frame(&self) -> sumo::MapFrame {
+            self.sim.map_frame()
+        }
+        fn stats_since(&self, at: sumo::SimTime) -> sumo::Stats {
+            self.sim.stats_since(at)
+        }
+        fn events_since(&self, at: sumo::SimTime) -> Vec<sumo::WorldEvent> {
+            self.sim.events_since(at)
+        }
+        fn prisoners(&self) -> Vec<sumo::PrisonerSummary> {
+            self.sim.prisoners()
+        }
+        fn gangs(&self) -> Vec<sumo::GangSummary> {
+            self.sim.gangs()
+        }
+        fn guards(&self) -> Vec<sumo::GuardSummary> {
+            self.sim.guards()
+        }
+        fn warden(&self) -> sumo::WardenSummary {
+            self.sim.warden()
+        }
+        fn economy(&self) -> sumo::EconomySummary {
+            self.sim.economy()
+        }
+        fn social_edges(&self) -> Vec<sumo::SocialEdge> {
+            self.sim.social_edges()
+        }
+        fn social_roles(&self) -> Vec<sumo::SocialRoleSummary> {
+            self.sim.social_roles()
+        }
+        fn facilities(&self) -> Vec<sumo::FacilitySummary> {
+            self.sim.facilities()
+        }
+        fn construction_queue(&self) -> Vec<sumo::ConstructionSummary> {
+            self.sim.construction_queue()
+        }
+        fn speed(&self) -> TimeSpeed {
+            self.sim.speed()
+        }
+        fn set_speed(&mut self, speed: TimeSpeed) {
+            self.sim.set_speed(speed);
+        }
+        fn policy_mode(&self) -> sumo::PolicyMode {
+            self.sim.policy_mode()
+        }
+        fn set_policy_mode(&mut self, mode: sumo::PolicyMode) {
+            self.sim.set_policy_mode(mode);
+        }
+        fn sim_time(&self) -> sumo::SimTime {
+            self.sim.world.time
+        }
+        fn days_simulated(&self) -> u64 {
+            self.sim.world.days_simulated
+        }
+        fn set_lockdown(&mut self, lockdown: bool) {
+            self.lockdown = lockdown;
+        }
+        fn set_policy(&mut self, policy: sumo::Policy) {
+            self.sim.set_policy(policy);
+        }
+        fn policy_summary(&self) -> sumo::PolicySummary {
+            let mut ps = self.sim.policy_summary();
+            ps.lockdown = self.lockdown;
+            ps
+        }
+        fn set_security_level(&mut self, level: f32) {
+            self.sim.set_security_level(level);
+        }
+        fn set_privileges_level(&mut self, level: f32) {
+            self.sim.set_privileges_level(level);
+        }
+        fn set_rehab_funding(&mut self, multiplier: f32) {
+            self.sim.set_rehab_funding(multiplier);
+        }
+        fn set_intake_paused(&mut self, paused: bool) {
+            self.sim.set_intake_paused(paused);
+        }
+        fn save(&self, _dir: &std::path::Path) -> Result<(), String> {
+            Ok(())
+        }
         fn enable_autosave(&mut self, dir: std::path::PathBuf, interval_days: u64) {
             self.autosave_enables.push((dir.clone(), interval_days));
             self.sim.enable_autosave(dir, interval_days);
         }
-        fn maybe_autosave(&mut self) -> Result<bool, String> { self.sim.maybe_autosave().map_err(|e| e.to_string()) }
-        fn incident_log(&self) -> Vec<sumo::WorldEvent> { self.sim.incident_log() }
-        fn incident_records(&self) -> Vec<sumo::IncidentRecord> { self.incidents.clone() }
+        fn maybe_autosave(&mut self) -> Result<bool, String> {
+            self.sim.maybe_autosave().map_err(|e| e.to_string())
+        }
+        fn incident_log(&self) -> Vec<sumo::WorldEvent> {
+            self.sim.incident_log()
+        }
+        fn incident_records(&self) -> Vec<sumo::IncidentRecord> {
+            self.incidents.clone()
+        }
         fn resolve_incident(&mut self, id: u64) -> bool {
             self.resolved_incidents.push(id);
             if let Some(r) = self.incidents.iter_mut().find(|r| r.id == id) {
@@ -1226,29 +1462,79 @@ mod tests {
             }
             true
         }
-        fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> { Some(self) }
-        fn decision_audit_log(&self) -> Vec<sumo::DecisionAuditRecord> { self.decisions.clone() }
-        fn incident_records_filtered(&self, filter: &sumo::incidents::IncidentFilter) -> Vec<sumo::IncidentRecord> {
-            self.incidents.iter().filter(|r| {
-                if let Some(min) = filter.min_severity { if r.severity < min { return false; } }
-                if let Some(resolved) = filter.resolved { if r.resolved != resolved { return false; } }
-                true
-            }).cloned().collect()
+        fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+            Some(self)
         }
-        fn load(&mut self, _dir: &std::path::Path) -> Result<(), String> { Ok(()) }
-        fn post_release_status(&self, _prisoner_id: u64) -> Option<bool> { None }
-        fn post_release_records(&self) -> Vec<sumo::PostReleaseSummary> { Vec::new() }
-        fn rehab_summaries(&self) -> Vec<sumo::RehabEnrollmentSummary> { Vec::new() }
-        fn rehab_program_catalog(&self) -> Vec<sumo::RehabProgramInfo> { Vec::new() }
-        fn enroll_rehab(&mut self, _prisoner_id: u64, _program_key: &str) -> bool { false }
-        fn drop_rehab(&mut self, _prisoner_id: u64, _program_key: &str) -> bool { false }
-        fn rehab_overview(&self) -> sumo::RehabOverview { sumo::RehabOverview::default() }
-        fn contraband_cases(&self) -> Vec<sumo::ContrabandCaseSummary> { Vec::new() }
-        fn contraband_inventory(&self) -> Vec<sumo::ContrabandInventorySummary> { Vec::new() }
-        fn schedule_timeline(&self, _prisoner_id: u64) -> Option<sumo::ScheduleTimeline> { None }
-        fn budget_snapshot(&self) -> sumo::BudgetSnapshot { sumo::BudgetSnapshot::default() }
-        fn apply_rehab_progress(&mut self, _prisoner_id: u64, _minutes: u64) -> f32 { 0.0 }
-        fn enqueue_construction(&mut self, kind: alc_world::FacilityKind, wing: u32, capacity: u32) -> u64 {
+        fn decision_audit_log(&self) -> Vec<sumo::DecisionAuditRecord> {
+            self.decisions.clone()
+        }
+        fn incident_records_filtered(
+            &self,
+            filter: &sumo::incidents::IncidentFilter,
+        ) -> Vec<sumo::IncidentRecord> {
+            self.incidents
+                .iter()
+                .filter(|r| {
+                    if let Some(min) = filter.min_severity {
+                        if r.severity < min {
+                            return false;
+                        }
+                    }
+                    if let Some(resolved) = filter.resolved {
+                        if r.resolved != resolved {
+                            return false;
+                        }
+                    }
+                    true
+                })
+                .cloned()
+                .collect()
+        }
+        fn load(&mut self, _dir: &std::path::Path) -> Result<(), String> {
+            Ok(())
+        }
+        fn post_release_status(&self, _prisoner_id: u64) -> Option<bool> {
+            None
+        }
+        fn post_release_records(&self) -> Vec<sumo::PostReleaseSummary> {
+            Vec::new()
+        }
+        fn rehab_summaries(&self) -> Vec<sumo::RehabEnrollmentSummary> {
+            Vec::new()
+        }
+        fn rehab_program_catalog(&self) -> Vec<sumo::RehabProgramInfo> {
+            Vec::new()
+        }
+        fn enroll_rehab(&mut self, _prisoner_id: u64, _program_key: &str) -> bool {
+            false
+        }
+        fn drop_rehab(&mut self, _prisoner_id: u64, _program_key: &str) -> bool {
+            false
+        }
+        fn rehab_overview(&self) -> sumo::RehabOverview {
+            sumo::RehabOverview::default()
+        }
+        fn contraband_cases(&self) -> Vec<sumo::ContrabandCaseSummary> {
+            Vec::new()
+        }
+        fn contraband_inventory(&self) -> Vec<sumo::ContrabandInventorySummary> {
+            Vec::new()
+        }
+        fn schedule_timeline(&self, _prisoner_id: u64) -> Option<sumo::ScheduleTimeline> {
+            None
+        }
+        fn budget_snapshot(&self) -> sumo::BudgetSnapshot {
+            sumo::BudgetSnapshot::default()
+        }
+        fn apply_rehab_progress(&mut self, _prisoner_id: u64, _minutes: u64) -> f32 {
+            0.0
+        }
+        fn enqueue_construction(
+            &mut self,
+            kind: alc_world::FacilityKind,
+            wing: u32,
+            capacity: u32,
+        ) -> u64 {
             let id = self.construction_queue.len() as u64 + 1;
             self.construction_queue.push(sumo::ConstructionSummary {
                 id,
@@ -1271,11 +1557,25 @@ mod tests {
             self.approval_calls.push(project_id);
             true
         }
-        fn parole_due(&self) -> Vec<u64> { self.sim.parole_due().iter().map(|id| id.raw()).collect() }
-        fn parole_status(&self, id: u64) -> Option<sumo::ParoleStatus> { self.sim.parole_status(alc_core::PrisonerId(id)) }
-        fn parole_conditions(&self, id: u64) -> Option<sumo::ParoleConditions> { self.sim.parole_conditions(alc_core::PrisonerId(id)).cloned() }
-        fn parole_decision_reason(&self, id: u64) -> Option<String> { self.sim.parole_decision_reason(alc_core::PrisonerId(id)).map(str::to_string) }
-        fn parole_released_at(&self, id: u64) -> Option<sumo::SimTime> { self.sim.parole_released_at(alc_core::PrisonerId(id)) }
+        fn parole_due(&self) -> Vec<u64> {
+            self.sim.parole_due().iter().map(|id| id.raw()).collect()
+        }
+        fn parole_status(&self, id: u64) -> Option<sumo::ParoleStatus> {
+            self.sim.parole_status(alc_core::PrisonerId(id))
+        }
+        fn parole_conditions(&self, id: u64) -> Option<sumo::ParoleConditions> {
+            self.sim
+                .parole_conditions(alc_core::PrisonerId(id))
+                .cloned()
+        }
+        fn parole_decision_reason(&self, id: u64) -> Option<String> {
+            self.sim
+                .parole_decision_reason(alc_core::PrisonerId(id))
+                .map(str::to_string)
+        }
+        fn parole_released_at(&self, id: u64) -> Option<sumo::SimTime> {
+            self.sim.parole_released_at(alc_core::PrisonerId(id))
+        }
         fn start_parole_hearing(&mut self, id: u64) -> bool {
             self.parole_calls.push(format!("hearing:{id}"));
             true
@@ -1323,7 +1623,13 @@ mod tests {
         // Explicit paused observer state still wins over the restored speed.
         let mut mock2 = new_mock();
         mock2.sim.set_speed(TimeSpeed::Extreme);
-        let app2 = App::new(Box::new(mock2), TuiOptions { paused: true, ..Default::default() });
+        let app2 = App::new(
+            Box::new(mock2),
+            TuiOptions {
+                paused: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(app2.driver().speed(), TimeSpeed::Paused);
     }
 
@@ -1439,7 +1745,10 @@ mod tests {
         assert_eq!(app.ui().search, "a");
 
         app.notify("notice one");
-        assert_eq!(app.ui().notifications.last().map(String::as_str), Some("notice one"));
+        assert_eq!(
+            app.ui().notifications.last().map(String::as_str),
+            Some("notice one")
+        );
         for i in 0..40 {
             app.notify(format!("notice {i}"));
         }
@@ -1520,7 +1829,10 @@ mod tests {
         for i in 1..=9u8 {
             let key = KeyCode::Char(char::from(b'0' + i));
             app.handle_key(key, KeyModifiers::NONE);
-            assert_eq!(app.ui().mode, views::mode_from_index(usize::from(i) - 1).unwrap());
+            assert_eq!(
+                app.ui().mode,
+                views::mode_from_index(usize::from(i) - 1).unwrap()
+            );
         }
         app.handle_key(KeyCode::Char('0'), KeyModifiers::NONE);
         assert_eq!(app.ui().mode, ViewMode::IncidentReports);
@@ -1552,7 +1864,8 @@ mod tests {
             app.ui_mut().scroll = 1;
             app.handle_key(key, KeyModifiers::NONE);
             assert_eq!(
-                app.ui().scroll, expected,
+                app.ui().scroll,
+                expected,
                 "key {key:?} did not move the cursor as documented"
             );
         }
@@ -1611,7 +1924,10 @@ mod tests {
         app.ui_mut().set_query("zzzz-no-such-prisoner-zzzzz");
         assert!(app.visible_prisoners().is_empty());
         app.ui_mut().clear_query();
-        assert_eq!(app.visible_prisoners().len(), app.driver().prisoners().len());
+        assert_eq!(
+            app.visible_prisoners().len(),
+            app.driver().prisoners().len()
+        );
     }
 
     #[test]
@@ -1619,7 +1935,8 @@ mod tests {
         let mut app = app();
         let all = app.visible_incidents();
         assert_eq!(all.len(), app.driver().incident_records().len());
-        app.ui_mut().set_filter(sumo::incidents::IncidentFilter::all().with_min_severity(0.99));
+        app.ui_mut()
+            .set_filter(sumo::incidents::IncidentFilter::all().with_min_severity(0.99));
         assert_eq!(app.ui().filter().min_severity, Some(0.99));
         // Filtering must not panic and must return a bounded Vec.
         let _ = app.visible_incidents();
@@ -1666,7 +1983,9 @@ mod tests {
         app.check_pause_on_critical();
         assert!(!app.is_paused(), "seen critical must not re-pause");
         // A genuinely new critical id pauses again.
-        mock(&mut app).incidents.push(critical_record(2, 0.95, false));
+        mock(&mut app)
+            .incidents
+            .push(critical_record(2, 0.95, false));
         app.check_pause_on_critical();
         assert!(app.is_paused());
     }
@@ -1696,7 +2015,11 @@ mod tests {
         for i in 0..mock(&mut app).decisions.len() {
             let visible = app.visible_decisions();
             let expected = crate::decision_key(&visible[i]);
-            let key = app.ui().selected_decision.clone().expect("selection follows cursor");
+            let key = app
+                .ui()
+                .selected_decision
+                .clone()
+                .expect("selection follows cursor");
             assert_eq!(key, expected, "key must identify the row under the cursor");
             keys.push(key);
             app.move_cursor(1);
@@ -1712,7 +2035,11 @@ mod tests {
         let mut app = app();
         app.ui_mut().mode = ViewMode::DecisionAudit;
         app.sync_selection();
-        let key = app.ui().selected_decision.clone().expect("newest decision selected");
+        let key = app
+            .ui()
+            .selected_decision
+            .clone()
+            .expect("newest decision selected");
         // Simulate bounded-log trimming from the front.
         mock(&mut app).decisions.remove(0);
         app.ui_mut().scroll = 0;
@@ -1783,11 +2110,17 @@ mod tests {
     #[test]
     fn warden_mode_preserves_context_prisoner() {
         let mut app = app();
-        assert!(!mock(&mut app).sim.world.prisoners.is_empty(), "world has prisoners");
+        assert!(
+            !mock(&mut app).sim.world.prisoners.is_empty(),
+            "world has prisoners"
+        );
         app.handle_key(KeyCode::Char('5'), KeyModifiers::NONE);
         assert_eq!(app.ui().mode, ViewMode::Warden);
         app.sync_selection();
-        assert!(app.ui().selected_prisoner.is_some(), "Warden needs a context prisoner for r/R");
+        assert!(
+            app.ui().selected_prisoner.is_some(),
+            "Warden needs a context prisoner for r/R"
+        );
     }
 
     #[test]
