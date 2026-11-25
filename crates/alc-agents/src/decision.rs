@@ -442,6 +442,31 @@ impl ValidationResult {
     }
 }
 
+/// Rich validation outcome: the compatibility [`ValidationResult`] plus the
+/// failing stage and retry policy. Engine gates can attach their own detailed
+/// reasons without changing the older wrapper shape.
+#[derive(Debug, Clone)]
+pub struct DecisionValidation {
+    pub result: ValidationResult,
+    pub stage: Option<ValidationStage>,
+    pub reason: Option<String>,
+    pub retryable: bool,
+}
+
+impl DecisionValidation {
+    pub fn accepted_decision(&self) -> Option<&Decision> {
+        self.result.accepted_decision()
+    }
+
+    pub fn is_accepted(&self) -> bool {
+        !matches!(self.result, ValidationResult::Rejected { .. })
+    }
+
+    pub fn rejected_reason(&self) -> Option<&str> {
+        self.result.rejected_reason()
+    }
+}
+
 /// Role of the deciding agent, used by authority validation and scheduling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Role {
@@ -505,8 +530,30 @@ impl DecisionValidator for DefaultValidator {
 /// Convenience wrapper: validate an already-structured decision through the
 /// full eight-stage pipeline.
 pub fn validate_decision(d: &Decision, ctx: &ValidationContext) -> ValidationResult {
+    validate_decision_detailed(d, ctx).result
+}
+
+/// Detailed variant of [`validate_decision`], carrying the failing stage and
+/// whether a retry/repair prompt is meaningful.
+pub fn validate_decision_detailed(d: &Decision, ctx: &ValidationContext) -> DecisionValidation {
     let raw = RawDecision::from_decision(d);
-    run_validation_pipeline(&raw, ctx)
+    let mut validation = run_validation_pipeline_detailed(&raw, ctx);
+    // The raw wire format deliberately has no provenance field: a model must
+    // not be able to claim engine/system authority. When the engine validates
+    // an already-structured decision, restore its trusted metadata so utility
+    // fallbacks stay distinguishable from AI output in audits.
+    match &mut validation.result {
+        ValidationResult::Accepted(validated) | ValidationResult::Repaired(validated) => {
+            validated.provenance = d.provenance.clone();
+            validated.outcome = d.outcome;
+            validated.rationale = d.rationale.clone();
+            if !d.repair_reason.is_empty() {
+                validated.repair_reason = d.repair_reason.clone();
+            }
+        }
+        ValidationResult::Rejected { .. } => {}
+    }
+    validation
 }
 
 /// Legal status of an action. Illegal-but-possible actions are accepted as
@@ -951,9 +998,14 @@ pub fn clamp_and_repair(d: &Decision, ctx: &ValidationContext) -> Decision {
     }
     // Deterministic de-escalation: a heavily guarded fight becomes a
     // conversation. Preserved from the original DefaultValidator behavior.
-    if matches!(&out.action, DecisionAction::Fight { .. }) && ctx.guards_nearby > 1 {
-        out.action = DecisionAction::Socialize { with: 0 };
-        repair_reasons.push("fight de-escalated to socialize due to nearby guards".to_string());
+    if let DecisionAction::Fight { target } = out.action {
+        if ctx.guards_nearby > 1 {
+            // Keep the original counterparty: revalidation must still be able
+            // to resolve the target, and de-escalation means talking to the
+            // person who was going to be attacked, not to an unknown id.
+            out.action = DecisionAction::Socialize { with: target };
+            repair_reasons.push("fight de-escalated to socialize due to nearby guards".to_string());
+        }
     }
 
     if !repair_reasons.is_empty() {
@@ -979,11 +1031,24 @@ fn clamp_text(text: &str, max: usize) -> String {
 /// Run all eight stages in order. Returns [`ValidationResult::Repaired`] when
 /// stage 8 changed the decision relative to the parsed input.
 pub fn run_validation_pipeline(raw: &RawDecision, ctx: &ValidationContext) -> ValidationResult {
+    run_validation_pipeline_detailed(raw, ctx).result
+}
+
+/// Detailed variant of [`run_validation_pipeline`].
+pub fn run_validation_pipeline_detailed(
+    raw: &RawDecision,
+    ctx: &ValidationContext,
+) -> DecisionValidation {
     let initial = match validate_format(raw) {
         Ok(d) => d,
         Err(e) => {
-            return ValidationResult::Rejected {
-                reason: e.message(),
+            return DecisionValidation {
+                retryable: e.retryable,
+                stage: Some(e.stage),
+                reason: Some(e.message()),
+                result: ValidationResult::Rejected {
+                    reason: e.message(),
+                },
             };
         }
     };
@@ -1002,18 +1067,28 @@ pub fn run_validation_pipeline(raw: &RawDecision, ctx: &ValidationContext) -> Va
         match stage(&current, ctx) {
             Ok(next) => current = next,
             Err(e) => {
-                return ValidationResult::Rejected {
-                    reason: e.message(),
+                let message = e.message();
+                return DecisionValidation {
+                    retryable: e.retryable,
+                    stage: Some(e.stage),
+                    reason: Some(message.clone()),
+                    result: ValidationResult::Rejected { reason: message },
                 };
             }
         }
     }
 
     let repaired = clamp_and_repair(&current, ctx);
-    if repaired == initial {
+    let result = if repaired == initial {
         ValidationResult::Accepted(repaired)
     } else {
         ValidationResult::Repaired(repaired)
+    };
+    DecisionValidation {
+        result,
+        stage: None,
+        reason: None,
+        retryable: false,
     }
 }
 

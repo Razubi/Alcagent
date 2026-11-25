@@ -11,15 +11,18 @@
 //! AI failure degrades to deterministic behaviour; it never halts the world.
 
 use alc_core::RngStream;
+use alc_core::config::AiConfig;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use tracing::debug;
 
+use crate::context::{DecisionRequest, hash_validation_context};
 use crate::decision::{
     ActionCandidate, Decision, DecisionAction, Legality, RawDecision, Rejection, Role,
-    ValidationContext, ValidationResult, run_validation_pipeline,
+    ValidationContext, ValidationResult, run_validation_pipeline, validate_format,
 };
 use crate::disposition::{Disposition, trait_bias};
+use crate::provider::DecisionProviderKind;
 
 // ---------------------------------------------------------------------------
 // Rate limiting
@@ -109,9 +112,14 @@ impl AgentTokenBudget {
             && self.requests_this_hour < self.hourly_limit
     }
 
-    pub fn charge(&mut self, tokens: u32) {
+    /// Charge only when the per-agent daily/hourly limits allow it.
+    pub fn charge(&mut self, tokens: u32) -> bool {
+        if !self.can_spend(tokens) {
+            return false;
+        }
         self.consumed_today = self.consumed_today.saturating_add(tokens);
         self.requests_this_hour = self.requests_this_hour.saturating_add(1);
+        true
     }
 
     pub fn remaining(&self) -> u32 {
@@ -184,13 +192,12 @@ impl TokenBudget {
         self.consumed_today <= self.global_per_day
     }
 
-    /// Charge an agent and the global budget. Returns false when the global
-    /// budget is exhausted.
+    /// Charge one agent and the global budget through a single path. Both the
+    /// global cap and the per-agent daily/hourly limits must allow the charge.
     pub fn charge(&mut self, agent: u64, tokens: u32) -> bool {
         if self.consumed_today.saturating_add(tokens as u64) > self.global_per_day {
             return false;
         }
-        self.consumed_today = self.consumed_today.saturating_add(tokens as u64);
         let limit = self
             .per_agent
             .get(&agent)
@@ -199,7 +206,11 @@ impl TokenBudget {
             .per_agent
             .entry(agent)
             .or_insert_with(|| AgentTokenBudget::new(agent, limit));
+        if !entry.can_spend(tokens) {
+            return false;
+        }
         entry.charge(tokens);
+        self.consumed_today = self.consumed_today.saturating_add(tokens as u64);
         true
     }
 
@@ -648,8 +659,12 @@ pub fn revalidate_pending(
             reason: "stale decision".to_string(),
         };
     }
+    if pending.context_hash != 0 && pending.context_hash != hash_validation_context(ctx) {
+        return ValidationResult::Rejected {
+            reason: "stale context".to_string(),
+        };
+    }
     let raw = RawDecision::from_decision(&pending.decision);
-    let _ = ctx;
     run_validation_pipeline(&raw, ctx)
 }
 
@@ -667,6 +682,114 @@ pub struct OrchestratorTelemetry {
     pub rejected_decisions: u64,
     pub stale_decisions: u64,
     pub tokens_consumed_today: u64,
+}
+
+/// Runtime-only counters added by the AI orchestration policy. They are kept
+/// out of the persisted telemetry struct so the v5 bincode layout is unchanged.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AiRuntimeTelemetry {
+    pub provider_calls: u64,
+    pub cache_hits: u64,
+    pub cache_misses: u64,
+    pub retries: u64,
+    pub rate_limited: u64,
+    pub provider_failures: u64,
+    pub fallback_after_failure: u64,
+    pub batches: u64,
+    pub decisions_batched: u64,
+    pub validated_decisions: u64,
+    pub accepted_decisions: u64,
+    pub repaired_decisions: u64,
+}
+
+/// Observer-facing snapshot of the configured orchestration policy.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AiRuntimeSnapshot {
+    pub provider: String,
+    pub model: String,
+    pub max_tokens_per_day: u64,
+    pub max_tokens_per_agent_per_day: u32,
+    pub tokens_consumed_today: u64,
+    pub rate_limit_per_sec: u32,
+    pub rate_burst: u32,
+    pub rate_tokens: u32,
+    pub max_retries: u32,
+    pub cache_enabled: bool,
+    pub cache_entries: usize,
+    pub max_cache_entries: usize,
+    pub cache_ttl_secs: u64,
+    pub max_batch_size: usize,
+    pub decision_timeout_secs: u64,
+    pub ai_decisions: u64,
+    pub utility_decisions: u64,
+    pub fallback_decisions: u64,
+    pub rejected_decisions: u64,
+    pub stale_decisions: u64,
+    pub provider_calls: u64,
+    pub cache_hits: u64,
+    pub cache_misses: u64,
+    pub retries: u64,
+    pub rate_limited: u64,
+    pub provider_failures: u64,
+    pub batches: u64,
+    pub decisions_batched: u64,
+    pub validated_decisions: u64,
+    pub accepted_decisions: u64,
+    pub repaired_decisions: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct CacheKey {
+    provider: String,
+    model: String,
+    agent: u64,
+    context_hash: u64,
+}
+
+#[derive(Debug, Clone)]
+struct CachedDecision {
+    decision: Decision,
+    created_at_secs: u64,
+}
+
+/// Runtime policy state. `#[serde(skip)]` on the owning field preserves the
+/// persisted v5 layout; configuration is re-applied on startup/load.
+#[derive(Debug, Clone)]
+pub struct AiRuntimeState {
+    pub config: AiConfig,
+    pub provider: DecisionProviderKind,
+    pub telemetry: AiRuntimeTelemetry,
+    cache: BTreeMap<CacheKey, CachedDecision>,
+}
+
+impl Default for AiRuntimeState {
+    fn default() -> Self {
+        Self::new(&AiConfig::default())
+    }
+}
+
+impl AiRuntimeState {
+    pub fn new(config: &AiConfig) -> Self {
+        Self {
+            config: config.clone(),
+            provider: DecisionProviderKind::from_config(config),
+            telemetry: AiRuntimeTelemetry::default(),
+            cache: BTreeMap::new(),
+        }
+    }
+
+    pub fn configure(&mut self, config: &AiConfig) {
+        self.provider = DecisionProviderKind::from_config(config);
+        self.config = config.clone();
+    }
+
+    pub fn cache_len(&self) -> usize {
+        self.cache.len()
+    }
+
+    pub fn model(&self) -> &str {
+        &self.config.model
+    }
 }
 
 /// Hybrid three-tier orchestrator.
@@ -688,19 +811,48 @@ pub struct Orchestrator {
     pub pending: Vec<PendingDecision>,
     #[serde(default)]
     pub telemetry: OrchestratorTelemetry,
+    /// Runtime-only provider/cache/config state (not part of save format v5).
+    #[serde(skip)]
+    pub runtime: AiRuntimeState,
 }
 
 impl Orchestrator {
     pub fn new(tokens_per_agent: u32) -> Self {
+        let config = AiConfig {
+            max_tokens_per_agent_per_day: tokens_per_agent,
+            ..AiConfig::default()
+        };
         Self {
             token_budget_per_agent: tokens_per_agent,
             consumed_today: 0,
-            rate: RateLimiter::new(200, 1.0),
-            budget: TokenBudget::new((tokens_per_agent as u64) * 64, tokens_per_agent),
+            rate: RateLimiter::new(config.rate_burst, config.rate_limit_per_sec as f32),
+            budget: TokenBudget::new(config.max_tokens_per_day, tokens_per_agent),
             scheduler: DecisionScheduler::new(ScheduleConfig::default()),
             pending: Vec::new(),
             telemetry: OrchestratorTelemetry::default(),
+            runtime: AiRuntimeState::new(&config),
         }
+    }
+
+    /// Build an orchestrator whose provider, budgets and limits come from
+    /// `AiConfig` rather than the legacy single-token constructor.
+    pub fn from_config(config: &AiConfig) -> Self {
+        let mut orchestrator = Self::new(config.max_tokens_per_agent_per_day);
+        orchestrator.configure(config);
+        orchestrator
+    }
+
+    /// Re-apply runtime configuration to an existing (possibly loaded)
+    /// orchestrator without changing its persisted state.
+    pub fn configure(&mut self, config: &AiConfig) {
+        self.token_budget_per_agent = config.max_tokens_per_agent_per_day;
+        self.budget.global_per_day = config.max_tokens_per_day;
+        self.budget.default_per_agent = config.max_tokens_per_agent_per_day;
+        self.rate = RateLimiter::new(config.rate_burst, config.rate_limit_per_sec as f32);
+        self.scheduler.config.prisoner_interval_secs =
+            config.decision_interval_mins.saturating_mul(60);
+        self.scheduler.config.decision_timeout_secs = config.decision_timeout_secs;
+        self.runtime.configure(config);
     }
 
     /// Returns true when this agent may take an AI deliberation slot this tick.
@@ -719,6 +871,7 @@ impl Orchestrator {
 
     pub fn reset_day(&mut self) {
         self.consumed_today = 0;
+        self.telemetry.tokens_consumed_today = 0;
         self.budget.reset_day();
     }
 
@@ -782,6 +935,195 @@ impl Orchestrator {
     /// Record an in-flight AI decision.
     pub fn submit_pending(&mut self, pending: PendingDecision) {
         self.pending.push(pending);
+    }
+
+    /// Ask the configured provider for a raw proposal.
+    ///
+    /// This path enforces rate limits, per-agent/global token budgets, retry
+    /// policy and the bounded cache. The returned decision is still
+    /// *unvalidated*: callers must pass it through the engine gate.
+    pub fn propose(&mut self, request: DecisionRequest, now_secs: u64) -> Option<Decision> {
+        let config = self.runtime.config.clone();
+        let key = CacheKey {
+            provider: self.runtime.provider.name().to_string(),
+            model: config.model.clone(),
+            agent: request.agent,
+            context_hash: request.context_hash,
+        };
+
+        if config.cache_enabled {
+            if let Some(decision) = self.cached_decision(&key, now_secs, config.cache_ttl_secs) {
+                self.runtime.telemetry.cache_hits += 1;
+                return Some(decision);
+            }
+            self.runtime.telemetry.cache_misses += 1;
+        }
+
+        if !self.rate.try_acquire(1, now_secs) {
+            self.runtime.telemetry.rate_limited += 1;
+            return None;
+        }
+
+        for attempt in 0..=config.max_retries {
+            if attempt > 0 {
+                self.runtime.telemetry.retries += 1;
+            }
+            let outcome = self.runtime.provider.propose(&request);
+            self.runtime.telemetry.provider_calls += 1;
+            if let Some(failure) = outcome.failure {
+                self.runtime.telemetry.provider_failures += 1;
+                if failure.retryable && attempt < config.max_retries {
+                    continue;
+                }
+                return None;
+            }
+            let Some(raw) = outcome.raw else {
+                return None;
+            };
+            let parsed = match validate_format(&raw) {
+                Ok(decision) => decision,
+                Err(rejection) => {
+                    self.telemetry.rejected_decisions += 1;
+                    if rejection.retryable && attempt < config.max_retries {
+                        continue;
+                    }
+                    return None;
+                }
+            };
+            let cost = outcome.tokens.max(1);
+            if !self.budget.charge(request.agent, cost) {
+                self.runtime.telemetry.fallback_after_failure += 1;
+                return None;
+            }
+            self.consumed_today = self.consumed_today.saturating_add(cost);
+            self.telemetry.tokens_consumed_today = self
+                .telemetry
+                .tokens_consumed_today
+                .saturating_add(u64::from(cost));
+            if config.cache_enabled {
+                self.cache_decision(key, parsed.clone(), now_secs, config.max_cache_entries);
+            }
+            self.telemetry.ai_decisions += 1;
+            return Some(parsed);
+        }
+        self.runtime.telemetry.fallback_after_failure += 1;
+        None
+    }
+
+    fn cached_decision(&mut self, key: &CacheKey, now_secs: u64, ttl: u64) -> Option<Decision> {
+        let expired = self.runtime.cache.get(key).map_or(false, |entry| {
+            now_secs.saturating_sub(entry.created_at_secs) > ttl
+        });
+        if expired {
+            self.runtime.cache.remove(key);
+            return None;
+        }
+        self.runtime
+            .cache
+            .get(key)
+            .map(|entry| entry.decision.clone())
+    }
+
+    fn cache_decision(
+        &mut self,
+        key: CacheKey,
+        decision: Decision,
+        now_secs: u64,
+        max_entries: usize,
+    ) {
+        self.runtime.cache.insert(
+            key,
+            CachedDecision {
+                decision,
+                created_at_secs: now_secs,
+            },
+        );
+        let cap = max_entries.max(1);
+        while self.runtime.cache.len() > cap {
+            let oldest = self.runtime.cache.keys().next().cloned();
+            match oldest {
+                Some(key) => {
+                    self.runtime.cache.remove(&key);
+                }
+                None => break,
+            }
+        }
+    }
+
+    /// Record a deterministic/utility fallback after AI declined or failed.
+    pub fn record_fallback(&mut self) {
+        self.telemetry.fallback_decisions += 1;
+    }
+
+    /// Record one canonical gate outcome.
+    pub fn record_validated(&mut self, repaired: bool) {
+        self.runtime.telemetry.validated_decisions += 1;
+        if repaired {
+            self.runtime.telemetry.repaired_decisions += 1;
+        } else {
+            self.runtime.telemetry.accepted_decisions += 1;
+        }
+    }
+
+    pub fn record_rejected(&mut self) {
+        self.telemetry.rejected_decisions += 1;
+    }
+
+    pub fn record_batch(&mut self, count: usize) {
+        self.runtime.telemetry.batches += 1;
+        self.runtime.telemetry.decisions_batched = self
+            .runtime
+            .telemetry
+            .decisions_batched
+            .saturating_add(count as u64);
+    }
+
+    /// Drop all runtime state belonging to agents that left the institution.
+    pub fn prune_departed(&mut self, departed: &[u64]) {
+        for id in departed {
+            self.scheduler.unregister(*id);
+            self.budget.per_agent.remove(id);
+            self.pending.retain(|p| p.agent != *id);
+            self.runtime.cache.retain(|key, _| key.agent != *id);
+        }
+    }
+
+    /// Snapshot the configured policy and all counters for observer DTOs.
+    pub fn runtime_snapshot(&self) -> AiRuntimeSnapshot {
+        let config = &self.runtime.config;
+        AiRuntimeSnapshot {
+            provider: self.runtime.provider.name().to_string(),
+            model: config.model.clone(),
+            max_tokens_per_day: config.max_tokens_per_day,
+            max_tokens_per_agent_per_day: config.max_tokens_per_agent_per_day,
+            tokens_consumed_today: self.telemetry.tokens_consumed_today,
+            rate_limit_per_sec: config.rate_limit_per_sec,
+            rate_burst: config.rate_burst,
+            rate_tokens: self.rate.tokens(),
+            max_retries: config.max_retries,
+            cache_enabled: config.cache_enabled,
+            cache_entries: self.runtime.cache_len(),
+            max_cache_entries: config.max_cache_entries,
+            cache_ttl_secs: config.cache_ttl_secs,
+            max_batch_size: config.max_batch_size,
+            decision_timeout_secs: config.decision_timeout_secs,
+            ai_decisions: self.telemetry.ai_decisions,
+            utility_decisions: self.telemetry.utility_decisions,
+            fallback_decisions: self.telemetry.fallback_decisions,
+            rejected_decisions: self.telemetry.rejected_decisions,
+            stale_decisions: self.telemetry.stale_decisions,
+            provider_calls: self.runtime.telemetry.provider_calls,
+            cache_hits: self.runtime.telemetry.cache_hits,
+            cache_misses: self.runtime.telemetry.cache_misses,
+            retries: self.runtime.telemetry.retries,
+            rate_limited: self.runtime.telemetry.rate_limited,
+            provider_failures: self.runtime.telemetry.provider_failures,
+            batches: self.runtime.telemetry.batches,
+            decisions_batched: self.runtime.telemetry.decisions_batched,
+            validated_decisions: self.runtime.telemetry.validated_decisions,
+            accepted_decisions: self.runtime.telemetry.accepted_decisions,
+            repaired_decisions: self.runtime.telemetry.repaired_decisions,
+        }
     }
 
     /// Remove and return decisions that exceeded the decision timeout.
