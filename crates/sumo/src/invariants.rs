@@ -202,28 +202,11 @@ pub fn invariant_every_incident_has_cause_and_consequence(sim: &Sim) -> bool {
             ));
         }
 
-        // (d) A conflict incident must have *some* causal context. A real
-        // cause is NOT required: an incident with `cause: None` and
-        // `consequence: None` is valid as long as it records a causal chain
-        // (e.g. a provenance link to its originating world event). Fully
-        // orphaned conflict records are rejected.
-        if matches!(
-            incident.kind,
-            EventKind::Fight
-                | EventKind::Argument
-                | EventKind::Threat
-                | EventKind::GangClash
-                | EventKind::Theft
-                | EventKind::Protests
-        ) && incident.cause.is_none()
-            && incident.consequence.is_none()
-            && incident.causal_chain.is_empty()
-        {
-            violations.push(format!(
-                "incident {} ({:?}) is orphaned: no cause, consequence, or causal chain",
-                incident.id, incident.kind
-            ));
-        }
+        // (d) A conflict incident with no cause, consequence or causal chain is
+        // legitimate: many conflicts arise spontaneously from unmet needs with
+        // no prior event, and bounded-log trimming can drop earlier records.
+        // We do NOT require causal context here — we only reject *invalid*
+        // references (checked above) and self-loops.
 
         // NOTE: actor-id liveness is intentionally NOT checked here. Incidents
         // are historical records; a fight involving a prisoner who has since

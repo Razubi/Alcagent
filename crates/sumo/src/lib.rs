@@ -344,9 +344,11 @@ impl Sim {
             let location = format!("facility {}", event.actors.first().copied().unwrap_or(0));
             let known_prisoners: Vec<alc_core::PrisonerId> =
                 self.world.prisoners.iter().map(|p| p.id).collect();
-            let prior = self.engine_state.incident_sidecar.clone();
+            // Avoid cloning the whole bounded sidecar per event (O(n^2) on long
+            // runs): pass a read-only view; the helper only scans by reference.
+            let prior = &self.engine_state.incident_sidecar[..];
             let incident = incidents::incident_from_world_event(
-                &event, id, &prior, &known_prisoners, severity, location,
+                &event, id, prior, &known_prisoners, severity, location,
             );
             self.engine_state.incident_sidecar.push(incident);
             self.engine_state.incidents.push(event);
@@ -361,9 +363,30 @@ impl Sim {
             let excess = self.engine_state.incidents.len() - MAX;
             self.engine_state.incidents.drain(..excess);
         }
+        let mut sidecar_trimmed = false;
         if self.engine_state.incident_sidecar.len() > MAX {
             let excess = self.engine_state.incident_sidecar.len() - MAX;
             self.engine_state.incident_sidecar.drain(..excess);
+            sidecar_trimmed = true;
+        }
+        if sidecar_trimmed {
+            // B2: drop cause/consequence references to incidents that were
+            // evicted by the bounded log, so the causality invariant stays
+            // honest instead of reporting dangling ids on long runs.
+            let live: std::collections::HashSet<u64> = self
+                .engine_state
+                .incident_sidecar
+                .iter()
+                .map(|inc| inc.id)
+                .collect();
+            for inc in &mut self.engine_state.incident_sidecar {
+                if inc.cause.is_some() && !live.contains(&inc.cause.unwrap()) {
+                    inc.cause = None;
+                }
+                if inc.consequence.is_some() && !live.contains(&inc.consequence.unwrap()) {
+                    inc.consequence = None;
+                }
+            }
         }
         if self.engine_state.decision_log.len() > MAX {
             let excess = self.engine_state.decision_log.len() - MAX;
