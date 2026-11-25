@@ -429,6 +429,15 @@ pub fn compute_world_digest(world: &alc_world::World) -> u64 {
         }
     }
 
+    // World-side contraband resolution timestamps (BTreeMap iterates in sorted
+    // case-id order). The engine keeps its own mirror, but this map is the
+    // world-authoritative record and is persisted independently, so divergence
+    // here must be visible in the digest too.
+    for (case_id, at) in &world.resolved_contraband_at {
+        case_id.hash(&mut hasher);
+        at.secs.hash(&mut hasher);
+    }
+
     // Rehab records (sorted by prisoner id; record order preserved)
     let mut rehab: Vec<_> = world.rehab_records.iter().collect();
     rehab.sort_by_key(|(pid, _)| pid.0);

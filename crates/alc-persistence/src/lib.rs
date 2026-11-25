@@ -305,6 +305,11 @@ impl SaveManager {
     }
 
     /// Save world with EngineState for complete persistence.
+    ///
+    /// Durability contract: serialize to memory, write `world.tmp`, `sync_all`
+    /// the temp file (data + metadata) and only then rename it over
+    /// `world.bin`. A crash before the rename therefore leaves the previous
+    /// complete save intact.
     pub fn save_with_engine(&self, world: &alc_world::World, engine_state: Option<EngineState>) -> Result<(), SaveError> {
         fs::create_dir_all(&self.dir)?;
         let header = SaveHeader {
@@ -578,6 +583,7 @@ pub fn migrate_bytes(bytes: &[u8]) -> Result<SaveFile, SaveError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alc_core::TimeSpeed;
 
     fn unique_dir(label: &str) -> PathBuf {
         static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -598,6 +604,7 @@ mod tests {
         let manager = SaveManager::new(&dir);
         let mut world = alc_world::World::new(0xA1C_0A_6E_17_0);
         world.time = world.time.add_days(2);
+        world.speed = TimeSpeed::FastForward;
         world.orchestrator.charge(123);
 
         manager.save(&world).unwrap();
@@ -605,11 +612,33 @@ mod tests {
 
         assert_eq!(loaded.seed, world.seed);
         assert_eq!(loaded.time, world.time);
+        assert_eq!(loaded.speed, world.speed, "World.speed must survive the save");
         assert_eq!(loaded.prisoners.len(), world.prisoners.len());
         assert_eq!(loaded.guards.len(), world.guards.len());
         assert_eq!(loaded.facilities.len(), world.facilities.len());
         assert_eq!(loaded.economy.cash, world.economy.cash);
         assert_eq!(loaded.orchestrator.consumed_today, world.orchestrator.consumed_today);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_replaces_stale_temp_file_via_atomic_rename() {
+        // The write path is: create/truncate world.tmp, write bytes, fsync it,
+        // then rename over world.bin. A stale temp file must never leak into a
+        // loadable save.
+        let dir = unique_dir("atomic-write");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("world.tmp"), b"stale bytes from an interrupted save").unwrap();
+
+        let manager = SaveManager::new(&dir);
+        let world = alc_world::World::new(0xA70_0D);
+        manager.save(&world).unwrap();
+
+        assert!(
+            !dir.join("world.tmp").exists(),
+            "the temp file must be consumed by the atomic rename"
+        );
+        assert_eq!(manager.load().unwrap().seed, world.seed);
         let _ = fs::remove_dir_all(&dir);
     }
 

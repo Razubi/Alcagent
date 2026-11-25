@@ -197,29 +197,126 @@ fn escape_decision_records_post_release_parity() {
     }
 }
 
+/// Every durability-relevant state category must move the observable digest.
+fn assert_digest_changes(sim: &mut Sim, label: &str, mutate: impl FnOnce(&mut Sim)) {
+    let before = sim.trace_hash_v2();
+    mutate(sim);
+    let after = sim.trace_hash_v2();
+    assert_ne!(before, after, "{label} should affect digest");
+}
+
 #[test]
 fn state_digest_covers_new_state() {
     let mut sim = Sim::new(42);
-    let base = sim.trace_hash_v2();
-    sim.record_decision_audit(sumo::DecisionAuditRecord {
-        time: sim.world.time,
-        actor: "warden".to_string(),
-        source: "test".to_string(),
-        action: "X".to_string(),
-        summary: "x".to_string(),
-        validation: "accepted".to_string(),
-        reason: "r".to_string(),
-        rationale: String::new(),
-        repair_reason: String::new(),
-        outcome: alc_agents::decision::DecisionOutcomeState::Accepted,
-    });
-    let after_audit = sim.trace_hash_v2();
-    assert_ne!(base, after_audit, "decision audit should affect digest");
 
-    sim.engine_state.resolved_contraband_cases.insert(999);
-    sim.engine_state
-        .resolved_contraband_at
-        .insert(999, sim.world.time);
-    let after_contraband = sim.trace_hash_v2();
-    assert_ne!(after_audit, after_contraband, "contraband maps should affect digest");
+    assert_digest_changes(&mut sim, "decision audit", |sim| {
+        sim.record_decision_audit(sumo::DecisionAuditRecord {
+            time: sim.world.time,
+            actor: "warden".to_string(),
+            source: "test".to_string(),
+            action: "X".to_string(),
+            summary: "x".to_string(),
+            validation: "accepted".to_string(),
+            reason: "r".to_string(),
+            rationale: String::new(),
+            repair_reason: String::new(),
+            outcome: alc_agents::decision::DecisionOutcomeState::Accepted,
+        });
+    });
+
+    assert_digest_changes(&mut sim, "engine contraband resolution", |sim| {
+        sim.engine_state.resolved_contraband_cases.insert(999);
+        sim.engine_state
+            .resolved_contraband_at
+            .insert(999, sim.world.time);
+    });
+
+    assert_digest_changes(&mut sim, "world contraband resolution", |sim| {
+        sim.world.resolved_contraband_at.insert(1000, sim.world.time);
+    });
+
+    assert_digest_changes(&mut sim, "construction queue", |sim| {
+        sim.world
+            .enqueue_construction(alc_world::FacilityKind::Education, 1, 20);
+    });
+
+    assert_digest_changes(&mut sim, "rehab records", |sim| {
+        let pid = sim.world.prisoners[0].id;
+        sim.world.rehab_records.entry(pid).or_default().push(alc_world::RehabProgramRecord {
+            program: alc_social::RehabProgram::Education,
+            enrolled_day: 1,
+            progress_days: 2,
+            progress_sum: 0.2,
+            completed: false,
+            dropped: false,
+            attendance_days: 2,
+            last_attended_day: Some(2),
+            failure_reason: None,
+        });
+    });
+
+    assert_digest_changes(&mut sim, "post-release records", |sim| {
+        let prisoner = sim.world.prisoners[0].clone();
+        sim.world.post_release_records.push(alc_world::PostReleaseRecord {
+            id: 1,
+            prisoner_id: prisoner.id.raw(),
+            name: prisoner.name.clone(),
+            reason: "parole".to_string(),
+            day: 3,
+            sentence_info: alc_world::PostReleaseSentenceInfo {
+                sentence_days: prisoner.sentence_days,
+                sentence_served_days: prisoner.sentence_served_days,
+                classification: prisoner.classification,
+                escape_motivation_at_exit: 0.1,
+            },
+            outcome_seed: 42,
+            employment: false,
+            housing: false,
+            violation: false,
+            return_to_custody: false,
+        });
+    });
+}
+
+#[test]
+fn autosave_failure_is_surfaced_and_recoverable() {
+    let root = std::env::temp_dir().join(format!(
+        "alcagent-autosave-err-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+
+    // A regular file cannot be used as a save directory: `create_dir_all`
+    // fails, which is a realistic, deterministic autosave failure.
+    let blocked = root.join("blocked.bin");
+    std::fs::write(&blocked, b"not a directory").unwrap();
+
+    let mut sim = Sim::new(0xA0_5A_7E);
+    sim.world.days_simulated = 1;
+    sim.enable_autosave(&blocked, 1);
+    assert!(sim.maybe_autosave().is_err(), "blocked dir must fail the save");
+    let err = sim
+        .last_autosave_error()
+        .expect("autosave failure must be surfaced")
+        .to_string();
+    assert!(err.contains("io"), "unexpected autosave error: {err}");
+
+    // The engine keeps reporting the failure on every due tick until a save
+    // succeeds; a successful autosave clears it.
+    sim.set_speed(TimeSpeed::Extreme);
+    sim.tick();
+    assert!(sim.last_autosave_error().is_some());
+
+    let good = root.join("good");
+    sim.enable_autosave(&good, 1);
+    assert!(sim.maybe_autosave().unwrap(), "valid dir should autosave");
+    assert_eq!(sim.last_autosave_error(), None);
+    assert!(good.join("world.bin").exists());
+
+    let _ = std::fs::remove_dir_all(&root);
 }

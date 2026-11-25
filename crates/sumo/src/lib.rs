@@ -293,9 +293,9 @@ impl Sim {
         if history.last().map(|&(_, p)| p) != Some(pop) {
             history.push((self.world.time, pop));
         }
-        if let Err(e) = self.maybe_autosave() {
-            tracing::warn!(error = %e, "autosave failed");
-        }
+        // `maybe_autosave` records and logs its own failures, so no caller can
+        // silently drop an autosave error.
+        let _ = self.maybe_autosave();
     }
 
     /// Copy newly-emitted conflict events into the engine incident log and
@@ -1733,6 +1733,10 @@ impl Sim {
     }
 
     /// Save when the autosave interval has elapsed. Returns true when written.
+    ///
+    /// Failures are always recorded in [`Self::last_autosave_error`] and emitted
+    /// through `tracing::warn!` before being returned, so they are never silent
+    /// even when a caller ignores the `Result`.
     pub fn maybe_autosave(&mut self) -> Result<bool, SaveError> {
         let (due, dir) = match &self.engine_state.autosave {
             Some(a) if a.due(self.world.days_simulated) => (true, a.dir.clone()),
@@ -1750,6 +1754,7 @@ impl Sim {
                 Ok(true)
             }
             Err(e) => {
+                tracing::warn!(error = %e, "autosave failed");
                 self.last_autosave_error = Some(e.to_string());
                 Err(e)
             }

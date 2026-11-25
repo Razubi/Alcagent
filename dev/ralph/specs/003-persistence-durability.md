@@ -1,6 +1,6 @@
-# Spec 003 — Persistence durability
+﻿# Spec 003 â€” Persistence durability
 
-Status: pending
+Status: done
 
 ## Requirements
 Save/load must be durable, version-aware, and observable.
@@ -15,3 +15,4 @@ Save/load must be durable, version-aware, and observable.
 - [ ] `cargo test --workspace` passes.
 
 Completion signal: `<promise>DONE</promise>`
+
