@@ -6,6 +6,8 @@
 //! intake resolution. AI deliberation is gated by the orchestrator; the
 //! deterministic fallback always keeps the simulation moving (Directive §19).
 
+mod emergent;
+
 use alc_core::{FacilityId, GuardId, PrisonerId, RngStream, SimTime, TimeSpeed, WardenId};
 use alc_events::{EventBus, WorldEvent, EventKind, RehabFailureReason};
 use alc_economy::Economy;
@@ -1055,6 +1057,9 @@ impl World {
 
         // Construction progress (0.05 lifecycle).
         self.construction_step();
+
+        // Condition-driven emergent events (Spec 007).
+        self.emergent_events_step();
 
         // Refresh warden context and reset trailing-week incident count weekly.
         if self.days_simulated % 7 == 0 {

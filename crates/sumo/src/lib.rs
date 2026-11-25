@@ -407,6 +407,11 @@ impl Sim {
                 | EventKind::Protests
                 | EventKind::PropertyDamage
                 | EventKind::MedicalEmergency
+                | EventKind::Rumor
+                | EventKind::FamilyCorrespondence
+                | EventKind::StaffMisconduct
+                | EventKind::EquipmentFailure
+                | EventKind::FoodShortage
                 | EventKind::EscapeAttempt
                 | EventKind::EscapePrevented
                 | EventKind::EscapeSucceeded
@@ -457,12 +462,18 @@ impl Sim {
             | alc_events::EventKind::GangClash
             | alc_events::EventKind::EscapeSucceeded
             | alc_events::EventKind::Death => 0.9,
+            alc_events::EventKind::Protests => 0.75,
             alc_events::EventKind::EscapeAttempt
             | alc_events::EventKind::MedicalEmergency
             | alc_events::EventKind::TransferOut => 0.7,
+            alc_events::EventKind::StaffMisconduct => 0.65,
             alc_events::EventKind::Threat
             | alc_events::EventKind::Theft
             | alc_events::EventKind::ContrabandFound => 0.6,
+            alc_events::EventKind::FoodShortage => 0.55,
+            alc_events::EventKind::EquipmentFailure => 0.4,
+            alc_events::EventKind::Rumor => 0.25,
+            alc_events::EventKind::FamilyCorrespondence => 0.2,
             alc_events::EventKind::ConstructionComplete => 0.2,
             _ => 0.4,
         };
