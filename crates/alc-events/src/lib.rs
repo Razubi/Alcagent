@@ -190,6 +190,24 @@ impl EventBus {
     }
 
     pub fn recent(&self) -> impl Iterator<Item = &WorldEvent> { self.history.iter() }
+
+    /// Events with an id greater than `after_id`, in chronological order.
+    ///
+    /// Event ids increase monotonically and the deque is append-only, so this
+    /// walks only the `k` new events from the back instead of scanning the
+    /// entire bounded history on every tick.
+    pub fn after(&self, after_id: u64) -> Vec<WorldEvent> {
+        let mut out: Vec<WorldEvent> = self
+            .history
+            .iter()
+            .rev()
+            .take_while(|e| e.id > after_id)
+            .cloned()
+            .collect();
+        out.reverse();
+        out
+    }
+
     pub fn since(&self, at: SimTime) -> impl Iterator<Item = &WorldEvent> {
         self.history.iter().filter(move |e| e.at >= at)
     }
