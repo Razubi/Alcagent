@@ -1,6 +1,6 @@
 # Spec 007 — Emergent event system
 
-Status: pending
+Status: claimed
 
 ## Requirements
 The institution should generate explainable events from world conditions, not only scripted timing.

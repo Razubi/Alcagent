@@ -19,6 +19,7 @@
 - Full `cargo test --workspace` passed (all suites, including 730-day chaos soak and 365-day review soak).
 - Final manifest cleanup removed the last unused dependency; `cargo build --workspace --all-targets` is warning-free.
 - Fixed Ralph launcher: temporarily downgrade `ErrorActionPreference` around the native CLI call so CLI stderr progress no longer aborts the loop; verify CLI exit code before accepting DONE.
+- Main session claimed spec 007 (emergent event system) for a parallel engine-focused implementation lane.
 
 
 ## 2026-11-25 - iteration 2.1: spec 003 persistence durability
@@ -40,3 +41,13 @@
 - Spec `dev/ralph/specs/004-incident-decision-audit.md`: Status set to `done`.
 - Commit: 24da165 (`fix(audit): make incident and decision traces durable and inspectable (spec 004)`).
 - ITER 2.2 004-incident-decision-audit.md: DONE. Validation and commit verified.
+- ITER 4.2 004-incident-decision-audit.md: DONE. Validation and commit verified.
+
+## 2026-11-25 — iteration 5.1: spec 005 rehab / contraband / post-release lifecycles
+
+- Verified end-to-end world state transitions already present: `World::rehab_step` persists enrollment, progress_days/progress_sum/attendance_days and completion/failure (`RehabProgramRecord`), and goal effects (purpose/stability/respect/hope need relief, `RehabPrisonerState`).
+- Verified contraband discovery (`ContrabandFound` events via `contraband_step`), resolution timestamps (`world.resolved_contraband_at` + engine mirror, surfaced as `ContrabandCaseSummary.resolved_at`), and consequences (`PrisonerContrabandState` inventories, flags, severity rollups).
+- Verified escapes/releases create post-release records (`sumo::record_post_release`, engine ledger + `PostRelease` events, `PostReleaseSummary` rows) and purge gang state (`World::purge_gang_members` on escape/release/death).
+- Verified both frontends: TUI contraband view (alc-ui), GUI Contraband cases section + post-release records (alc-gui) with validated controls (`resolve_contraband_case`, `enroll_rehab_by_key`, `drop_rehab_by_key`, `apply_rehab_progress`, `record_post_release`).
+- Validation: `cargo build --workspace --all-targets` clean; `cargo test -p sumo --test alcagent_005_smoke` 9/9 ok; `cargo test --workspace` all suites ok, 0 failed, 0 warnings.
+- Spec `dev/ralph/specs/005-rehab-contraband-postrelease.md`: Status set to `done`.
