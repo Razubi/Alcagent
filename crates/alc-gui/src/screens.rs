@@ -630,6 +630,49 @@ fn warden(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                     ui.label(format!("• {} — {action:?}", action.label()));
                 }
             });
+            panels::section(ui, "Decision history", |ui| {
+                if w.recent_decisions.is_empty() {
+                    ui.label("No warden decisions recorded yet.");
+                }
+                egui::ScrollArea::vertical()
+                    .max_height(160.0)
+                    .show(ui, |ui| {
+                        for decision in w.recent_decisions.iter().take(20) {
+                            ui.label(format!(
+                                "#{} · {} · {} · {} · {}",
+                                decision.id,
+                                decision.time,
+                                decision.source.label(),
+                                decision.action.label(),
+                                if decision.applied {
+                                    "applied"
+                                } else {
+                                    "deferred"
+                                }
+                            ));
+                            ui.label(format!("   {}", decision.rationale));
+                        }
+                    });
+            });
+            panels::section(ui, "Reports inbox", |ui| {
+                if w.inbox.is_empty() {
+                    ui.label("No credible guard reports delivered.");
+                }
+                egui::ScrollArea::vertical()
+                    .max_height(140.0)
+                    .show(ui, |ui| {
+                        for report in w.inbox.iter().take(50) {
+                            ui.label(format!(
+                                "{} · {:?} · sev {} · cred {:.2} · {}",
+                                report.at,
+                                report.post,
+                                report.severity,
+                                report.credibility,
+                                report.summary
+                            ));
+                        }
+                    });
+            });
             panels::section(ui, "Quick warden actions", |ui| {
                 if ui.button("Hire 1 guard").clicked() {
                     ctx.emit(Command::WardenAction(
@@ -830,6 +873,16 @@ fn financial(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                 );
                 theme::kv(ui, "Crowding threshold", b.crowding_threshold.to_string());
                 theme::kv(ui, "Runway", format!("{:.0} days", b.runway_days));
+                theme::kv(
+                    ui,
+                    "Warden affordance",
+                    format!(
+                        "tactical={} strategic={} incidents={}",
+                        snap.warden.control.can_decide_tactical,
+                        snap.warden.control.can_decide_strategic,
+                        snap.warden.control.security_incidents_this_week
+                    ),
+                );
                 theme::kv(
                     ui,
                     "Projected revenue / day",

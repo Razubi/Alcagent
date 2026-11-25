@@ -13,13 +13,11 @@ modify arbitrary simulation state") is enforced by this boundary.
 - **Features:** `default = []`; `gui` is a stub (`SumoApp` unit struct and `launch_gui()`
   returning `Ok(())`) and is not recommended — use the `alc-ui` ratatui observer instead.
 - **Source of truth for signatures:** `crates/sumo/src/*.rs`; this guide reflects the codebase
-  as of 2026-11-24.
+  as of 2026-11-25.
 
-> **In-flight work (2026-11-24):** a new gameplay wave is landing in the working tree. It adds
-> policy-control methods, structured decision/incident audit records, queued construction,
-> daily rehab/contraband steps, save format v3 and new event kinds. These are documented in
-> section 12. The working tree may not compile while the wave is mid-edit; the last verified
-> green baseline was 184 passed / 0 failed / 1 ignored on 2026-11-23.
+> The 0.05 gameplay systems (policy controls, decision/incident audit, queued construction,
+> daily rehab/contraband steps, parole and save format v5) have landed and are documented in
+> section 12. The workspace builds and tests green at commit `0739cab`.
 
 ---
 
@@ -300,13 +298,13 @@ sim.run_days(365);
 ```
 
 - Files: `world.bin` (versioned bincode, atomic tmp+rename) and `world.debug.json` (debug
-  sidecar). Format version is **2** in the stable baseline repo; the in-flight wave (§12) bumps
-  it to **3** (adds `decision_audit`). v1 saves are auto-migrated by `load_with_engine`.
-- `Sim::save` persists both `World` and `EngineState` (parole, population history, incident
-  logs, decision log, post-release tracking, policy state/mode, autosave interval).
+  sidecar). Current format is **v5**; v1/v3/v4 saves are migrated by `load_with_engine`.
+- `Sim::save` persists both `World` and `EngineState` (parole ledger and conditions, population
+  history, incident logs, decision audit, post-release tracking, policy state/mode, autosave
+  interval and directory).
 - `Sim::enable_autosave(dir, interval_days)`, `disable_autosave()`, `maybe_autosave()`;
-  `tick()` checks autosave each tick. Only the *interval* survives a save/load — the autosave
-  directory is restored as an empty path, so call `enable_autosave` again after loading.
+  `tick()` checks autosave each tick. Both interval and directory survive save/load, and
+  `last_autosave_error()` exposes the most recent failure.
 - Maps in the persisted EngineState use `BTreeMap` for reproducible save bytes.
 
 ---
@@ -338,21 +336,23 @@ tests in `crates/sumo/tests/` verify this.
 3. **Policy mirror** — `World::tick` can mutate `world.policies` directly; `Sim::tick` and
    `apply_warden_action` resync `engine_state.policy_state`. Use the public `set_policy` /
    `set_lockdown` methods for engine-initiated changes.
-4. **Decision audit semantics are changing (in-flight):** historically only applied decisions
-   were logged; the new `DecisionAuditRecord` path records rejected decisions too. Check which
-   API you are reading (`decision_log()` vs `decision_audit_log()`).
-5. **Autosave directory is lost on load** (interval survives); errors from `maybe_autosave()`
-   are swallowed inside `tick()`.
-6. **Incident causality is currently self-referential** — placeholder until real chains land.
+4. **Decision audit semantics:** `decision_log()` contains applied decisions;
+   `decision_audit_log()` also contains rejected/repaired proposals with validation status and
+   reason. Prefer the audit log when investigating why an action was not applied.
+5. **Autosave** keeps both its interval and directory across load. Failures are retained in
+   `last_autosave_error()` and emitted via `tracing::warn!`; they are never silently dropped.
+6. **Incident causality** uses structured cause/consequence links and is invariant-checked;
+   bounded-log trimming scrubs stale references.
 7. **Target ids in proposals** are opaque `PrisonerId`s; a missing target becomes id 0 and
    validation normally rejects it.
 8. **Map geometry**: synthetic grid + ring graph, still without real pathfinding; both
    frontends (TUI and egui GUI) already render this via `MapFrame`.
-9. **Summary stubs** — empty warden inbox, zeroed facility wing/staff fields.
-10. **The `gui` feature is a no-op stub**; use `alc-ui` for a real observer.
-11. **Contraband/capabilities** are being wired in the in-flight wave (daily
-    `contraband_step`); until it lands, `has_contraband` in validation is a proxy
-    (`!prisoner.skills.is_empty()`).
+9. **Warden inbox** now resolves from actually delivered guard reports; it is intentionally
+   not a complete world-event feed.
+10. **The `sumo` `gui` feature is a no-op stub**; use the `alc-gui` egui binary or `alc-ui` TUI
+    for a real observer. Both render the shared `MapFrame`.
+11. **Contraband/capabilities** are wired into daily `contraband_step`; validation reads the
+   authoritative contraband state rather than the old skill proxy.
 12. **Event bus eviction** at 50k can make `events_since` / `wait_for_event` miss old events.
 
 ---
@@ -439,6 +439,6 @@ status and security level. New `EventKind` variants: `RehabilitationProgress`,
 
 ### Persistence
 
-`SAVE_FORMAT_VERSION` is now **3** (adds `decision_audit` to `EngineState`). Older v2 saves
-must be regenerated or migrated before loading. `alc_persistence::DecisionAuditRecord` mirrors
-the sumo type; `Economy::spend(...)` was added to charge construction costs.
+`SAVE_FORMAT_VERSION` is **5**: v4 added structured parole decisions/conditions/release times;
+v5 persists the full parole ledger and post-release reconciliation. Older v1/v3/v4 saves are
+migrated by `alc_persistence`. `Economy::spend(...)` charges construction costs.

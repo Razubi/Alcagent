@@ -65,3 +65,22 @@
 - Spec `dev/ralph/specs/006-policy-construction-parole.md`: Status set to `done`.
 - Commit: 60eedd1 (`feat(controls): validate and audit policy, construction and parole (spec 006)`).
 - Main session completed spec 007 (emergent events): deterministic condition-driven generators in alc-events, bounded world effects in alc-world::emergent, day-boundary hook, SUMO incident mirroring, and sumo/emergent_events integration tests (determinism, daily cap, incident visibility). Targeted suites passed; spec marked done.
+
+## 2026-11-25 — iteration 9.x: spec 012 social roles + spec 009 guard autonomy
+
+- Spec 012: derived authoritative social-role labels (`Ally`, `Vulnerable`, `Leader`, `Isolated`, etc.) plus dyad labels (`Friend`, `Rival`, `Enemy`) are exposed in TUI/GUI through `sumo` DTOs; commits 9a7181d and d3c8851.
+- Spec 009: guards now observe only their assigned facility, form bounded opinions of prisoners, make fallible duty decisions, record mistakes/violations in bounded history, and produce credibility-filtered reports; the warden inbox resolves from delivered report event ids only.
+- Guard interactions alter prisoner needs/safety and local deterrence; `Sim::assign_guard_post` atomically reassigns a guard's post. New/intake pawns and fired guards keep the pawn-location invariant intact, and disciplinary sanctions expire after 30 simulated days so parole remains reachable.
+- Added `crates/sumo/tests/guard_autonomy_009.rs` (5/5: area-scoped perception, report filtering, deterrence changes, need effects, save/load markers).
+- Validation: `cargo fmt --all -- --check` clean; `cargo build --workspace --all-targets` clean; `cargo test --workspace` green; targeted guard/world/sumo and UI suites green.
+- Spec `dev/ralph/specs/009-guard-autonomy.md`: Status set to `done`.
+- Commit: 0739cab (`feat(spec009): make guard duty autonomous and area-scoped`).
+
+## 2026-11-25 — iteration 10.1: spec 010 warden institutional strategy
+
+- Added a pure, deterministic strategy primitive in `alc-warden`: report-only `WardenStrategySnapshot`, objective scoring with explicit conflict reporting, finance-state classification, attention affordability, catalog-aware expansion gates, and `StrategyDecision` rationale.
+- `sumo` now assembles strategy context exclusively from observer DTOs and delivered guard report ids; Council/Shadow modes deliberate from those summaries while `Deterministic` remains on the unchanged arbitration path. Added explicit `Sim::warden_strategy_cycle`.
+- Unified `WardenAction` application in the authoritative `World`: catalog-aware expansion capacity, real funding inflow with a 30-day ledger cooldown, bounded guard hiring with recruitment cost, richer `ChangePolicy` keys, and persisted rationale/source through `DecisionAuditRecord` plus `World.warden.audit_log`.
+- TUI shows the latest warden decision with source/rationale; GUI adds bounded decision-history and reports-inbox sections plus a finance-screen warden-affordance row. Save format remains v5.
+- Added `crates/sumo/tests/warden_strategy_010.rs` (10/10: report-only signals, crisis override, finance gating, funding/hiring consequences, construction gating, attention deferral, Council rationale, save/load, 30-day invariant run).
+- Validation: `cargo fmt --all -- --check` clean; `cargo build --workspace --all-targets` clean; `cargo test --workspace` green (including 730-day chaos soak). Spec marked done.

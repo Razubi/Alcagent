@@ -1,4 +1,9 @@
-# Beta 0.05 — Final Integration Report (2026-11-20)
+# Beta 0.05 — Integration Report (2026-11-20, historical snapshot)
+
+> **Superseded (2026-11-25):** this report records the state of the earlier integration pass.
+> `alc-gui` is now a buildable workspace member; `ChangePolicy { "lockdown" }`, R1/R2/R4,
+> construction lifecycle, persistence of the parole ledger and both frontend map views are
+> implemented. See `CHANGELOG.md` and `dev/ralph/history.txt` for current status.
 
 ## 1. Build / test status
 

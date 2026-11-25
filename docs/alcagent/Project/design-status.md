@@ -20,22 +20,22 @@ Maps each design document to implemented state. Maintained docs only; status ref
 - **All 15 `WardenAction` variants** applied; economy sustainability (base grant, de-escalation, lockdown expiry, staff right-sizing).
 - **`sumo` engine API**: time control, validated decisions, observation/stats, events, persistence + autosave, invariants, report, trace hash, guard/warden drivers, parole ledger/API, simple rehab relief, engine-side incident/decision/post-release/policy helpers (`record_incident`/`incident_log`, `record_decision`/`decision_log`, `set_post_release`/`post_release_status`, `set_policy`/`set_lockdown`).
 - **`alc-ui` + `alcagent`**: interactive ratatui observer (`observe`, default), headless `run`, `docs`.
-- **Persistence** (`alc-persistence`): bincode save format v2 with versioned header, atomic writes, JSON debug sidecar, migration hook, autosave day-dedup. `Sim` has EngineState converters for engine-side state.
+- **Persistence** (`alc-persistence`): bincode save format v5 with versioned header, atomic writes, JSON debug sidecar, v1/v3/v4 migration, autosave day-dedup and surfaced failures. `Sim` has EngineState converters for engine-side state.
 
 ## Present but not fully integrated
 
 - **Wave 4 additions (landed):** engine R1–R7 surface is present (`Sim::map_frame`, `propose_decision`, policy modes, structured incident logs, extended invariants/state digest, driver event wiring); persistence converter edits were applied and the workspace is green. See `../Communication/Note's/wave4-implementation-status.md`.
-- **Contraband/rehab** library modules exist (`alc-social::contraband`, `alc-social::rehab`) but full world-tick lifecycle wiring is incomplete.
-- **Post-release tracking** partial (sumo engine-side helpers; persistent community outcomes not fully wired).
-- **`alc-gui`** crate exists at `crates/alc-gui` and is a buildable workspace member rendering the spatial map; see spec `dev/ralph/specs/002-map-gui-acceptance.md` for the accepted R0 state.
+- **Contraband/rehab** are wired into daily world ticks and validated controls with persisted state and both-frontend views (spec 005).
+- **Post-release tracking** persists community outcomes and feeds reputation/policy (spec 005).
+- **`alc-gui`** is a buildable workspace member rendering the spatial map; see spec `dev/ralph/specs/002-map-gui-acceptance.md` for the accepted R0 state.
 
-## Known gaps / 0.05 blockers and remaining Wave 4/5 work items
+## Known gaps and remaining Wave 4/5 work items
 
-1. **Major UI/GUI overhaul + real game map (0.05 blocker):** the TUI and egui GUI now both render a spatial map from `sumo::MapFrame` (cell/wing occupancy, pawn positions, movement/path hints, incident overlays, facility condition/capacity/utilization, pan/zoom, hover/click detail); `alc-gui` is a buildable workspace member. Remaining depth (real nav pathfinding) is Wave 5 work, and other waves' engine/system gaps below remain open.
-2. Full `KnowledgeStore` (design §9) — warden uses inbox IDs.
-3. Wave 4 engine support R1–R6: map frame, decision proposal/dry-run, policy mode switch, structured incidents with causality, persistence migration, new invariants.
-4. Contraband and rehab full lifecycle wiring.
-5. Post-release outcome tracking (design §15).
+1. **Major UI/GUI overhaul + real game map:** complete — the TUI and egui GUI both render a spatial map from `sumo::MapFrame` (cell/wing occupancy, pawn positions, movement/path hints, incident overlays, facility condition/capacity/utilization, pan/zoom, hover/click detail). Only real nav pathfinding remains as Wave 5 depth.
+2. Full `KnowledgeStore` (design §9) — warden uses delivered-report IDs rather than omniscient state.
+3. Wave 4 engine support R1–R7: complete.
+4. Contraband and rehab full lifecycle wiring: complete (spec 005).
+5. Post-release outcome tracking (design §15): complete (spec 005).
 6. AI-generated narrative text (orchestrator has no provider client).
 7. `World::summary()` / CLI ergonomics; `alcagent --ui` not present (TUI is `observe`).
 8. Driver authority unification and `&mut Sim` applier signature remain Wave 5 items.

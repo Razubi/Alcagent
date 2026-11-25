@@ -10,7 +10,7 @@ mod emergent;
 
 use alc_agents::{ActionCandidate, Decision, Disposition, Legality, Orchestrator, trait_bias};
 use alc_core::{FacilityId, GuardId, PrisonerId, RngStream, SimTime, TimeSpeed, WardenId};
-use alc_economy::Economy;
+use alc_economy::{Account, Economy, Money};
 use alc_events::{EventBus, EventKind, RehabFailureReason, WorldEvent};
 use alc_guard::{
     Guard, GuardInteraction, GuardInteractionKind, GuardObservation, GuardRank, PostType,
@@ -23,7 +23,7 @@ use alc_social::{
     ContrabandItem, EscapeOutcome, Gang, PrisonerGangProfile, RelationshipDelta, SocialGraph,
     apply_escape_consequences, maybe_form_gang, resolve_escape_attempt,
 };
-use alc_warden::{Warden, WardenAction};
+use alc_warden::{DecisionSource, Warden, WardenAction};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -1408,6 +1408,13 @@ impl World {
             pop,
             &mut RngStream::new(self.seed, self.days_simulated),
         );
+        self.warden.record_decision(
+            self.time,
+            action.clone(),
+            action.default_reason(),
+            DecisionSource::AiArbitration,
+            true,
+        );
         self.apply_warden_action(action);
 
         // Orchestrator reset.
@@ -2761,7 +2768,10 @@ impl World {
         self.events.emit(ev);
     }
 
-    fn apply_warden_action(&mut self, action: WardenAction) {
+    /// Apply a warden action inside the authoritative world state. All engine
+    /// and UI paths delegate here so policy, staffing, construction and budget
+    /// consequences have a single implementation.
+    pub fn apply_warden_action(&mut self, action: WardenAction) {
         match action {
             WardenAction::Expand { building } => {
                 let kind = match building.as_str() {
@@ -2769,9 +2779,17 @@ impl World {
                     "education" => FacilityKind::Education,
                     "isolation" => FacilityKind::Isolation,
                     "visitor" => FacilityKind::Visitor,
+                    "workshop" => FacilityKind::Workshop,
+                    "recreation" => FacilityKind::Recreation,
+                    "dormitory" => FacilityKind::Dormitory,
                     _ => FacilityKind::CellBlock,
                 };
-                let pid = self.enqueue_construction(kind, 1, 40);
+                // Unknown keys fall back to the canonical cell block; known
+                // catalog entries carry their designed bed capacity.
+                let capacity = alc_warden::expansion::find_building_spec(&building)
+                    .map(|spec| spec.capacity)
+                    .unwrap_or(40);
+                let pid = self.enqueue_construction(kind, 1, capacity);
                 self.events.emit(
                     WorldEvent::new(
                         0,
@@ -2787,6 +2805,16 @@ impl World {
                 );
             }
             WardenAction::HireGuards { count } => {
+                // Engine-side bound: observer controls must not be able to add
+                // an unbounded payroll in one action.
+                let count = count.min(16);
+                let recruitment = Money::from_major(2_000_i64 * count as i64);
+                self.economy.spend(
+                    self.time.as_secs(),
+                    recruitment,
+                    Account::Salaries,
+                    format!("Warden hired {count} guards"),
+                );
                 // Seed the pawn location immediately: a day-boundary hire may
                 // happen after the last schedule assignment of the run, and a
                 // guard without a location violates the one-place invariant.
@@ -2875,6 +2903,13 @@ impl World {
                             self.policies.rehab_funding_multiplier,
                         );
                     }
+                    "lockdown" => {
+                        let enabled = value >= 0.5;
+                        let old = if self.policies.lockdown { 1.0 } else { 0.0 };
+                        self.policies.lockdown = enabled;
+                        self.lockdown_since_day = self.days_simulated;
+                        self.audit_policy_change("lockdown", old, if enabled { 1.0 } else { 0.0 });
+                    }
                     _ => {}
                 }
             }
@@ -2887,7 +2922,8 @@ impl World {
                 ));
             }
             WardenAction::FireGuards { count } => {
-                for _ in 0..count.min(self.guards.len() as u32) {
+                let count = count.min(16).min(self.guards.len() as u32);
+                for _ in 0..count {
                     if let Some(guard) = self.guards.pop() {
                         self.guard_location.remove(&guard.id);
                     }
@@ -2954,12 +2990,35 @@ impl World {
                 ));
             }
             WardenAction::RequestFunding { amount_major } => {
-                self.events.emit(WorldEvent::new(
-                    0,
-                    self.time,
-                    EventKind::BudgetChange,
-                    format!("Funding request submitted: ${amount_major}"),
-                ));
+                // Funding is a real budget inflow, not just an event. A 30-day
+                // ledger cooldown keeps repeated strategy cycles from turning
+                // the request action into an infinite money source.
+                let amount = amount_major.clamp(1_000, 500_000);
+                let cutoff = self.time.as_secs().saturating_sub(30 * 86_400);
+                let recent_request = self.economy.ledger.iter().any(|entry| {
+                    entry.at_secs >= cutoff && entry.note.starts_with("Warden funding request")
+                });
+                if recent_request {
+                    self.events.emit(WorldEvent::new(
+                        0,
+                        self.time,
+                        EventKind::BudgetChange,
+                        format!("Funding request deferred: previous request within 30 days"),
+                    ));
+                } else {
+                    self.economy.record(
+                        self.time.as_secs(),
+                        Account::GovGrant,
+                        Money::from_major(amount),
+                        format!("Warden funding request: ${amount}"),
+                    );
+                    self.events.emit(WorldEvent::new(
+                        0,
+                        self.time,
+                        EventKind::BudgetChange,
+                        format!("Funding request granted: ${amount}"),
+                    ));
+                }
                 self.warden.attention = (self.warden.attention - 0.05).max(0.0);
             }
             WardenAction::NoAction { .. } => {}

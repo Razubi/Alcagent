@@ -9,6 +9,9 @@ use alc_core::{RngStream, SimTime, WardenId};
 use alc_economy::Economy;
 use serde::{Deserialize, Serialize};
 
+use crate::expansion::find_building_spec;
+pub use crate::finance::FinanceHealthState;
+
 /// Warden personality traits (all 0..1).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WardenTraits {
@@ -60,8 +63,25 @@ pub enum Objective {
     FacilityExpansion,
 }
 
+impl Objective {
+    /// All objectives in canonical reporting order.
+    pub const ALL: [Objective; 11] = [
+        Objective::Security,
+        Objective::FinancialSustainability,
+        Objective::StaffMorale,
+        Objective::PrisonerWelfare,
+        Objective::PublicReputation,
+        Objective::InstitutionalStability,
+        Objective::Rehabilitation,
+        Objective::EscapePrevention,
+        Objective::ViolenceReduction,
+        Objective::PoliticalPressure,
+        Objective::FacilityExpansion,
+    ];
+}
+
 /// Action the warden can take.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum WardenAction {
     Expand {
         building: String,
@@ -185,6 +205,19 @@ pub enum DecisionSource {
     System,
 }
 
+impl DecisionSource {
+    /// Short observer-facing label.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            DecisionSource::AiArbitration => "AI",
+            DecisionSource::PlayerDirective => "Observer",
+            DecisionSource::Council => "Council",
+            DecisionSource::System => "System",
+        }
+    }
+}
+
 /// One audited warden decision. Recorded by [`Warden::record_decision`];
 /// arbitration itself is unchanged and never writes to the log.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,7 +243,7 @@ pub struct WardenDecisionRecord {
 }
 
 /// Append-only audit log of warden decisions, bounded to keep memory stable.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WardenAuditLog {
     pub records: Vec<WardenDecisionRecord>,
     next_id: u64,
@@ -222,8 +255,15 @@ fn default_max_audit_records() -> usize {
     10_000
 }
 
+impl Default for WardenAuditLog {
+    fn default() -> Self {
+        Self::with_capacity(default_max_audit_records())
+    }
+}
+
 impl WardenAuditLog {
     pub fn with_capacity(max_records: usize) -> Self {
+        let max_records = max_records.max(1);
         Self {
             records: Vec::with_capacity(max_records.min(100_000)),
             next_id: 1,
@@ -261,7 +301,8 @@ impl WardenAuditLog {
             applied,
             repair_reason: String::new(),
         };
-        if self.records.len() >= self.max_records {
+        let cap = self.max_records.max(1);
+        while self.records.len() >= cap {
             self.records.remove(0);
         }
         self.records.push(record);
@@ -310,6 +351,487 @@ pub struct WardenControlSummary {
     pub security_incidents_this_week: u32,
     pub last_action_day: u64,
     pub financial_health: f64,
+}
+
+/// One report the warden actually received. Strategy never sees the raw world
+/// behind this signal; credibility filtering happens before it is stored in
+/// the inbox.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WardenReportSignal {
+    pub id: u64,
+    pub at: SimTime,
+    pub summary: String,
+    pub severity: u8,
+    pub credibility: f32,
+    pub requests_assistance: bool,
+}
+
+/// Report-only decision context. Built by the engine from observer DTOs so the
+/// warden cannot read prisoner internals it was not told about.
+#[derive(Debug, Clone)]
+pub struct WardenStrategySnapshot {
+    pub population: u32,
+    pub capacity: u32,
+    pub cash_major: f64,
+    pub health: f64,
+    pub runway_days: f64,
+    pub security_incidents_this_week: u32,
+    pub attention: f32,
+    pub financial_health: FinanceHealthState,
+    pub reports: Vec<WardenReportSignal>,
+    pub active_construction: u32,
+    pub future_capacity: u32,
+    pub guard_count: u32,
+    pub warnings: Vec<String>,
+}
+
+impl WardenStrategySnapshot {
+    /// Recompute the derived finance classification after observer values are
+    /// updated. Strategy callers should use [`Self::new`]; this is for tests
+    /// and DTO builders that assemble fields incrementally.
+    pub fn refresh_finance(&mut self) {
+        self.financial_health =
+            Self::classify_finance(self.health, self.cash_major, self.runway_days);
+    }
+
+    /// Attention expressed in the same point units as [`AttentionBudget`].
+    #[must_use]
+    pub fn attention_points(&self) -> f32 {
+        let base = AttentionBudget::default();
+        (self.attention * base.base_refill).clamp(0.0, base.max_points)
+    }
+
+    /// Whether a decision of this attention cost fits the remaining budget.
+    #[must_use]
+    pub fn can_afford_attention(&self, points: f32) -> bool {
+        self.attention_points() + f32::EPSILON >= points.max(0.0)
+    }
+
+    /// Credible, high-severity pressure the warden can lawfully react to.
+    #[must_use]
+    pub fn report_pressure(&self) -> u32 {
+        self.reports
+            .iter()
+            .filter(|r| r.severity >= 2 && (r.requests_assistance || r.credibility >= 0.25))
+            .map(|r| u32::from(r.severity))
+            .sum()
+    }
+
+    /// Highest-severity report id, used for targeted disturbance responses.
+    #[must_use]
+    pub fn priority_report(&self) -> Option<u64> {
+        self.reports
+            .iter()
+            .filter(|r| r.requests_assistance || r.severity >= 3)
+            .max_by_key(|r| (r.severity, r.credibility >= 0.25))
+            .map(|r| r.id)
+    }
+
+    fn classify_finance(health: f64, cash_major: f64, runway_days: f64) -> FinanceHealthState {
+        let reserve_ratio = if runway_days.is_finite() && runway_days > 0.0 {
+            (runway_days / 365.0).clamp(0.0, 1.0)
+        } else {
+            (cash_major.max(0.0) / 500_000.0).clamp(0.0, 1.0)
+        };
+        FinanceHealthState::classify(health, reserve_ratio)
+    }
+
+    /// Build a snapshot from plain observer values. Kept here so every caller
+    /// classifies finance identically.
+    #[must_use]
+    pub fn new(
+        population: u32,
+        capacity: u32,
+        cash_major: f64,
+        health: f64,
+        runway_days: f64,
+        security_incidents_this_week: u32,
+        attention: f32,
+        reports: Vec<WardenReportSignal>,
+        active_construction: u32,
+        future_capacity: u32,
+        guard_count: u32,
+        warnings: Vec<String>,
+    ) -> Self {
+        let financial_health = Self::classify_finance(health, cash_major, runway_days);
+        Self {
+            population,
+            capacity,
+            cash_major,
+            health,
+            runway_days,
+            security_incidents_this_week,
+            attention,
+            financial_health,
+            reports,
+            active_construction,
+            future_capacity,
+            guard_count,
+            warnings,
+        }
+    }
+}
+
+/// Structured warden decision with the reasoning that produced it. Only the
+/// `action` is applied; scores and conflicts are observer-facing evidence.
+#[derive(Debug, Clone)]
+pub struct StrategyDecision {
+    pub action: WardenAction,
+    pub rationale: String,
+    pub objective_scores: Vec<(Objective, f32)>,
+    pub conflicts: Vec<String>,
+    pub finance_state: FinanceHealthState,
+}
+
+/// Decide from a report-only snapshot. No `World` is available here; every
+/// input was assembled by the caller from bounded observer summaries.
+#[must_use]
+pub fn decide_strategy(
+    snapshot: &WardenStrategySnapshot,
+    traits: &WardenTraits,
+    rng: &mut RngStream,
+) -> StrategyDecision {
+    let mut conflicts = Vec::new();
+    let pressure =
+        snapshot.report_pressure() + snapshot.security_incidents_this_week.saturating_mul(2);
+    let crowding = if snapshot.capacity == 0 {
+        0.0
+    } else {
+        snapshot.population as f64 / snapshot.capacity as f64
+    };
+
+    macro_rules! decisive {
+        ($action:expr, $rationale:expr $(,)?) => {
+            StrategyDecision {
+                action: $action,
+                rationale: $rationale,
+                objective_scores: Vec::new(),
+                conflicts: conflicts.clone(),
+                finance_state: snapshot.financial_health,
+            }
+        };
+    }
+
+    // 1. Solvency outranks every other objective.
+    if snapshot.cash_major < 0.0 {
+        conflicts.push("Solvency overrides security and welfare".into());
+        return decisive!(
+            WardenAction::ReduceExpenses,
+            "Solvency emergency: cash balance is negative".into(),
+        );
+    }
+    if snapshot.financial_health.rank() <= FinanceHealthState::Receivership.rank()
+        || snapshot.runway_days < 10.0
+    {
+        conflicts.push("Funding need overrides expansion and staffing".into());
+        let amount_major = 250_000_i64.max((snapshot.runway_days.max(0.0) * 10_000.0) as i64);
+        if snapshot
+            .can_afford_attention(WardenAction::RequestFunding { amount_major }.attention_cost())
+        {
+            return decisive!(
+                WardenAction::RequestFunding { amount_major },
+                format!(
+                    "Financial state {} with {:.1} days of runway; requesting funding",
+                    snapshot.financial_health.label(),
+                    snapshot.runway_days
+                ),
+            );
+        }
+        conflicts.push("Funding request deferred by exhausted attention".into());
+        return decisive!(
+            WardenAction::ReduceExpenses,
+            "Funding unavailable this cycle; cutting discretionary spending".into(),
+        );
+    }
+    if snapshot.financial_health == FinanceHealthState::Critical {
+        conflicts.push("Expense cuts reduce welfare and rehabilitation".into());
+        return decisive!(
+            WardenAction::ReduceExpenses,
+            "Financial state Critical: deferring discretionary spending".into(),
+        );
+    }
+
+    // 2. Credible, high-severity reports can trigger a targeted response.
+    // A single severity-3 call for help is already a crisis; two lower-grade
+    // signals are needed before the warden diverts from other objectives.
+    let crisis_report = snapshot
+        .reports
+        .iter()
+        .any(|r| r.severity >= 3 && r.requests_assistance && r.credibility >= 0.25);
+    if pressure >= 6 || crisis_report {
+        if let Some(event_id) = snapshot.priority_report() {
+            conflicts.push("Security response may reduce prisoner welfare".into());
+            return decisive!(
+                WardenAction::RespondToDisturbance { event_id },
+                format!(
+                    "Report pressure {pressure}; responding to credible disturbance {event_id}"
+                ),
+            );
+        }
+    }
+
+    // 3. Expansion is allowed only with funding headroom, attention, and no
+    // duplicate site. The catalog is the authority for cost and staffing.
+    let can_spend = snapshot.financial_health.rank() >= FinanceHealthState::Watch.rank();
+    if crowding > 0.9 && can_spend && snapshot.active_construction == 0 {
+        if let Some(spec) = find_building_spec("cell_block") {
+            let staff_need: u32 = spec.staff_required.iter().map(|r| r.count).sum();
+            let action = WardenAction::Expand {
+                building: spec.key.to_string(),
+            };
+            if snapshot.can_afford_attention(action.attention_cost())
+                && (snapshot.cash_major * 100.0) as i64 >= spec.cost_minor
+            {
+                conflicts.push("Expansion improves welfare but strains finances".into());
+                if snapshot.guard_count < staff_need {
+                    conflicts.push("Expansion requires additional staffing".into());
+                }
+                return decisive!(
+                    action,
+                    format!(
+                        "Crowding {crowding:.2}; queuing {} (capacity +{}, cost ${})",
+                        spec.name,
+                        spec.capacity,
+                        spec.cost_minor / 100
+                    ),
+                );
+            }
+            conflicts.push("Expansion deferred by budget or attention constraint".into());
+        }
+    }
+
+    // 4. Staffing pressure, again gated by finance and attention.
+    let hire = WardenAction::HireGuards { count: 2 };
+    if can_spend
+        && snapshot.capacity > snapshot.guard_count.saturating_mul(25)
+        && snapshot.can_afford_attention(hire.attention_cost())
+    {
+        conflicts.push("Hiring improves morale and security but raises payroll".into());
+        return decisive!(
+            hire,
+            format!(
+                "{} guards for {} beds; adding two officers",
+                snapshot.guard_count, snapshot.capacity
+            ),
+        );
+    }
+
+    // 5. Non-emergency decisions: score all objectives, then let personality
+    // break ties deterministically. Conflicts name the losing pressure.
+    if !traits.is_finite() || !snapshot.attention.is_finite() {
+        conflicts.push("Invalid strategy input; no objective scored".into());
+        return decisive!(
+            WardenAction::NoAction {
+                rationale: "invalid strategy input".into(),
+            },
+            "Invalid strategy input; holding steady".into(),
+        );
+    }
+    if !snapshot.can_afford_attention(AttentionBudget::tactical_cost()) && pressure == 0 {
+        conflicts.push("Attention retained instead of taking a low-value action".into());
+        return decisive!(
+            WardenAction::NoAction {
+                rationale: "attention budget exhausted".into(),
+            },
+            "Attention budget exhausted; holding steady".into(),
+        );
+    }
+
+    let cash = snapshot.cash_major as f32;
+    let mut objective_scores: Vec<(Objective, f32)> = Objective::ALL
+        .iter()
+        .copied()
+        .map(|obj| {
+            let mut score = objective_weight(traits, obj, snapshot.population, cash);
+            if matches!(obj, Objective::Security) {
+                score += 0.06 * pressure.min(20) as f32;
+            }
+            if matches!(obj, Objective::FinancialSustainability) && snapshot.health < 0.5 {
+                score += 0.3;
+            }
+            if matches!(obj, Objective::FacilityExpansion) && crowding > 0.75 {
+                score += 0.2;
+            }
+            if matches!(obj, Objective::Rehabilitation | Objective::PrisonerWelfare)
+                && snapshot.financial_health == FinanceHealthState::Tight
+            {
+                score -= 0.15;
+            }
+            (obj, score)
+        })
+        .collect();
+    objective_scores.sort_by(|a, b| b.1.total_cmp(&a.1));
+
+    // Feasibility is part of strategy: an objective that cannot be actioned
+    // under current finance/attention must not silently win the vote.
+    let mut candidates: Vec<(Objective, f32, WardenAction, String)> = objective_scores
+        .iter()
+        .filter_map(|(obj, score)| {
+            feasible_action(*obj, snapshot, can_spend, crowding)
+                .map(|(action, rationale)| (*obj, *score, action, rationale))
+        })
+        .collect();
+    candidates.sort_by(|a, b| b.1.total_cmp(&a.1));
+    if candidates.is_empty() {
+        conflicts.push("No feasible objective remained after constraints".into());
+        return decisive!(
+            WardenAction::NoAction {
+                rationale: "all objectives constrained".into(),
+            },
+            "No feasible strategic action; holding steady".into(),
+        );
+    }
+
+    let best_score = candidates[0].1;
+    let ties: Vec<usize> = candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| (best_score - c.1).abs() <= 1e-4)
+        .map(|(i, _)| i)
+        .collect();
+    let best_idx = if ties.len() > 1 {
+        ties[(rng.next_u64() as usize) % ties.len()]
+    } else {
+        ties[0]
+    };
+    let best = candidates[best_idx].0;
+    if let Some(runner_up) = candidates.iter().find(|c| c.0 != best) {
+        if (best_score - runner_up.1).abs() < 0.12 {
+            conflicts.push(format!(
+                "{best:?} and {:?} have nearly equal priority",
+                runner_up.0
+            ));
+        }
+    }
+    if conflicts.is_empty() {
+        conflicts.push(format!("{best:?} outranks the other objectives"));
+    }
+
+    let (action, rationale) = (
+        candidates[best_idx].2.clone(),
+        candidates[best_idx].3.clone(),
+    );
+
+    StrategyDecision {
+        action,
+        rationale,
+        objective_scores,
+        conflicts,
+        finance_state: snapshot.financial_health,
+    }
+}
+
+/// Map an objective to a legal action under the current report-derived
+/// constraints. Returns `None` when the objective is real but unactionable.
+fn feasible_action(
+    obj: Objective,
+    snapshot: &WardenStrategySnapshot,
+    can_spend: bool,
+    crowding: f64,
+) -> Option<(WardenAction, String)> {
+    match obj {
+        Objective::Security | Objective::EscapePrevention | Objective::ViolenceReduction => Some((
+            WardenAction::IncreaseSecurity,
+            format!(
+                "Security objective weighted highest under pressure {}",
+                snapshot.report_pressure()
+            ),
+        )),
+        Objective::FinancialSustainability => Some((
+            WardenAction::ReduceExpenses,
+            format!(
+                "Financial state {} constrains discretionary action",
+                snapshot.financial_health.label()
+            ),
+        )),
+        Objective::FacilityExpansion => {
+            let spec = find_building_spec("cell_block")?;
+            let action = WardenAction::Expand {
+                building: spec.key.to_string(),
+            };
+            if !can_spend
+                || snapshot.active_construction > 0
+                || !snapshot.can_afford_attention(action.attention_cost())
+                || ((snapshot.cash_major * 100.0) as i64) < spec.cost_minor
+            {
+                return None;
+            }
+            Some((
+                action,
+                format!("Expansion objective selected at crowding {crowding:.2}"),
+            ))
+        }
+        Objective::Rehabilitation => Some((
+            WardenAction::ChangePolicy {
+                policy: "rehab_funding".into(),
+                value: 1.1,
+            },
+            "Rehabilitation objective selected by reform-oriented strategy".into(),
+        )),
+        Objective::PublicReputation | Objective::PoliticalPressure => Some((
+            WardenAction::NegotiateWithRepresentatives,
+            "Reputation objective selected; engaging representatives".into(),
+        )),
+        Objective::StaffMorale => {
+            let action = WardenAction::HireGuards { count: 1 };
+            if !can_spend || !snapshot.can_afford_attention(action.attention_cost()) {
+                return None;
+            }
+            Some((
+                action,
+                "Staff morale objective selected; adding one officer".into(),
+            ))
+        }
+        Objective::PrisonerWelfare | Objective::InstitutionalStability => Some((
+            WardenAction::NegotiateWithRepresentatives,
+            "Stability objective selected; opening dialogue with representatives".into(),
+        )),
+    }
+}
+
+fn objective_weight(
+    traits: &WardenTraits,
+    obj: Objective,
+    population: u32,
+    cash_major: f32,
+) -> f32 {
+    match obj {
+        Objective::Security => traits.strictness * 0.7 + traits.authoritarian_tendencies * 0.3,
+        Objective::FinancialSustainability => traits.financial_discipline,
+        Objective::StaffMorale => traits.staff_loyalty,
+        Objective::PrisonerWelfare => traits.compassion,
+        Objective::PublicReputation => traits.reputation_concerns,
+        Objective::InstitutionalStability => (traits.competence + traits.strictness) * 0.5,
+        Objective::Rehabilitation => traits.reform_orientation,
+        Objective::EscapePrevention => traits.risk_tolerance * 0.6 + traits.strictness * 0.4,
+        Objective::ViolenceReduction => traits.compassion * 0.6 + traits.competence * 0.4,
+        Objective::PoliticalPressure => traits.political_ambition,
+        Objective::FacilityExpansion => {
+            let cash_factor = (cash_major / 500_000.0).clamp(0.0, 1.0);
+            let pop_factor = (population as f32 / 200.0).clamp(0.0, 1.0);
+            (cash_factor * 0.6 + pop_factor * 0.4) * (0.5 + traits.risk_tolerance * 0.5)
+        }
+    }
+}
+
+impl WardenTraits {
+    fn is_finite(&self) -> bool {
+        [
+            self.strictness,
+            self.compassion,
+            self.political_ambition,
+            self.financial_discipline,
+            self.risk_tolerance,
+            self.reform_orientation,
+            self.authoritarian_tendencies,
+            self.staff_loyalty,
+            self.corruption_susceptibility,
+            self.reputation_concerns,
+            self.competence,
+        ]
+        .iter()
+        .all(|v| v.is_finite())
+    }
 }
 
 /// The warden agent.
@@ -792,5 +1314,135 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn balanced_traits() -> WardenTraits {
+        WardenTraits {
+            strictness: 0.5,
+            compassion: 0.5,
+            political_ambition: 0.5,
+            financial_discipline: 0.5,
+            risk_tolerance: 0.5,
+            reform_orientation: 0.5,
+            authoritarian_tendencies: 0.5,
+            staff_loyalty: 0.5,
+            corruption_susceptibility: 0.2,
+            reputation_concerns: 0.5,
+            competence: 0.5,
+        }
+    }
+
+    fn healthy_snapshot() -> WardenStrategySnapshot {
+        WardenStrategySnapshot::new(
+            50,
+            100,
+            1_000_000.0,
+            0.8,
+            180.0,
+            0,
+            1.0,
+            Vec::new(),
+            0,
+            0,
+            8,
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn audit_log_default_can_record_without_panic() {
+        let mut log = WardenAuditLog::default();
+        let id = log.record(
+            SimTime::EPOCH,
+            WardenId(0),
+            "Test Warden",
+            WardenAction::ReduceExpenses,
+            "test rationale",
+            DecisionSource::AiArbitration,
+            true,
+        );
+        assert_eq!(id, 1);
+        assert_eq!(log.len(), 1);
+        assert_eq!(log.recent(1)[0].rationale, "test rationale");
+    }
+
+    #[test]
+    fn strategy_decision_is_deterministic_and_names_conflicts() {
+        let snapshot = healthy_snapshot();
+        let traits = balanced_traits();
+        let first = decide_strategy(&snapshot, &traits, &mut RngStream::new(11, 0));
+        let second = decide_strategy(&snapshot, &traits, &mut RngStream::new(11, 0));
+        assert_eq!(first.action.label(), second.action.label());
+        assert_eq!(first.rationale, second.rationale);
+        assert_eq!(first.conflicts, second.conflicts);
+        assert!(!first.conflicts.is_empty());
+        assert_eq!(first.finance_state, FinanceHealthState::Healthy);
+    }
+
+    #[test]
+    fn critical_finance_requests_funding_before_expansion() {
+        let mut snapshot = healthy_snapshot();
+        snapshot.cash_major = 1_000.0;
+        snapshot.health = 0.1;
+        snapshot.runway_days = 5.0;
+        snapshot.population = 95;
+        let decision = decide_strategy(&snapshot, &balanced_traits(), &mut RngStream::new(2, 0));
+        assert!(
+            matches!(decision.action, WardenAction::RequestFunding { amount_major } if amount_major > 0),
+            "{:?}",
+            decision.action
+        );
+        assert!(decision.conflicts.iter().any(|c| c.contains("Funding")));
+    }
+
+    #[test]
+    fn credible_reports_trigger_targeted_response() {
+        let mut snapshot = healthy_snapshot();
+        snapshot.reports = vec![
+            WardenReportSignal {
+                id: 7,
+                at: SimTime::EPOCH,
+                summary: "yard disturbance".into(),
+                severity: 3,
+                credibility: 0.7,
+                requests_assistance: false,
+            },
+            WardenReportSignal {
+                id: 42,
+                at: SimTime::EPOCH,
+                summary: "assistance requested".into(),
+                severity: 3,
+                credibility: 0.95,
+                requests_assistance: true,
+            },
+        ];
+        let decision = decide_strategy(&snapshot, &balanced_traits(), &mut RngStream::new(3, 0));
+        assert_eq!(
+            decision.action,
+            WardenAction::RespondToDisturbance { event_id: 42 }
+        );
+        assert!(decision.rationale.contains("Report pressure"));
+    }
+
+    #[test]
+    fn crowding_expansion_requires_finance_headroom() {
+        let mut snapshot = healthy_snapshot();
+        snapshot.population = 95;
+        let rich = decide_strategy(&snapshot, &balanced_traits(), &mut RngStream::new(4, 0));
+        assert!(
+            matches!(rich.action, WardenAction::Expand { ref building } if building == "cell_block"),
+            "{:?}",
+            rich.action
+        );
+
+        snapshot.health = 0.3;
+        snapshot.runway_days = 50.0;
+        snapshot.refresh_finance();
+        let strained = decide_strategy(&snapshot, &balanced_traits(), &mut RngStream::new(4, 0));
+        assert!(
+            !matches!(strained.action, WardenAction::Expand { .. }),
+            "Tight finance must block expansion: {:?}",
+            strained.action
+        );
     }
 }

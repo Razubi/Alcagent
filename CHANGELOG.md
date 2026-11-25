@@ -1,15 +1,13 @@
 # Changelog — Project Alcagent
 
-## [0.05] — "The Living Institution" (in development; status 2026-11-24)
+## [0.05] — "The Living Institution" (in development; status 2026-11-25)
 
 ### Build / tests
-- Last verified green baseline (2026-11-23): `cargo build --workspace` / `cargo test --workspace`
-  184 passed, 0 failed, 1 ignored (the 10k-entry `logs_over_limit_are_detected` stress test),
-  including the 730-day 3-seed chaos soak, save/load determinism and all Wave 4 suites.
-- Pre-Wave-4 baseline was 136/136 passing.
-- **2026-11-24:** an in-flight gameplay wave is mid-edit in the working tree (policy controls,
-  construction queue, rehab/contraband steps, save format v3). It may not compile until the
-  edits land; see `docs/SUMO_API.md` §12 and `docs/ALCAGENT.md` for the new APIs/controls.
+- Verified green baseline after spec 009 (2026-11-25): `cargo fmt --all -- --check`,
+  `cargo build --workspace --all-targets` and `cargo test --workspace` all pass, including the
+  365-day chaos soak, review-agent suites, save/load determinism and both frontend suites.
+- The Ralph plan tracks 14 specs in `dev/ralph/specs`; 001–007, 009 and 012 are `done`.
+  Specs 008, 010, 011, 013 and 014 remain in progress/pending for the 0.05 release.
 
 ### Repository split
 - The `sumo` engine and its 11 `alc-*` dependencies were extracted into a standalone repository
@@ -43,18 +41,27 @@
   `map_frame`, `integration_wave4`. Fixed world-level bugs they exposed (stale social
   dyads after release; world-tick policy drift).
 
-### Present but not fully wired (deferred)
-- `alc-gui` is not a workspace member and is not buildable as-is (missing rendering modules / theme integration).
-- Contraband and rehab library modules exist, but full world-tick/program lifecycle wiring is incomplete.
-- Post-release outcome tracking partial; persistent community outcomes not fully wired.
-- Some world-level APIs remain unimplemented (`World::summary`, world program/contraband/post-release lifecycle wiring).
+### Implemented (Ralph 0.05 wave: specs 001–007, 009, 012)
+- Persistence durability: atomic versioned saves (format v5), v1/v3/v4 migration, full-state digest
+  coverage, autosave interval persistence and surfaced autosave errors (spec 003).
+- Incident and decision audit: bounded causal chains, authoritative event ids, stable content keys,
+  and drill-down in both frontends (spec 004).
+- Rehab, contraband and post-release lifecycles are wired into world ticks and validated controls;
+  resolved cases and community outcomes are persisted and surfaced in both UIs (spec 005).
+- Policy, construction and parole controls are clamped/audited, with an explicit construction
+  `Approved` phase and deterministic persisted parole conditions (spec 006).
+- Condition-driven emergent events feed world effects and incident views (spec 007).
+- Guard autonomy: area-scoped perception, fallible reports with credibility filtering, bounded
+  opinions/mistakes/violations, assistant requests, and measurable effects on prisoner needs and
+  local incident pressure (spec 009).
+- Social-network analysis: authoritative social roles and derived dyad labels exposed in TUI/GUI
+  (spec 012).
 
-### Open work (Wave 5 / 0.1 beta)
-- Real navigation graph (currently a grid synthesized from facility positions); UI map switch to consume `MapFrame`.
-- Council/shadow modes are behaviorally inert (state only); driver authority unification (`World::tick` vs `sumo` drivers); `&mut Sim` applier signature.
-- Full `KnowledgeStore` (claims/provenance/standing).
-- `docs/Communication/Sumo-AI-Team/NEXT-UPDATE-SUPPORT.md` and
-  `docs/Communication/Note's/wave4-implementation-status.md` track the details.
+### Remaining 0.05 work
+- Spec 008: gang lifecycle and internal politics; 010: report-driven warden strategy;
+  011: AI orchestration/batching; 013: long-run soak/performance acceptance; 014: release docs.
+- Deferred beyond 0.05: real navigation graph beyond the synthesized grid; full `KnowledgeStore`
+  claims/provenance/standing; council/shadow mode behavior beyond state.
 
 ### Housekeeping (2026-11-23)
 - Removed obsolete root-level duplicate summaries (`IMPLEMENTATION_SUMMARY*.md`, `S0_STATUS.md`),

@@ -30,9 +30,9 @@ use crate::council::{self, DriveWeights};
 use crate::{PolicyMode, Sim};
 use alc_core::{GuardId, RngStream, SimTime};
 use alc_events::{EventKind, WorldEvent};
-use alc_guard::{DutyContext, Guard, GuardRank, GuardReport, PostType};
-use alc_warden::WardenAction;
-use alc_world::{FacilityKind, World};
+use alc_guard::{DutyContext, GuardReport};
+use alc_warden::{DecisionSource, WardenAction};
+use alc_world::World;
 
 /// Duty context for an explicit engine-driven guard cycle.
 fn guard_context(sim: &Sim, at: SimTime) -> DutyContext {
@@ -137,31 +137,43 @@ fn run_deterministic_path(sim: &mut Sim) -> WardenAction {
     action
 }
 
-/// Council mode: deliberate from world state, apply the winner, emit rationale.
+/// Council mode: deliberate from report/budget summaries, apply the winner,
+/// and emit observer-facing rationale. The institutional drive weights remain
+/// visible so the council's competing pressures stay explainable.
 fn run_council_path(sim: &mut Sim) -> WardenAction {
     let weights = DriveWeights::from_warden(&sim.world.warden);
-    let candidates = council::candidate_actions(&sim.world);
-    let vote = council::deliberate(&sim.world, &weights, &candidates);
-    let action = vote.action.clone();
-
-    // Apply through the engine API so the policy mirror is reconciled
-    // (`Sim::apply_warden_action` is the validated application surface).
-    sim.apply_warden_action(action.clone());
+    let decision = sim.decide_warden_strategy();
+    let rationale = decision.rationale.clone();
+    let conflicts = decision.conflicts.clone();
+    let action = sim.apply_strategy_decision(decision, DecisionSource::Council);
 
     let summary = format!(
-        "Council decision: {} — {} (weights: {})",
+        "Council decision (council strategy): {} — {} | constraints: {} (weights: {})",
         council::action_label(&action),
-        vote.rationale,
+        rationale,
+        if conflicts.is_empty() {
+            "none".to_string()
+        } else {
+            conflicts.join("; ")
+        },
         summarise_weights(&weights),
     );
     let at = sim.world.time;
     let mut events = vec![
         WorldEvent::new(0, at, EventKind::PolicyChange, summary)
-            .with_cause("council-mode deliberation; deterministic drive dot product"),
+            .with_cause("warden strategy over inbox and budget summaries; council drive weights"),
     ];
     sim.emit_events(&mut events);
 
     action
+}
+
+/// Explicit strategy cycle: decide from the report-only context and apply the
+/// result with a full audit trail. This is the non-modal counterpart to the
+/// Council policy mode and is useful for scripted observers/tests.
+pub fn warden_strategy_cycle(sim: &mut Sim) -> Vec<WardenAction> {
+    let decision = sim.decide_warden_strategy();
+    vec![sim.apply_strategy_decision(decision, DecisionSource::AiArbitration)]
 }
 
 /// Shadow mode: run both paths, apply only the baseline, record the comparison.
@@ -170,28 +182,27 @@ fn run_shadow_path(sim: &mut Sim) -> WardenAction {
     // is fair and the council cannot perturb the baseline trajectory.
     let baseline = deterministic_arbitration(sim);
     let weights = DriveWeights::from_warden(&sim.world.warden);
-    let candidates = council::candidate_actions(&sim.world);
-    let vote = council::deliberate(&sim.world, &weights, &candidates);
+    let decision = sim.decide_warden_strategy();
+    let alternative = decision.action.clone();
+    let rationale = decision.rationale.clone();
 
     // Baseline is authoritative in shadow mode; it is applied exactly as the
     // deterministic path would apply it.
     sim.apply_warden_action(baseline.clone());
 
-    let verdict = if council::actions_equivalent(&baseline, &vote.action) {
+    let verdict = if council::actions_equivalent(&baseline, &alternative) {
         "agreement"
     } else {
         "divergence"
     };
     let summary = format!(
         "SHADOW {verdict}: baseline={baseline:?} council={council_action:?} rationale={rationale}",
-        council_action = vote.action,
-        rationale = vote.rationale,
+        council_action = alternative,
     );
     let at = sim.world.time;
     let mut events = vec![
         WorldEvent::new(0, at, EventKind::PolicyChange, summary).with_cause(format!(
-            "shadow A/B: council total {:.2}; weights {}",
-            vote.total,
+            "shadow A/B: report-driven strategy; weights {}",
             summarise_weights(&weights)
         )),
     ];
@@ -221,218 +232,13 @@ pub fn warden_pending(sim: &Sim) -> Vec<WardenAction> {
 /// Returns events for the world bus.
 pub fn apply_warden_action(
     world: &mut World,
-    at: SimTime,
+    _at: SimTime,
     action: WardenAction,
 ) -> Vec<WorldEvent> {
-    let mut events = Vec::new();
-    match action {
-        WardenAction::Expand { building } => {
-            let kind = match building.as_str() {
-                "medical" => FacilityKind::Medical,
-                "education" => FacilityKind::Education,
-                "isolation" => FacilityKind::Isolation,
-                "visitor" => FacilityKind::Visitor,
-                "workshop" => FacilityKind::Workshop,
-                "recreation" => FacilityKind::Recreation,
-                _ => FacilityKind::CellBlock,
-            };
-            // Queue construction (0.05) rather than instant build; enqueue_construction
-            // emits its own event to world.events.
-            let _pid = world.enqueue_construction(kind, 1, 40);
-        }
-        WardenAction::HireGuards { count } => {
-            // Every pawn must be in exactly one place (invariant
-            // `pawn_in_exactly_one_place`). New guards are not placed by the
-            // world's schedule-based location seeding until the next tick, so
-            // seed a location here immediately. Facility 0 (or the first
-            // facility when ids are sparse) is the safe default for a Corridor
-            // post; the next world tick re-derives locations from posts.
-            let home_facility = world
-                .facilities
-                .first()
-                .map(|f| f.id)
-                .unwrap_or(alc_core::FacilityId(0));
-            for _ in 0..count {
-                let id = world.next_guard_id;
-                world.next_guard_id += 1;
-                let guard_id = GuardId(id);
-                world.guards.push(Guard::new(
-                    guard_id,
-                    format!("Guard {id}"),
-                    GuardRank::Officer,
-                    PostType::Corridor,
-                    &mut RngStream::new(world.seed, id),
-                ));
-                world.guard_location.insert(guard_id, home_facility);
-            }
-            events.push(WorldEvent::new(
-                0,
-                at,
-                EventKind::PolicyChange,
-                format!("Hired {count} guards"),
-            ));
-        }
-        WardenAction::FireGuards { count } => {
-            for _ in 0..count.min(world.guards.len() as u32) {
-                if let Some(guard) = world.guards.pop() {
-                    // Remove the departing guard's location too: a stale entry
-                    // would violate the "exactly one place" invariant for a
-                    // pawn that no longer exists.
-                    world.guard_location.remove(&guard.id);
-                }
-            }
-            events.push(WorldEvent::new(
-                0,
-                at,
-                EventKind::PolicyChange,
-                format!("Fired guards (up to {count})"),
-            ));
-        }
-        WardenAction::PromoteStaff { guard } => {
-            let mut summary = format!("Promotion ordered for guard {guard}");
-            if let Some(g) = world.guards.iter_mut().find(|g| g.id.raw() == guard) {
-                g.rank = match g.rank {
-                    GuardRank::Officer => GuardRank::Sergeant,
-                    GuardRank::Sergeant => GuardRank::Lieutenant,
-                    GuardRank::Lieutenant => GuardRank::Captain,
-                    GuardRank::Captain => GuardRank::Captain,
-                };
-                summary = format!("Guard {} promoted to {:?}", g.id.raw(), g.rank);
-            } else {
-                summary = format!("Promotion ordered for unknown guard {guard} (no change)");
-            }
-            events.push(WorldEvent::new(0, at, EventKind::PolicyChange, summary));
-        }
-        WardenAction::ChangePolicy { policy, value } => {
-            let value = value as f32;
-            match policy.as_str() {
-                "privileges" => {
-                    let old = world.policies.privileges_level;
-                    world.policies.privileges_level = value.clamp(0.0, 1.0);
-                    world.audit_policy_change(
-                        "privileges_level",
-                        old,
-                        world.policies.privileges_level,
-                    );
-                }
-                "security" => {
-                    let old = world.policies.security_level;
-                    world.policies.security_level = value.clamp(0.0, 1.0);
-                    world.audit_policy_change("security_level", old, world.policies.security_level);
-                }
-                "rehab_funding" => {
-                    let old = world.policies.rehab_funding_multiplier;
-                    world.policies.rehab_funding_multiplier = value.clamp(0.2, 3.0);
-                    world.audit_policy_change(
-                        "rehab_funding_multiplier",
-                        old,
-                        world.policies.rehab_funding_multiplier,
-                    );
-                }
-                "lockdown" => {
-                    // `Sim::apply_warden_action` reconciles the engine policy
-                    // mirror from the world after this driver runs, so the
-                    // requested value can be honoured directly.
-                    let enabled = value >= 0.5;
-                    let old = if world.policies.lockdown { 1.0 } else { 0.0 };
-                    world.policies.lockdown = enabled;
-                    world.lockdown_since_day = world.days_simulated;
-                    world.audit_policy_change("lockdown", old, if enabled { 1.0 } else { 0.0 });
-                }
-                _ => events.push(WorldEvent::new(
-                    0,
-                    at,
-                    EventKind::PolicyChange,
-                    format!("Policy change: {policy} = {value:.2} (unknown policy, ignored)"),
-                )),
-            }
-        }
-        WardenAction::IncreaseSecurity => {
-            world.policies.security_level = (world.policies.security_level + 0.1).min(1.0);
-            events.push(WorldEvent::new(
-                0,
-                at,
-                EventKind::PolicyChange,
-                format!("Security increased to {:.2}", world.policies.security_level),
-            ));
-        }
-        WardenAction::ReduceExpenses => {
-            // Death-spiral guard: only cut rehab spending every 7 days, and
-            // only when financial health is genuinely poor (mirrors the
-            // authoritative alc-world implementation).
-            let days_since = world
-                .days_simulated
-                .saturating_sub(world.warden.last_action_day);
-            if world.economy.health() < 0.4 && days_since >= 7 {
-                world.policies.rehab_funding_multiplier =
-                    (world.policies.rehab_funding_multiplier - 0.1).max(0.2);
-                world.warden.last_action_day = world.days_simulated;
-                world.warden.last_decision_at = at;
-                events.push(WorldEvent::new(
-                    0,
-                    at,
-                    EventKind::PolicyChange,
-                    "Expenses reduced; rehab funding cut",
-                ));
-            }
-        }
-        WardenAction::ImproveInfrastructure { facility } => {
-            let summary = if let Some(f) = world.facilities.iter_mut().find(|f| f.id.0 == facility)
-            {
-                f.condition = (f.condition + 0.05).min(1.0);
-                format!(
-                    "Infrastructure improved at facility {facility} (condition {:.2})",
-                    f.condition
-                )
-            } else {
-                format!("Infrastructure improvement ordered for unknown facility {facility}")
-            };
-            events.push(WorldEvent::new(0, at, EventKind::BudgetChange, summary));
-        }
-        WardenAction::RespondToDisturbance { event_id } => {
-            events.push(WorldEvent::new(
-                0,
-                at,
-                EventKind::Investigation,
-                format!("Warden responded to disturbance (event {event_id})"),
-            ));
-        }
-        WardenAction::NegotiateWithRepresentatives => {
-            events.push(WorldEvent::new(
-                0,
-                at,
-                EventKind::PolicyChange,
-                "Warden negotiated with prisoner representatives",
-            ));
-        }
-        WardenAction::InvestigateMisconduct { target } => {
-            events.push(WorldEvent::new(
-                0,
-                at,
-                EventKind::Investigation,
-                format!("Misconduct investigation initiated: {target}"),
-            ));
-        }
-        WardenAction::AdjustParoleRecommendation { prisoner, lean } => {
-            events.push(WorldEvent::new(
-                0,
-                at,
-                EventKind::ParoleBoardDecision,
-                format!("Parole recommendation adjusted: {prisoner} lean={lean:.2}"),
-            ));
-        }
-        WardenAction::RequestFunding { amount_major } => {
-            events.push(WorldEvent::new(
-                0,
-                at,
-                EventKind::BudgetChange,
-                format!("Funding request: {amount_major}"),
-            ));
-            world.warden.attention = (world.warden.attention - 0.05).max(0.0);
-        }
-        WardenAction::NoAction { .. } => {}
-    }
-    events
+    // Single authoritative applier: the world owns all state mutations and
+    // emits its own events. The engine mirrors them from the world event bus.
+    world.apply_warden_action(action);
+    Vec::new()
 }
 
 /// Deliver a guard duty report to the world: map severity → event kind,
@@ -451,11 +257,12 @@ pub fn deliver_guard_report(sim: &mut Sim, guard_id: GuardId, report: GuardRepor
     };
     let witness = u8::from(report.witnessed_directly);
     let cause = format!(
-        "guard duty report; post={:?} sev={} cred={:.2} witness={} mistake={}",
+        "guard duty report; post={:?} sev={} cred={:.2} witness={} assist={} mistake={}",
         report.post,
         report.severity,
         report.credibility,
         witness,
+        u8::from(report.requests_assistance),
         u8::from(report.summary.starts_with("Unverified"))
     );
     let id = sim.world.events.emit(

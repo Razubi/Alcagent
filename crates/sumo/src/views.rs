@@ -133,6 +133,10 @@ pub struct WardenSummary {
     pub pending_actions: Vec<alc_warden::WardenAction>,
     /// Time of last decision.
     pub last_decision_at: SimTime,
+    /// Administrative affordances and incident pressure (0.05 spec 010).
+    pub control: alc_warden::WardenControlSummary,
+    /// Newest-first warden decision history with rationale (0.05 spec 010).
+    pub recent_decisions: Vec<alc_warden::WardenDecisionRecord>,
 }
 
 /// Summary of the economy for the UI financial view.

@@ -78,6 +78,8 @@ pub use alc_core::{GuardId, PrisonerId};
 pub use alc_events::EventBus;
 pub use alc_warden::WardenAction;
 
+use alc_warden::{DecisionSource, StrategyDecision, WardenReportSignal, WardenStrategySnapshot};
+
 use crate::autosave::AutosaveScheduler;
 use crate::views::{
     REHAB_PROGRAMS, ReleaseEventInfo, contraband_severity_for_label, detect_contraband_item,
@@ -136,6 +138,10 @@ fn guard_report_from_event(event: &alc_events::WorldEvent) -> Option<GuardReport
         .and_then(|v| v.parse::<u8>().ok())
         .unwrap_or(0)
         != 0;
+    let requested_assistance = guard_cause_field(cause, "assist=")
+        .and_then(|v| v.parse::<u8>().ok())
+        .unwrap_or(0)
+        != 0;
     Some(GuardReport {
         at: event.at,
         post: guard_report_post(cause),
@@ -143,8 +149,24 @@ fn guard_report_from_event(event: &alc_events::WorldEvent) -> Option<GuardReport
         severity,
         credibility: event.confidence.clamp(0.05, 0.99),
         witnessed_directly: witnessed,
-        requests_assistance: event.kind == EventKind::SecurityResponse
+        requests_assistance: requested_assistance
+            || event.kind == EventKind::SecurityResponse
             || event.summary.starts_with("Assistance requested:"),
+    })
+}
+
+/// Rebuild the strategy signal for one delivered guard report. Like
+/// [`guard_report_from_event`], this only reads event ids already present in
+/// the warden inbox; it never reads a raw incident from the world.
+fn warden_report_signal_from_event(event: &alc_events::WorldEvent) -> Option<WardenReportSignal> {
+    let report = guard_report_from_event(event)?;
+    Some(WardenReportSignal {
+        id: event.id,
+        at: event.at,
+        summary: report.summary,
+        severity: report.severity,
+        credibility: report.credibility,
+        requests_assistance: report.requests_assistance,
     })
 }
 
@@ -1013,6 +1035,7 @@ impl Sim {
             .filter_map(|event| guard_report_from_event(event))
             .take(50)
             .collect();
+        let health = self.world.economy.health();
         WardenSummary {
             name: self.world.warden.name.clone(),
             philosophy: self.world.warden.philosophy.clone(),
@@ -1021,7 +1044,103 @@ impl Sim {
             inbox,
             pending_actions: self.world.warden.pending_actions.clone(),
             last_decision_at: self.world.warden.last_decision_at,
+            control: self.world.warden.control_panel_summary(health),
+            recent_decisions: self
+                .world
+                .warden
+                .audit_log
+                .recent(20)
+                .into_iter()
+                .cloned()
+                .collect(),
         }
+    }
+
+    /// Build the report-only decision context for warden strategy (0.05 §010).
+    ///
+    /// Every value comes from an observer DTO (warden summary, budget snapshot,
+    /// construction queue, economy/guard/policy summaries). No prisoner,
+    /// gang, or raw world-event internals are consulted here.
+    pub fn warden_strategy_snapshot(&self) -> WardenStrategySnapshot {
+        let summary = self.warden();
+        let budget = self.budget_snapshot_window(30);
+        let queue = self.construction_queue();
+        let economy = self.economy();
+        let guards = self.guards();
+        let policy = self.policy_summary();
+
+        let recent: Vec<&DecisionAuditRecord> = self
+            .engine_state
+            .decision_audit
+            .iter()
+            .rev()
+            .take(20)
+            .collect();
+        let mut warnings = budget.warnings.clone();
+        if policy.lockdown {
+            warnings.push("lockdown limits routine activity".to_string());
+        }
+        if policy.intake_paused {
+            warnings.push("intake paused by policy".to_string());
+        }
+        if recent
+            .iter()
+            .any(|r| r.reason.contains("warden funding request"))
+        {
+            warnings.push("recent warden funding request on ledger".to_string());
+        }
+
+        let events: Vec<&alc_events::WorldEvent> = self.world.events.recent().collect();
+        let reports = self
+            .world
+            .warden
+            .inbox
+            .iter()
+            .filter_map(|id| events.iter().find(|event| event.id == *id))
+            .filter_map(|event| warden_report_signal_from_event(event))
+            .take(50)
+            .collect();
+
+        let active: Vec<_> = queue
+            .iter()
+            .filter(|p| {
+                matches!(
+                    p.status,
+                    alc_world::ConstructionStatus::Queued
+                        | alc_world::ConstructionStatus::Approved
+                        | alc_world::ConstructionStatus::InProgress
+                )
+            })
+            .collect();
+        let future_capacity: u32 = active.iter().map(|p| p.capacity).sum();
+
+        WardenStrategySnapshot::new(
+            budget.population,
+            budget.capacity,
+            economy.cash_major,
+            budget.health as f64,
+            budget.runway_days,
+            summary.control.security_incidents_this_week,
+            summary.attention,
+            reports,
+            active.len() as u32,
+            future_capacity,
+            guards.len() as u32,
+            warnings,
+        )
+    }
+
+    /// Decide from the report-only strategy context. The decision is returned
+    /// without mutating the world; callers apply it through the engine API.
+    pub fn decide_warden_strategy(&self) -> StrategyDecision {
+        let snapshot = self.warden_strategy_snapshot();
+        let seed = self.world.seed;
+        let secs = self.world.time.as_secs();
+        alc_warden::decide_strategy(
+            &snapshot,
+            &self.world.warden.traits,
+            &mut alc_core::RngStream::new(seed ^ 0x5741_5245, secs),
+        )
     }
 
     /// Get the economy summary for the financial view.
@@ -2720,12 +2839,69 @@ impl Sim {
         drivers::warden_cycle(self)
     }
 
+    /// Explicit strategy cycle: decide from reports/summaries and apply the
+    /// audited result without changing the configured policy mode.
+    pub fn warden_strategy_cycle(&mut self) -> Vec<WardenAction> {
+        drivers::warden_strategy_cycle(self)
+    }
+
     /// Apply a WardenAction with the engine-side applier.
     pub fn apply_warden_action(&mut self, action: WardenAction) {
+        self.apply_warden_action_with_rationale(
+            action,
+            String::new(),
+            DecisionSource::AiArbitration,
+        );
+    }
+
+    /// Apply a strategy decision and persist its rationale in both audit
+    /// stores. Returns the action actually applied (possibly `NoAction` when
+    /// attention has been exhausted since deliberation).
+    pub fn apply_strategy_decision(
+        &mut self,
+        decision: StrategyDecision,
+        source: DecisionSource,
+    ) -> WardenAction {
+        let action = decision.action.clone();
+        let cost = action.attention_cost();
+        if cost > 0.0 && !self.world.warden.spend_attention(cost) && !action.is_emergency() {
+            let deferred = WardenAction::NoAction {
+                rationale: "attention exhausted before application".into(),
+            };
+            let rationale = format!(
+                "{} | deferred: attention budget exhausted before application",
+                decision.rationale
+            );
+            self.record_warden_decision(deferred.clone(), rationale.clone(), source, false);
+            return deferred;
+        }
+
+        let rationale = format!(
+            "{} | constraints: {} | finance: {}",
+            decision.rationale,
+            if decision.conflicts.is_empty() {
+                "none".to_string()
+            } else {
+                decision.conflicts.join("; ")
+            },
+            decision.finance_state.label()
+        );
+        self.apply_warden_action_with_rationale(action, rationale, source)
+    }
+
+    fn apply_warden_action_with_rationale(
+        &mut self,
+        action: WardenAction,
+        rationale: String,
+        source: DecisionSource,
+    ) -> WardenAction {
         let at = self.world.time;
         let summary = format!("{:?}", action);
-        let mut events = drivers::apply_warden_action(&mut self.world, at, action.clone());
-        self.emit_events(&mut events);
+        let last_event_id = self.world.events.recent().last().map(|e| e.id).unwrap_or(0);
+        let _events = drivers::apply_warden_action(&mut self.world, at, action.clone());
+        // The world applier emits authoritative event ids directly; mirror the
+        // new events into engine logs instead of emitting a second copy.
+        self.pump_events_into_engine_log(last_event_id);
         // The driver mutates `world.policies` directly (it only has &mut World),
         // so reconcile the engine-side policy mirror afterwards (R6: drift
         // between the two is an invariant violation).
@@ -2735,18 +2911,39 @@ impl Sim {
                 .parole
                 .set_adjustment(PrisonerId(*prisoner), *lean);
         }
+        self.record_warden_decision(action.clone(), rationale.clone(), source, true);
         self.record_decision_audit(DecisionAuditRecord {
             time: at,
             actor: "warden".to_string(),
-            source: format!("{:?}", self.engine_state.policy_mode),
+            source: format!("{source:?}"),
             action: "WardenAction".to_string(),
             summary,
             validation: "accepted".to_string(),
             reason: "applied by engine".to_string(),
-            rationale: String::new(),
+            rationale,
             repair_reason: String::new(),
             outcome: alc_agents::decision::DecisionOutcomeState::Accepted,
         });
+        action
+    }
+
+    /// Record a warden decision in the world-owned bounded audit log.
+    fn record_warden_decision(
+        &mut self,
+        action: WardenAction,
+        rationale: String,
+        source: DecisionSource,
+        applied: bool,
+    ) {
+        let at = self.world.time;
+        let reason = if rationale.is_empty() {
+            action.default_reason().to_string()
+        } else {
+            rationale
+        };
+        self.world
+            .warden
+            .record_decision(at, action, reason, source, applied);
     }
 
     /// Reconcile `engine_state.policy_state` with the authoritative

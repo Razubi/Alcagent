@@ -25,14 +25,13 @@ Effort: S (≤1 day), M (2–5 days), L (1–3 weeks), XL (multi-week). One focu
 
 Verified green build. Deterministic `Sim` façade over a concrete, prison-shaped `alc_world::World`:
 time control, validated decisions, observation snapshots, bounded event bus, versioned persistence
-(v3 in flight), invariants, `trace_hash`/`trace_hash_v2`, 730-day multi-seed soaks. Both frontends
+(v5), invariants, `trace_hash`/`trace_hash_v2`, 730-day multi-seed soaks. Both frontends
 render the spatial map: the egui GUI (`alc-gui`, buildable workspace member) with pan/zoom,
 hover/click inspectors, rosters and capacity bars; the ratatui TUI (`alc-ui`) with facility glyphs,
 pawns, nav edges, incident overlays and locked nodes (R0, spec `dev/ralph/specs/002-map-gui-acceptance.md`).
-Generalization blockers: no `WorldModel`
-seam, domain-typed API, duplicated tick/driver authority, self-referential incident causality,
-autosave dir lost on load, policy-mirror drift, summary stubs, placeholder nav geometry, event-bus
-eviction, partial non-finite guards, non-portable `DefaultHasher` digest.
+Remaining generalization gaps: no `WorldModel` seam or domain-typed API, duplicated
+tick/driver authority, synthesized nav geometry, event-bus eviction at 50k, and non-portable
+`DefaultHasher` digest. Incident causality, autosave durability and summary stubs are resolved.
 Sources: `sumo-engine-research.md`, `SUMO_API.md`, `SUMO_ENGINE.md`.
 
 ---

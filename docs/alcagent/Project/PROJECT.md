@@ -38,8 +38,9 @@ cargo run -- --help           # CLI + TUI keybindings
 
 ## Current milestone
 
-- **Current version:** 0.05
-- **0.05 exit blocker:** major UI/GUI overhaul + real game map implementation.
+- **Current version:** 0.05 (`0.5.0-beta.1` pending release-version reconciliation).
+- **0.05 exit criteria:** all Ralph specs done, green workspace, 365+ day soak; both TUI and GUI
+  already render the shared `sumo::MapFrame`.
 - **Next milestone:** **0.1 beta** — scope in `../Project/version-milestones.md`.
 
 ## Where to look

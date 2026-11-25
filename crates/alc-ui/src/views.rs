@@ -1529,7 +1529,10 @@ fn render_warden(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
             kv("Warden", w.name.clone()),
             kv("Philosophy", truncate(&w.philosophy, 48)),
             good_bar("Attention", w.attention, 14),
-            kv("Reports received", w.inbox.len().to_string()),
+            kv(
+                "Reports / decisions",
+                format!("{} / {}", w.inbox.len(), w.recent_decisions.len()),
+            ),
         ])
         .block(title_block(" Warden Profile ")),
         left[0],
@@ -1547,17 +1550,29 @@ fn render_warden(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
     ])
     .split(chunks[1]);
 
-    let actions: Vec<Line<'static>> = if w.pending_actions.is_empty() {
-        vec![plain("No pending actions.")]
-    } else {
-        w.pending_actions
-            .iter()
-            .take(12)
-            .map(|a| plain(format!("{:?}", a)))
-            .collect()
-    };
+    let mut action_lines: Vec<Line<'static>> = w
+        .pending_actions
+        .iter()
+        .take(3)
+        .map(|a| plain(format!("Pending: {}", a.label())))
+        .collect();
+    if action_lines.is_empty() {
+        action_lines.push(plain("No pending actions."));
+    }
+    if let Some(decision) = w.recent_decisions.first() {
+        action_lines.push(plain(format!(
+            "Decision #{}: {}",
+            decision.id,
+            decision.action.label()
+        )));
+        action_lines.push(plain(format!(
+            "  {} · {}",
+            decision.source.label(),
+            truncate(&decision.rationale, 70)
+        )));
+    }
     frame.render_widget(
-        Paragraph::new(actions).block(title_block(" Pending Actions ")),
+        Paragraph::new(action_lines).block(title_block(" Actions & Rationale ")),
         right[0],
     );
 
@@ -3216,6 +3231,14 @@ mod tests {
             inbox: Vec::new(),
             pending_actions: world.warden.pending_actions.clone(),
             last_decision_at: world.warden.last_decision_at,
+            control: world.warden.control_panel_summary(world.economy.health()),
+            recent_decisions: world
+                .warden
+                .audit_log
+                .recent(20)
+                .into_iter()
+                .cloned()
+                .collect(),
         };
         let economy = EconomySummary {
             cash_major: world.economy.cash.as_major(),

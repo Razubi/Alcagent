@@ -10,7 +10,9 @@
 ## 1. Headline feature — GUI (`alc-gui`)
 
 ### 1.1 Decision
-Add a **desktop GUI** for the sumo engine as the headline of beta 0.05. The existing observer (`alc-ui`) is a ratatui TUI over summaries/DTOs and validated controls; it currently has no buildable GUI counterpart. The current map is also schematic rather than a real game map. Both are **0.05 blockers**: the release requires a major UI/GUI overhaul that includes a real spatial game map in the TUI and GUI.
+The **desktop GUI** for the sumo engine is the delivered headline of beta 0.05. The `alc-ui` ratatui
+TUI and the `alc-gui` egui GUI are both buildable workspace members over shared summaries/DTOs and
+validated controls, and both render the real spatial map from `sumo::MapFrame` (spec 002).
 
 GUI framework decision (from UI research, verified): **egui `0.36.2` + eframe `0.36.2`**.
 - egui 0.36.2 is present in the local cargo registry cache; MSRV Rust ≥ 1.95, toolchain is 1.100.0 → compatible (workspace `rust-version = 1.85` stays as a floor).
@@ -63,7 +65,7 @@ GUI framework decision (from UI research, verified): **egui `0.36.2` + eframe `0
 
 ## 2. Required features (beta core)
 
-### 2.0 R0 — Major UI/GUI overhaul + real game map (0.05 blocker)
+### 2.0 R0 — Major UI/GUI overhaul + real game map (complete, spec 002)
 
 - `alc-gui` becomes a buildable workspace member and ships the same 11 observation views as the TUI.
 - TUI and GUI share DTO/read-model contracts and validated controls; no frontend mutates raw `World`.
@@ -109,7 +111,7 @@ GUI framework decision (from UI research, verified): **egui `0.36.2` + eframe `0
 - **H4 — Contraband in the world:** world market state + daily generation via `alc_social::contraband_market` / `contraband_discovery`; detection → `ContrabandFound` events; freedom-need escalation.
 - **H5 — Warden KnowledgeStore:** direct knowledge + rumors + standing/expiry with provenance; warden weighs it.
 - **H6 — Full daily schedule display:** `World::schedules`, `resolve_schedules_step`, Prisoner schedule timeline.
-- **H7 — Map / cells view:** promoted into R0 as a 0.05 blocker — prisoner/guard placement on a real map + per-wing cell rosters, movement/path hints and incident overlays (`World::prisoner_location`, `World::guard_location`, `sumo::MapFrame`).
+- **H7 — Map / cells view:** delivered in R0 — prisoner/guard placement on a real map + per-wing cell rosters, movement/path hints and incident overlays (`World::prisoner_location`, `World::guard_location`, `sumo::MapFrame`).
 - **H8 — Finance dashboard enhancements:** wire `AnnualBudgetPlan` / `FinanceHealthState` / `BudgetLine`; budget plan to world; variance/trend lines; guard payroll; health states.
 
 ## 4. Nice-to-have (N1–N6)

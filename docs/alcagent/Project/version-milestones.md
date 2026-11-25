@@ -36,11 +36,11 @@ sustainability fixes.
 
 ### Remaining scope
 
-1. **Major UI/GUI overhaul + real game map (0.05 blocker):** make `alc-gui` a buildable workspace member with the same validated control surface and DTOs as the TUI; replace the schematic facility table with a real spatial map using `sumo::MapFrame`, including cell/wing occupancy, prisoner/guard pawn positions, movement/path hints, incident overlays, facility condition/capacity/utilization, pan/zoom and hover detail; fix clipped TUI panels/help/tabs and unify search/selection/notification behavior.
-2. Full `KnowledgeStore` (design §9) — claims/provenance/standing; warden currently uses an inbox of IDs.
-3. Wave 4 engine support (R1–R6): **done in-house this pass** — map frame, decision proposal/dry-run, policy switch API, structured incidents with causality, lossless persistence, new invariants. Remaining Wave 5 gaps: real nav graph, UI map switch to `MapFrame`, driver-authority unification.
-4. Contraband and rehab full world lifecycle wiring.
-5. Post-release outcome tracking (design §15).
+1. **Major UI/GUI overhaul + real game map:** complete — `alc-gui` is a buildable workspace member sharing DTOs/controls with the TUI; both render `sumo::MapFrame` with facility occupancy, pawn positions, overlays, pan/zoom and hover detail. Only real nav pathfinding remains as Wave 5 depth.
+2. Full `KnowledgeStore` (design §9) — claims/provenance/standing; warden currently uses an inbox of delivered report ids rather than omniscient state.
+3. Wave 4 engine support (R1–R7): complete. Remaining Wave 5 gaps: real nav graph and driver-authority unification.
+4. Contraband and rehab full world lifecycle wiring: complete (spec 005).
+5. Post-release outcome tracking (design §15): complete (spec 005).
 6. AI-generated narrative text (no provider client wired).
 7. `World::summary()` / CLI polish; reconcile with `sumo::Observation`.
 8. `alc-gui` integration — resolved by item 1: it must be buildable and in scope for 0.05, not deferred or retired.
