@@ -10,9 +10,10 @@
   soak, save/load determinism, council/shadow modes and brain-inspector proposals.
   Pre-Wave-4 baseline was 136/136 tests passing.
 - **Active work:** 0.05 completion is now blocked by the **major UI/GUI overhaul and real game map**.
-  The TUI map is still schematic and `alc-gui` is not buildable. Wave 4 engine surface R1–R7 is largely
-  implemented; remaining Wave 5 items continue, but UI/GUI/map implementation is promoted into the
-  0.05 requirement set. See `../Communication/Note's/wave4-implementation-status.md` and
+  The TUI map and the buildable egui GUI both render a spatial map from `sumo::MapFrame`
+  (accepted in 0.05, see `dev/ralph/specs/002-map-gui-acceptance.md`). Wave 4 engine surface
+  R1–R7 is largely implemented; remaining Wave 5 items continue (real nav pathfinding, deeper
+  map fidelity). See `../Communication/Note's/wave4-implementation-status.md` and
   `../Communication/Sumo-AI-Team/NEXT-UPDATE-SUPPORT.md`.
 - Note: root `Cargo.toml` workspace `version` is `0.1.0`; reconciliation with the 0.05 label
   is pending.

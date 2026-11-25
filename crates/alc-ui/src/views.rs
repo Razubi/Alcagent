@@ -1759,7 +1759,7 @@ fn render_map(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
     let right = Layout::vertical([
         Constraint::Min(6),
         Constraint::Length(8),
-        Constraint::Length(5),
+        Constraint::Min(6),
     ])
     .split(chunks[1]);
 
@@ -1796,10 +1796,21 @@ fn render_map(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
     };
 
     // --- Grid base: facility glyphs (O(facilities)). ---
-    let mut grid = vec![b'.'; cols * rows];
+    let mut grid = vec!['.'; cols * rows];
+    // --- Nav edges first (O(edges)); facilities and pawns overwrite them, so
+    // edges always render beneath pawns and only visible when unobstructed. ---
+    for edge in &mf.edges {
+        let Some(&from) = mf.facility_positions.get(&edge.from) else { continue };
+        let Some(&to) = mf.facility_positions.get(&edge.to) else { continue };
+        let glyph: char = if edge.restricted { 'x' } else { '·' };
+        for (x, y) in [from, to] {
+            let (c, r) = cell_for(x, y);
+            grid[r * cols + c] = glyph;
+        }
+    }
     for (id, (x, y)) in &mf.facility_positions {
         let (c, r) = cell_for(*x, *y);
-        grid[r * cols + c] = facility_glyph(*id, &data.facilities);
+        grid[r * cols + c] = facility_glyph(*id, &data.facilities) as char;
     }
 
     // --- Pawns on top of facilities (guards first so prisoners overwrite),
@@ -1810,7 +1821,7 @@ fn render_map(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
     for p in &pawns {
         *occupancy.entry(p.node_id).or_insert(0) += 1;
         let (c, r) = cell_for(p.x, p.y);
-        grid[r * cols + c] = if p.is_prisoner { b'P' } else { b'G' };
+        grid[r * cols + c] = if p.is_prisoner { 'P' } else { 'G' };
     }
 
     // --- Incident overlays where available (O(incidents)). ---
@@ -1829,7 +1840,7 @@ fn render_map(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
         if let Some(id) = plot_node {
             if let Some((x, y)) = mf.facility_positions.get(&id) {
                 let (c, r) = cell_for(*x, *y);
-                grid[r * cols + c] = b'!';
+                grid[r * cols + c] = '!';
             }
         }
     }
@@ -1838,16 +1849,14 @@ fn render_map(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
     for &id in &mf.locked_nodes {
         if let Some((x, y)) = mf.facility_positions.get(&id) {
             let (c, r) = cell_for(*x, *y);
-            grid[r * cols + c] = b'L';
+            grid[r * cols + c] = 'L';
         }
     }
 
     // --- Draw one preallocated row String per grid row. ---
     let mut grid_lines: Vec<Line<'static>> = Vec::with_capacity(rows);
     for r in 0..rows {
-        let mut s = String::with_capacity(cols);
-        s.extend(grid[r * cols..(r + 1) * cols].iter().map(|&b| b as char));
-        grid_lines.push(Line::from(s));
+        grid_lines.push(Line::from(grid[r * cols..(r + 1) * cols].iter().collect::<String>()));
     }
     frame.render_widget(
         Paragraph::new(grid_lines).block(title_block(" Spatial Map (MapFrame) ")),
@@ -2607,6 +2616,29 @@ mod tests {
         assert!(rendered.contains("Spatial Map"));
         assert!(rendered.contains("Legend"));
         assert!(rendered.contains("Pawn Detail"));
+    }
+
+    #[test]
+    fn map_view_renders_nav_edges_and_legend_counts() {
+        let world = alc_world::World::new(7);
+        assert!(world.facilities.len() >= 2, "expected bootstrapped facilities");
+        let data = view_data_from_world(&world);
+        assert!(!data.map_frame.edges.is_empty(), "expected placeholder nav edges from MapFrame");
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let ui = UiState { mode: ViewMode::Map, ..UiState::new() };
+        terminal
+            .draw(|frame| draw(frame, &data, &ui, &status(false)))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut rendered = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                rendered.push_str(buf[(x, y)].symbol());
+            }
+        }
+        // Nav edges are visible on the grid as '·' (sightline) / 'x' (restricted).
+        assert!(rendered.contains('·'), "no sightline edge glyph on map grid");
+        assert!(rendered.contains("Edges:"), "legend missing edge counts");
     }
 
     #[test]

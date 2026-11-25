@@ -11,11 +11,10 @@ The simulation is playable and the workspace **builds**. The current work wave (
 intentions, a council of drives, memory-driven choices, a navigation graph, real-time pawn
 positions, structured conflicts and an engine-level map surface (see `../Communication/Sumo-AI-Team/NEXT-UPDATE-SUPPORT.md`).
 
-**0.05 completion blocker:** the major UI/GUI overhaul and a real game map are now required. The
-TUI map is still a schematic facility table and `alc-gui` is not a buildable workspace member. 0.05
-is not complete until the GUI observer is buildable and both frontends render a spatial map with
-cell/wing occupancy, prisoner/guard pawn positions, movement/path hints and incident overlays from
-`sumo::MapFrame`.
+**0.05 status (R0):** the major UI/GUI overhaul and real game map are implemented — the TUI and
+the egui GUI (`alc-gui`, a buildable workspace member) both render a spatial map with cell/wing
+occupancy, prisoner/guard pawn positions, movement/path hints and incident overlays from
+`sumo::MapFrame`. See `dev/ralph/specs/002-map-gui-acceptance.md`.
 
 **Verified 2026-11-23:**
 - `cargo build --workspace` / `cargo test --workspace` — **green**. 184 tests passed,

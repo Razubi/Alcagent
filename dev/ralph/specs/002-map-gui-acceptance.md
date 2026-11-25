@@ -1,6 +1,6 @@
 ﻿# Spec 002 â€” R0 map + GUI/TUI acceptance
 
-Status: pending
+Status: done
 
 ## Requirements
 - Both frontends render a real spatial map from `sumo::MapFrame`, not a facility table.
@@ -16,5 +16,6 @@ Status: pending
 - [ ] Docs reflect map/GUI as implemented.
 
 Completion signal: `<promise>DONE</promise>`
+
 
 

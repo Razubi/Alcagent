@@ -115,9 +115,14 @@ let frame: sumo::MapFrame = sim.map_frame();
 ```
 
 This is the documented entry point for rendering a live map without mutable world access.
-Note: the navigation graph and positions are **placeholders** — a synthetic 4-column grid
-and a ring of facility ids; `edge_progress` is always `None`. `MapFrame::capture(&World)` is
-available but omits incidents; `Sim::map_frame()` includes them.
+Both frontends (the ratatui TUI in `alc-ui` and the egui GUI in `alc-gui`) render a live
+spatial map from it: the TUI draws facilities (G/C/D/... glyphs), pawns (`P`/`G`), incident
+overlays (`!`), locked nodes (`L`) and nav edges (`·`) on a character grid; the egui GUI
+draws nodes, pawns, edges, incident badges, rosters and capacity/utilisation bars with
+pan/zoom and hover/click inspectors. Note: the navigation graph is still a **placeholder**
+— facility positions are a synthetic 4-column grid and `edge_progress` is always `None`
+until real pathfinding lands. `MapFrame::capture(&World)` is available but omits incidents;
+`Sim::map_frame()` includes them.
 
 ---
 
@@ -341,7 +346,8 @@ tests in `crates/sumo/tests/` verify this.
 6. **Incident causality is currently self-referential** — placeholder until real chains land.
 7. **Target ids in proposals** are opaque `PrisonerId`s; a missing target becomes id 0 and
    validation normally rejects it.
-8. **Map geometry is placeholder** (synthetic grid + ring graph, no pathfinding).
+8. **Map geometry**: synthetic grid + ring graph, still without real pathfinding; both
+   frontends (TUI and egui GUI) already render this via `MapFrame`.
 9. **Summary stubs** — empty warden inbox, zeroed facility wing/staff fields.
 10. **The `gui` feature is a no-op stub**; use `alc-ui` for a real observer.
 11. **Contraband/capabilities** are being wired in the in-flight wave (daily

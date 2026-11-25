@@ -32,7 +32,8 @@ alcagent (game)      — gameplay content, world/town, prison, families, schools
   standalone manifest; docs call it a stub and point to the game's `alc-ui` ratatui observer.
 - The real observer (`alc-ui`) lives in the **parent game repo** and depends on `sumo`, so the
   engine currently has *no* GUI of its own.
-- `MapFrame` geometry is a placeholder (synthetic grid + ring of facility ids), so a real map
+- Both frontends (`alc-ui` ratatui TUI and `alc-gui` egui) render a spatial map from `MapFrame`;
+  its geometry is still a placeholder (synthetic grid + ring of facility ids), so a real map
   needs a spatial/nav model before a GUI map is useful.
 
 ## 3. Target: a real engine GUI (owned by sumo, generic over the world)

@@ -24,6 +24,14 @@
 - Simplified rehab progress API (`sumo::Sim::apply_rehab_progress`, `rehab_score`).
 - `alc-gui` pure data-extraction layer (`data.rs`) — crate not a workspace member.
 
+### Implemented (Wave 5 — R0 map + GUI acceptance, spec 002)
+- Both frontends render a real spatial map from `sumo::MapFrame`: the egui GUI (`alc-gui`, a
+  buildable workspace member) with pan/zoom, hover/click inspectors, cell/wing rosters,
+  capacity/utilisation bars, legend and fit/reset; the ratatui TUI (`alc-ui`) with facility
+  glyphs, prisoner/guard pawns, nav edges, incident overlays, locked nodes and selected
+  pawn/facility detail. 11 observation views in both frontends; UI changes route through
+  validated `Sim`/`SimDriver` controls only.
+
 ### Implemented (Wave 4 engine integration)
 - `Sim::map_frame()` / `MapFrame` (R1), `Sim::propose_decision` / `DecisionProposal` (R2),
   `Policy`/`PolicyMode` switching (R3), structured incident logs + causality (R4),
