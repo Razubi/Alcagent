@@ -9,6 +9,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use alc_core::SimTime;
 
+pub mod generators;
+
+pub use generators::{
+    DailyEventEffect, EventConditions, GeneratedEvent, MAX_EVENTS_PER_DAY, generate_daily_events,
+};
+
 /// Category of a simulated event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum EventKind {
