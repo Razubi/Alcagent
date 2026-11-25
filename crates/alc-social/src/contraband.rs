@@ -45,6 +45,19 @@ pub struct ContrabandPrisonerProfile {
     pub freedom: f32,
     pub safety: f32,
     pub desperation: f32,
+    /// 0..1 capacity to move contraband through gang channels.
+    ///
+    /// Defaults to zero so older saves and callers remain compatible.
+    #[serde(default)]
+    pub gang_control: f32,
+}
+
+fn bounded01(value: f32) -> f32 {
+    if value.is_nan() {
+        0.0
+    } else {
+        value.clamp(0.0, 1.0)
+    }
 }
 
 /// Severity level of a contraband discovery.
@@ -130,18 +143,24 @@ pub fn contraband_market(
         let seller = &prisoners[si];
         let buyer = &prisoners[bi];
 
-        let seller_drive = (seller.manipulation * 0.35
-            + seller.risk_tolerance * 0.25
-            + (1.0 - seller.discipline) * 0.2
-            + seller.freedom * 0.2)
-            .clamp(0.0, 1.0);
-        let buyer_need = (buyer.stimulation * 0.2
-            + buyer.safety * 0.15
-            + buyer.freedom * 0.15
-            + buyer.desperation * 0.2
-            + (1.0 - buyer.discipline) * 0.15
-            + buyer.risk_tolerance * 0.15)
-            .clamp(0.0, 1.0);
+        let seller_control = bounded01(seller.gang_control);
+        let buyer_control = bounded01(buyer.gang_control);
+        let seller_drive = bounded01(
+            seller.manipulation * 0.35
+                + seller.risk_tolerance * 0.25
+                + (1.0 - seller.discipline) * 0.2
+                + seller.freedom * 0.2
+                + seller_control * 0.15,
+        );
+        let buyer_need = bounded01(
+            buyer.stimulation * 0.2
+                + buyer.safety * 0.15
+                + buyer.freedom * 0.15
+                + buyer.desperation * 0.2
+                + (1.0 - buyer.discipline) * 0.15
+                + buyer.risk_tolerance * 0.15
+                + buyer_control * 0.1,
+        );
 
         if seller_drive < 0.35 || buyer_need < 0.35 {
             continue;
@@ -159,7 +178,8 @@ pub fn contraband_market(
             ContrabandItem::Money => 50,
         };
         let scarcity = 0.7 + rng.next_f64() * 0.8;
-        let price = ((base_price as f64) * scarcity) as u32;
+        let control_premium = 1.0 + seller_control * 0.2;
+        let price = ((base_price as f64) * scarcity * f64::from(control_premium)) as u32;
 
         offers.push(TradeOffer {
             seller: seller.id,
@@ -360,6 +380,7 @@ mod tests {
                 freedom: 0.8,
                 safety: 0.8,
                 desperation: 0.7,
+                gang_control: 0.0,
             })
             .collect();
 

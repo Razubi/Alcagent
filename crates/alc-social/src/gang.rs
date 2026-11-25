@@ -12,6 +12,15 @@ fn default_sim_time() -> SimTime {
     SimTime::EPOCH
 }
 
+/// Clamp a heuristic score without allowing NaN to poison a decision.
+fn clamp01(value: f32) -> f32 {
+    if value.is_nan() {
+        0.0
+    } else {
+        value.clamp(0.0, 1.0)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Rank {
     Leader,
@@ -142,22 +151,24 @@ impl Gang {
         }
     }
 
-    pub fn fracture(&mut self, splinter: &[PrisonerId]) -> Option<Gang> {
-        let split: Vec<PrisonerId> = splinter
+    /// Split a coherent mutinous subset into a new gang.
+    ///
+    /// The caller allocates `new_id` so the world can keep identifiers unique
+    /// without this module guessing at allocator state.
+    pub fn fracture(&mut self, splinter: &[PrisonerId], new_id: GangId) -> Option<Gang> {
+        if new_id == self.id {
+            return None;
+        }
+        let mut split: Vec<PrisonerId> = splinter
             .iter()
             .copied()
             .filter(|p| self.members.contains(p))
             .collect();
+        split.sort_unstable_by_key(|p| p.0);
+        split.dedup();
         if split.is_empty() || split.len() >= self.members.len() {
             return None;
         }
-        let new_id = GangId(
-            self.id
-                .0
-                .saturating_mul(31)
-                .saturating_add(split[0].0)
-                .saturating_add(1),
-        );
         let founder = split[0];
         let mut new_gang = Gang::with_formed_at(
             new_id,
@@ -181,6 +192,83 @@ impl Gang {
         }
         self.record_dispute("fracture");
         Some(new_gang)
+    }
+
+    /// Absorb another gang, moving its members, resources, goals and relations.
+    ///
+    /// Returns the ids actually moved into `self`. `other` is left inactive and
+    /// empty so no duplicated organization survives the merge.
+    pub fn merge_from(&mut self, other: &mut Gang) -> Vec<PrisonerId> {
+        if self.id == other.id {
+            return Vec::new();
+        }
+        let self_count = self.members.len();
+        let other_count = other.members.len();
+        let formed_at = self.formed_at;
+
+        let mut moved: Vec<PrisonerId> = other
+            .members
+            .iter()
+            .copied()
+            .filter(|p| !self.members.contains(p))
+            .collect();
+        moved.sort_unstable_by_key(|p| p.0);
+        moved.dedup();
+
+        for &p in &moved {
+            self.members.push(p);
+            let record = other
+                .hierarchy
+                .iter()
+                .find(|r| r.prisoner == p)
+                .cloned()
+                .unwrap_or_else(|| MemberRecord::new(p, formed_at, Rank::Member));
+            self.hierarchy.push(record);
+        }
+
+        self.resources += other.resources.max(0.0);
+        other.resources = 0.0;
+
+        if self_count + other_count > 0 {
+            let total = (self_count + other_count) as f32;
+            self.reputation = clamp01(
+                (self.reputation * self_count as f32 + other.reputation * other_count as f32)
+                    / total,
+            );
+        }
+
+        for goal in &other.goals {
+            if !self.goals.contains(goal) {
+                self.goals.push(goal.clone());
+            }
+        }
+        self.goals.sort();
+        for note in &other.internal_disputes {
+            self.record_dispute(note.clone());
+        }
+
+        for &id in &other.rivalries {
+            if id != self.id && id != other.id && !self.rivalries.contains(&id) {
+                self.rivalries.push(id);
+            }
+        }
+        for &id in &other.alliances {
+            if id != self.id && id != other.id && !self.alliances.contains(&id) {
+                self.alliances.push(id);
+            }
+        }
+        self.rivalries.retain(|g| *g != self.id && *g != other.id);
+        self.alliances.retain(|g| *g != self.id && *g != other.id);
+
+        other.members.clear();
+        other.hierarchy.clear();
+        other.internal_disputes.clear();
+        other.rivalries.clear();
+        other.alliances.clear();
+        other.goals.clear();
+        other.leader = None;
+        other.active = false;
+        moved
     }
 
     pub fn change_leader(&mut self, new_leader: PrisonerId) -> bool {
@@ -255,6 +343,457 @@ impl Gang {
             })
             .map(|r| r.prisoner)
             .or_else(|| self.members.first().copied())
+    }
+}
+
+/// Kinds of durable gang-history entries (Directive §18).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum GangHistoryKind {
+    Formed,
+    Recruit,
+    Loss,
+    LeadershipChange,
+    Split,
+    Merge,
+    Alliance,
+    Rivalry,
+    Dispute,
+    MajorConflict,
+    Disbanded,
+}
+
+impl GangHistoryKind {
+    /// Short stable label suitable for history feeds and filters.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Formed => "formed",
+            Self::Recruit => "recruit",
+            Self::Loss => "loss",
+            Self::LeadershipChange => "leader",
+            Self::Split => "split",
+            Self::Merge => "merge",
+            Self::Alliance => "alliance",
+            Self::Rivalry => "rivalry",
+            Self::Dispute => "dispute",
+            Self::MajorConflict => "conflict",
+            Self::Disbanded => "disbanded",
+        }
+    }
+}
+
+impl std::fmt::Display for GangHistoryKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// How a dissatisfied member acts on a grievance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DisputeAction {
+    Refuse,
+    Covert,
+    Negotiate,
+    ChallengeLeader,
+}
+
+/// A detected member-vs-leadership grievance (pure observation; no state change).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InternalDispute {
+    pub prisoner: PrisonerId,
+    pub action: DisputeAction,
+    pub grievance_delta: f32, // 0..1, proposed addition to MemberRecord::grievances
+    pub reason: String,
+}
+
+/// Per-prisoner inputs for gang-politics heuristics.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GangPoliticsProfile {
+    pub prisoner: PrisonerId,
+    pub loyalty: f32,       // 0..1
+    pub autonomy: f32,      // 0..1
+    pub discipline: f32,    // 0..1
+    pub leadership: f32,    // 0..1
+    pub ambition: f32,      // 0..1
+    pub goal_conflict: f32, // 0..1
+}
+
+/// Aggregate institutional pressure exerted by the gang graph.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct GangPressure {
+    pub rivalry: f32,    // 0..1
+    pub disputes: f32,   // 0..1
+    pub contraband: f32, // 0..1
+}
+
+impl GangPressure {
+    /// Weighted, bounded composite pressure in `0..=1`.
+    #[must_use]
+    pub fn total(&self) -> f32 {
+        clamp01(self.rivalry * 0.4 + self.disputes * 0.3 + self.contraband * 0.3)
+    }
+}
+
+/// Stable world-history cause marker for events sourced from gang politics.
+#[must_use]
+pub fn gang_event_cause(gang: GangId) -> String {
+    format!("gang:{}", gang.0)
+}
+
+fn goal_affinity(left: &[String], right: &[String]) -> f32 {
+    let left: Vec<String> = left
+        .iter()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let right: Vec<String> = right
+        .iter()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if left.is_empty() && right.is_empty() {
+        return 0.0;
+    }
+    let hits = left
+        .iter()
+        .filter(|goal| right.iter().any(|other| other == *goal))
+        .count();
+    clamp01(hits as f32 / left.len().max(right.len()).max(1) as f32)
+}
+
+fn culture_affinity(left: &str, right: &str) -> f32 {
+    let left = left.trim().to_ascii_lowercase();
+    let right = right.trim().to_ascii_lowercase();
+    if left.is_empty() || right.is_empty() {
+        return 0.0;
+    }
+    if left == right {
+        return 1.0;
+    }
+    let left_tokens: Vec<&str> = left.split_whitespace().collect();
+    let right_tokens: Vec<&str> = right.split_whitespace().collect();
+    let hits = left_tokens
+        .iter()
+        .filter(|token| right_tokens.iter().any(|other| other == *token))
+        .count();
+    clamp01(hits as f32 / left_tokens.len().max(right_tokens.len()).max(1) as f32)
+}
+
+/// Deterministic `(alliance_affinity, rivalry_hostility)` in `0..=1`.
+///
+/// Derived only from goals, culture, declared relations and observed dyads in
+/// `graph`; no map iteration order is involved.
+#[must_use]
+pub fn gang_relation_scores(a: &Gang, b: &Gang, graph: &SocialGraph) -> (f32, f32) {
+    if a.id == b.id {
+        return (1.0, 0.0);
+    }
+    let goals = goal_affinity(&a.goals, &b.goals);
+    let culture = culture_affinity(&a.culture, &b.culture);
+
+    let mut affiliative = 0.0f32;
+    let mut hostile = 0.0f32;
+    let mut pairs = 0usize;
+    for &member_a in &a.members {
+        for &member_b in &b.members {
+            if member_a == member_b {
+                continue;
+            }
+            let rel = graph.get(member_a, member_b);
+            affiliative += clamp01(
+                (rel.friendship + rel.trust * 0.5 + rel.loyalty * 0.4 + rel.gratitude * 0.2
+                    - rel.hostility
+                    - rel.rivalry
+                    - rel.resentment * 0.5
+                    + 1.0)
+                    * 0.5,
+            );
+            hostile +=
+                clamp01(rel.hostility + rel.rivalry * 0.8 + rel.fear * 0.3 + rel.resentment * 0.3);
+            pairs += 1;
+        }
+    }
+    let (member_aff, member_host) = if pairs == 0 {
+        (0.5, 0.0)
+    } else {
+        (
+            clamp01(affiliative / pairs as f32),
+            clamp01(hostile / pairs as f32),
+        )
+    };
+
+    let alliance_bonus = if a.alliances.contains(&b.id) || b.alliances.contains(&a.id) {
+        0.15
+    } else {
+        0.0
+    };
+    let rivalry_bonus = if a.rivalries.contains(&b.id) || b.rivalries.contains(&a.id) {
+        0.2
+    } else {
+        0.0
+    };
+
+    let affinity = clamp01(
+        goals * 0.25 + culture * 0.15 + member_aff * 0.6 + alliance_bonus - rivalry_bonus * 0.5,
+    );
+    let hostility =
+        clamp01(member_host * 0.7 + rivalry_bonus + (1.0 - goals) * 0.1 - affinity * 0.2);
+    (affinity, hostility)
+}
+
+/// Detect disgruntled non-leader members and their likely response to a directive.
+///
+/// Pure: reads the gang, graph and caller-supplied profiles only. Results are
+/// sorted by prisoner id so the world can apply them in a stable order.
+#[must_use]
+pub fn detect_internal_disputes(
+    gang: &Gang,
+    graph: &SocialGraph,
+    profiles: &[GangPoliticsProfile],
+    directive: &GroupDirective,
+) -> Vec<InternalDispute> {
+    let Some(leader) = gang.leader else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+
+    for &prisoner in &gang.members {
+        if prisoner == leader {
+            continue;
+        }
+        let Some(profile) = profiles.iter().find(|p| p.prisoner == prisoner) else {
+            continue;
+        };
+        let loyalty = clamp01(profile.loyalty);
+        let autonomy = clamp01(profile.autonomy);
+        let discipline = clamp01(profile.discipline);
+        let leadership = clamp01(profile.leadership);
+        let ambition = clamp01(profile.ambition);
+        let goal_conflict = clamp01(profile.goal_conflict);
+
+        let rel = graph.get(prisoner, leader);
+        let rel_pos = clamp01(
+            (rel.friendship + rel.trust * 0.6 + rel.loyalty * 0.4 + rel.gratitude * 0.2
+                - rel.hostility
+                - rel.resentment
+                - rel.rivalry
+                + 1.0)
+                * 0.5,
+        );
+        let grievances = gang
+            .hierarchy
+            .iter()
+            .find(|r| r.prisoner == prisoner)
+            .map_or(0.0, |r| clamp01(r.grievances));
+
+        let pressure = clamp01(directive.pressure);
+        let risk = clamp01(directive.personal_risk);
+        let gain = clamp01(directive.expected_gain);
+        let score = clamp01(
+            goal_conflict * 0.32
+                + (1.0 - loyalty) * 0.22
+                + (1.0 - discipline) * 0.08
+                + (1.0 - rel_pos) * 0.16
+                + grievances * 0.12
+                + pressure * 0.08
+                + risk * 0.06
+                - gain * 0.08,
+        );
+        if score < 0.38 {
+            continue;
+        }
+
+        let ctx = MemberDecisionContext {
+            loyalty,
+            fear_of_gang: clamp01(rel.fear * 0.7 + pressure * 0.3),
+            autonomy,
+            empathy: 0.5,
+            discipline,
+            relationship_to_leader: rel.bond_score().clamp(-1.0, 1.0),
+            goal_conflict,
+            moral_discomfort: clamp01(score * 0.7),
+            retaliation_fear: clamp01(pressure * 0.5 + rel.fear * 0.5),
+            deception_opportunity: clamp01((1.0 - discipline) * 0.6 + autonomy * 0.4),
+            negotiation_leverage: clamp01(leadership * 0.5 + rel.respect * 0.3 + rel_pos * 0.2),
+        };
+        let resolution = resolve_leader_member_conflict(directive, &ctx);
+
+        let challenge = clamp01(
+            leadership * 0.3
+                + ambition * 0.28
+                + (1.0 - loyalty) * 0.18
+                + goal_conflict * 0.16
+                + (1.0 - rel_pos) * 0.12
+                + grievances * 0.1
+                - discipline * 0.16,
+        );
+        let action = if challenge >= 0.58 {
+            DisputeAction::ChallengeLeader
+        } else {
+            match resolution.decision {
+                MemberDecision::Refuse => DisputeAction::Refuse,
+                MemberDecision::Covert => DisputeAction::Covert,
+                MemberDecision::Negotiate => DisputeAction::Negotiate,
+                MemberDecision::Comply => {
+                    if discipline > 0.6 {
+                        DisputeAction::Negotiate
+                    } else {
+                        DisputeAction::Refuse
+                    }
+                }
+            }
+        };
+
+        let reason = if goal_conflict >= 0.55 {
+            "goal conflict"
+        } else if rel_pos < 0.25 {
+            "leader distrust"
+        } else if loyalty < 0.35 {
+            "low loyalty"
+        } else if autonomy > 0.65 && discipline < 0.45 {
+            "autonomy pressure"
+        } else {
+            "unresolved grievance"
+        };
+
+        out.push(InternalDispute {
+            prisoner,
+            action,
+            grievance_delta: (score * 0.25 + 0.05).clamp(0.05, 0.3),
+            reason: reason.to_owned(),
+        });
+    }
+
+    out.sort_by_key(|d| d.prisoner.0);
+    out
+}
+
+/// Pick a coherent mutinous subset suitable for `Gang::fracture`.
+#[must_use]
+pub fn split_candidates(gang: &Gang, disputes: &[InternalDispute]) -> Option<Vec<PrisonerId>> {
+    let mut candidates: Vec<PrisonerId> = disputes
+        .iter()
+        .filter(|d| {
+            d.action != DisputeAction::Negotiate
+                && d.grievance_delta >= 0.1
+                && gang.members.contains(&d.prisoner)
+                && gang.leader != Some(d.prisoner)
+        })
+        .map(|d| d.prisoner)
+        .collect();
+    candidates.sort_unstable_by_key(|p| p.0);
+    candidates.dedup();
+    if candidates.len() < 2 || candidates.len() >= gang.members.len() {
+        return None;
+    }
+
+    // A splinter needs a shared grievance, not unrelated grudges.
+    let mut reasons: Vec<&str> = disputes
+        .iter()
+        .filter(|d| candidates.contains(&d.prisoner))
+        .map(|d| d.reason.as_str())
+        .collect();
+    reasons.sort_unstable();
+    reasons.dedup();
+    if reasons.len() > 2 {
+        return None;
+    }
+    Some(candidates)
+}
+
+/// Choose the strongest leadership challenger among a gang's members.
+#[must_use]
+pub fn leadership_challenger(
+    gang: &Gang,
+    profiles: &[GangPoliticsProfile],
+    rng: &mut RngStream,
+) -> Option<PrisonerId> {
+    let mut candidates: Vec<&GangPoliticsProfile> = profiles
+        .iter()
+        .filter(|p| gang.members.contains(&p.prisoner) && gang.leader != Some(p.prisoner))
+        .collect();
+    candidates.sort_by_key(|p| p.prisoner.0);
+
+    let mut best: Option<(PrisonerId, f32)> = None;
+    for profile in candidates {
+        let grievances = gang
+            .hierarchy
+            .iter()
+            .find(|r| r.prisoner == profile.prisoner)
+            .map_or(0.0, |r| clamp01(r.grievances));
+        let score = clamp01(
+            clamp01(profile.leadership) * 0.3
+                + clamp01(profile.ambition) * 0.28
+                + (1.0 - clamp01(profile.loyalty)) * 0.18
+                + grievances * 0.16
+                - clamp01(profile.discipline) * 0.08
+                + (rng.next_f64() as f32) * 0.08,
+        );
+        let better = match best {
+            None => true,
+            Some((current, previous)) => match score.total_cmp(&previous) {
+                std::cmp::Ordering::Greater => true,
+                std::cmp::Ordering::Equal => profile.prisoner.0 < current.0,
+                std::cmp::Ordering::Less => false,
+            },
+        };
+        if better {
+            best = Some((profile.prisoner, score));
+        }
+    }
+    best.map(|(prisoner, _)| prisoner)
+}
+
+/// Bounded, deterministic pressure from rivalries, disputes and hostile ties.
+#[must_use]
+pub fn gang_pressure(gangs: &[Gang], graph: &SocialGraph) -> GangPressure {
+    let mut rival_pairs: std::collections::BTreeSet<(u64, u64)> = std::collections::BTreeSet::new();
+    for gang in gangs.iter().filter(|g| g.active) {
+        for &other_id in &gang.rivalries {
+            let Some(other) = gangs
+                .iter()
+                .find(|g| g.active && g.id == other_id && g.id != gang.id)
+            else {
+                continue;
+            };
+            let pair = if gang.id.0 <= other.id.0 {
+                (gang.id.0, other.id.0)
+            } else {
+                (other.id.0, gang.id.0)
+            };
+            rival_pairs.insert(pair);
+        }
+    }
+    let max_pairs = gangs.len().saturating_mul(gangs.len().saturating_sub(1)) / 2;
+    let rivalry = clamp01(rival_pairs.len() as f32 / max_pairs.max(1) as f32);
+
+    let dispute_count: usize = gangs.iter().map(|g| g.internal_disputes.len()).sum();
+    let disputes = clamp01(dispute_count as f32 / 12.0);
+
+    let members: std::collections::BTreeSet<u64> = gangs
+        .iter()
+        .flat_map(|g| g.members.iter().map(|p| p.0))
+        .collect();
+    let mut contraband_sum = 0.0f32;
+    let mut edges = 0usize;
+    for ((a, b), rel) in graph.iter() {
+        if !members.contains(&a) && !members.contains(&b) {
+            continue;
+        }
+        edges += 1;
+        contraband_sum += clamp01(rel.rivalry * 0.45 + rel.hostility * 0.35 + rel.fear * 0.2)
+            * clamp01(rel.familiarity);
+    }
+    let contraband = if edges == 0 {
+        0.0
+    } else {
+        clamp01(contraband_sum / edges as f32)
+    };
+
+    GangPressure {
+        rivalry,
+        disputes,
+        contraband,
     }
 }
 

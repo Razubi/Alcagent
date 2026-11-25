@@ -191,9 +191,11 @@ pub use escape::{
     apply_escape_consequences, compute_escape_motivation, resolve_escape_attempt,
 };
 pub use gang::{
-    Gang, GangFormationCandidate, GroupDirective, LeaderMemberResolution, MemberDecision,
-    MemberDecisionContext, MemberRecord, PrisonerGangProfile, Rank, form_gang_if_drivers,
-    maybe_form_gang, register_rivalry,
+    DisputeAction, Gang, GangFormationCandidate, GangHistoryKind, GangPoliticsProfile,
+    GangPressure, GroupDirective, InternalDispute, LeaderMemberResolution, MemberDecision,
+    MemberDecisionContext, MemberRecord, PrisonerGangProfile, Rank, detect_internal_disputes,
+    form_gang_if_drivers, gang_event_cause, gang_pressure, gang_relation_scores,
+    leadership_challenger, maybe_form_gang, register_rivalry, split_candidates,
 };
 pub use parole::{
     ParoleBoard, ParoleCondition, ParoleDecision, ParoleSubject, PostReleaseOutcome,
