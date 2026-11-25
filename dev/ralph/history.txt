@@ -20,6 +20,8 @@
 - Final manifest cleanup removed the last unused dependency; `cargo build --workspace --all-targets` is warning-free.
 - Fixed Ralph launcher: temporarily downgrade `ErrorActionPreference` around the native CLI call so CLI stderr progress no longer aborts the loop; verify CLI exit code before accepting DONE.
 - Main session claimed spec 007 (emergent event system) for a parallel engine-focused implementation lane.
+- Main session claimed spec 012 (social-network analysis) for a parallel social-engine implementation lane.
+- Killed stale `alcagent --load saves/test_save2` process chain started at 01:24 that was consuming CPU and distorting wall-clock soak tests.
 
 
 ## 2026-11-25 - iteration 2.1: spec 003 persistence durability

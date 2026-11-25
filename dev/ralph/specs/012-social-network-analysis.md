@@ -1,6 +1,6 @@
 # Spec 012 — Social-network analysis
 
-Status: pending
+Status: claimed
 
 ## Requirements
 Emergent social structures must be detectable from relationships and interactions.
