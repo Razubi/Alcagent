@@ -1,5 +1,15 @@
 # Ralph history — Alcagent 0.05
 
+## 2026-11-25 — iteration 1.1: spec 002 R0 map + GUI/TUI acceptance
+
+- Implemented/verified the R0 map acceptance in both frontends:
+  - TUI (`alc-ui/src/views.rs`): `render_map` now draws nav edges visibly on the spatial grid (`·` sightline, `x` restricted) in addition to facility glyphs, pawns (`P`/`G`), incident overlays (`!`) and locked nodes (`L`); the right-hand legend panel is taller so the edge-count line is not clipped. Added `map_view_renders_nav_edges_and_legend_counts` regression test (42 passed in `alc-ui`).
+  - GUI (`alc-gui`): map already had pan/zoom, hover/click detail, cell/wing rosters, capacity/utilisation bars, legend and fit/reset; 11 views in both frontends; UI mutations route through validated `Sim`/`SimDriver` controls.
+- Docs updated to reflect map/GUI as implemented: `docs/sumo/SUMO_API.md`, `docs/sumo/SUMO_ROADMAP.md`, `docs/sumo/sumo-gui-and-support-plan.md`, `docs/alcagent/Project/PROJECT.md`, `docs/alcagent/Project/design-status.md`, `docs/alcagent/Project/version-milestones.md`, `CHANGELOG.md`.
+- Validation: `cargo build --workspace --all-targets` clean (no warnings), `cargo test --workspace` green (sumo 28, alc-world 35, alc-gui 7+17, alc-testing 4+8, alcagent smoke 9, guard 6, persistence 8, events 6). GUI launched via game-development skill (`game.mjs run`), screenshots written (`C:\Users\matth\.codegpt\game-sessions\default\frame-1795597984827.png`); `game.mjs logs --errors` reported 0 errors. Note: this host cannot read PNGs, so frames were verified via logs/code instead.
+- Spec `dev/ralph/specs/002-map-gui-acceptance.md`: Status set to `done`.
+- Commit: 9584a18 (`feat(gui): R0 map + GUI/TUI acceptance (spec 002)`).
+
 ## 2026-11-25 — bootstrap
 
 - Integrated engine/persistence/CLI hardening, TUI MapFrame overhaul, buildable egui GUI, and warning cleanup.
