@@ -77,6 +77,10 @@ pub enum ConstructionStatus {
     Completed,
     Cancelled,
     Failed,
+    /// Approved: prerequisites, staffing and materials were validated.
+    ///
+    /// Appended last to preserve bincode ordinals of pre-v5 saves.
+    Approved,
 }
 
 impl Default for ConstructionStatus {
@@ -1089,7 +1093,9 @@ impl World {
                 let deficit = -self.economy.cash.0;
                 self.economy.accrue_bonus(self.time.as_secs(), alc_economy::Money(deficit),
                     "emergency government funding (insolvency bailout)");
+                let priv_old = self.policies.privileges_level;
                 self.policies.privileges_level = (self.policies.privileges_level - 0.1).max(0.0);
+                self.audit_policy_change("privileges_level", priv_old, self.policies.privileges_level);
                 self.events.emit(WorldEvent::new(0, self.time, EventKind::BudgetChange,
                     "Emergency funding received; privileges reduced"));
             }
@@ -1255,12 +1261,29 @@ impl World {
         }
 
         if !released.is_empty() {
-            for &id in &released {
-                self.record_post_release(id, "parole");
-            }
-            self.purge_gang_members(&released);
-            self.prisoners.retain(|p| !released.contains(&p.id));
+            self.release_on_parole(&released);
         }
+    }
+
+    /// Release granted prisoners from custody through the single authoritative
+    /// world path: post-release records, gang cleanup, population update and a
+    /// `Release` event. Returns the ids that were actually released (an id that
+    /// is no longer present is silently ignored).
+    pub fn release_on_parole(&mut self, ids: &[PrisonerId]) -> Vec<PrisonerId> {
+        let present: Vec<PrisonerId> = ids.iter().copied()
+            .filter(|id| self.prisoners.iter().any(|p| p.id == *id))
+            .collect();
+        for &id in &present {
+            self.record_post_release(id, "parole");
+        }
+        if !present.is_empty() {
+            self.purge_gang_members(&present);
+            self.prisoners.retain(|p| !present.contains(&p.id));
+            // Daily releases are followed by the normal end-of-day
+            // `prune_agent_state` sweep. Out-of-band callers (validated
+            // controls) should call `prune_departed_agent_state` explicitly.
+        }
+        present
     }
 
     /// Deterministically derive high-level reintegration outcomes from a
@@ -1435,6 +1458,19 @@ impl World {
             );
             self.prisoners.push(p);
         }
+    }
+
+    /// Drop auxiliary state belonging only to departed prisoners. Kept O(n)
+    /// in the live population so frequent parole releases stay cheap.
+    pub fn prune_departed_agent_state(&mut self, departed: &[PrisonerId]) {
+        let gone: std::collections::HashSet<PrisonerId> = departed.iter().copied().collect();
+        self.current_activity.retain(|id, _| !gone.contains(id));
+        self.current_decisions.retain(|id, _| !gone.contains(id));
+        self.prisoner_location.retain(|id, _| !gone.contains(id));
+        self.contraband_state.retain(|id, _| !gone.contains(id));
+        self.rehab_records.retain(|id, _| !gone.contains(id));
+        // Social dyads are pruned by the daily `prune_agent_state` sweep; doing
+        // an O(edges) retain here would make frequent parole releases costly.
     }
 
     fn prune_agent_state(&mut self) {
@@ -1677,8 +1713,10 @@ impl World {
         let mut rng2 = RngStream::new(self.seed, self.days_simulated ^ 0xD15C_0BE2);
         if let Some(found) = contraband_discovery(&self.guards, &profiles, &mut rng2) {
             self.record_contraband_discovery(found.clone());
+            let sec_old = self.policies.security_level;
             self.policies.security_level =
                 (self.policies.security_level + 0.02 * found.severity).min(1.0);
+            self.audit_policy_change("security_level", sec_old, self.policies.security_level);
         }
     }
 
@@ -1793,6 +1831,7 @@ impl World {
         let materials_available = self.economy.cash.0 > -50_000_00; // not catastrophically insolvent
         let has_admin = self.facilities.iter().any(|f| matches!(f.kind, FacilityKind::Admin));
 
+        let mut approved: Vec<(u64, FacilityKind)> = Vec::new();
         let mut completed: Vec<ConstructionProject> = Vec::new();
         let mut cancelled: Vec<(u64, String, FacilityKind)> = Vec::new();
         let mut failed: Vec<(u64, String, FacilityKind)> = Vec::new();
@@ -1825,6 +1864,13 @@ impl World {
                 continue;
             }
 
+            // request -> approved: a queued request is reviewed before work
+            // starts, so the approval is an auditable state of its own.
+            if p.status == ConstructionStatus::Queued {
+                p.status = ConstructionStatus::Approved;
+                approved.push((p.id, p.kind));
+            }
+            // approved -> active (same day-boundary once prerequisites hold)
             p.status = ConstructionStatus::InProgress;
             // Progress only when staff/materials are available; deterministic stall otherwise.
             if p.staff_allocated && p.materials_ready {
@@ -1836,6 +1882,13 @@ impl World {
             }
         }
 
+        for (id, kind) in approved {
+            let ev = WorldEvent::new(0, self.time, EventKind::Expansion,
+                format!("Construction approved: {} (project {})", kind.display(), id))
+                .with_cause(format!("prerequisites, staffing and materials validated for project {id}"));
+            self.history.push(ev.clone());
+            self.events.emit(ev);
+        }
         for (id, reason, kind) in cancelled {
             let ev = WorldEvent::new(0, self.time, EventKind::ConstructionCancelled,
                 format!("Construction cancelled: {} (project {}) - {}", kind.display(), id, reason))
@@ -1862,7 +1915,7 @@ impl World {
         // Keep terminal projects for auditability; prune only very old terminal entries to avoid unbounded growth.
         let cutoff = self.days_simulated.saturating_sub(365);
         self.construction_queue.retain(|p| {
-            matches!(p.status, ConstructionStatus::Queued | ConstructionStatus::InProgress)
+            matches!(p.status, ConstructionStatus::Queued | ConstructionStatus::Approved | ConstructionStatus::InProgress)
                 || p.started_day >= cutoff
         });
     }
@@ -1896,13 +1949,37 @@ impl World {
         id
     }
 
+    /// Approve a requested construction project explicitly. Approval validates
+    /// the recorded prerequisites and emits an auditable `Expansion` event;
+    /// work only begins once a project is `Approved`.
+    pub fn approve_construction(&mut self, project_id: u64, reason: impl Into<String>) -> bool {
+        let reason = reason.into();
+        let mut approved = None;
+        for p in &mut self.construction_queue {
+            if p.id == project_id && p.status == ConstructionStatus::Queued {
+                p.status = ConstructionStatus::Approved;
+                approved = Some(p.kind);
+                break;
+            }
+        }
+        if let Some(kind) = approved {
+            let ev = WorldEvent::new(0, self.time, EventKind::Expansion,
+                format!("Construction approved: {} (project {}) - {}", kind.display(), project_id, reason))
+                .with_cause(reason);
+            self.history.push(ev.clone());
+            self.events.emit(ev);
+            return true;
+        }
+        false
+    }
+
     /// Cancel an active construction project. Emits ConstructionCancelled and keeps
     /// the terminal record in queue history for auditability.
     pub fn cancel_construction(&mut self, project_id: u64, reason: impl Into<String>) -> bool {
         let reason = reason.into();
         let mut found = None;
         for p in &mut self.construction_queue {
-            if p.id == project_id && matches!(p.status, ConstructionStatus::Queued | ConstructionStatus::InProgress) {
+            if p.id == project_id && matches!(p.status, ConstructionStatus::Queued | ConstructionStatus::Approved | ConstructionStatus::InProgress) {
                 p.status = ConstructionStatus::Cancelled;
                 p.terminal_reason = Some(reason.clone());
                 found = Some(p.kind);
@@ -1925,7 +2002,7 @@ impl World {
         let reason = reason.into();
         let mut found = None;
         for p in &mut self.construction_queue {
-            if p.id == project_id && matches!(p.status, ConstructionStatus::Queued | ConstructionStatus::InProgress) {
+            if p.id == project_id && matches!(p.status, ConstructionStatus::Queued | ConstructionStatus::Approved | ConstructionStatus::InProgress) {
                 p.status = ConstructionStatus::Failed;
                 p.terminal_reason = Some(reason.clone());
                 found = Some(p.kind);
@@ -1948,16 +2025,32 @@ impl World {
     pub fn advance_construction(&mut self, project_id: u64, days: u32) -> bool {
         let days = days.max(1);
         let mut completed_proj: Option<ConstructionProject> = None;
+        let mut approved: Option<(u64, FacilityKind)> = None;
         for p in &mut self.construction_queue {
-            if p.id == project_id && matches!(p.status, ConstructionStatus::Queued | ConstructionStatus::InProgress) {
+            // Advancing a raw request implies approval: the request transitions
+            // through `Approved` into `InProgress` in one validated step.
+            if p.id == project_id && p.status == ConstructionStatus::Queued {
+                p.status = ConstructionStatus::Approved;
+                approved = Some((p.id, p.kind));
+            }
+            if p.id == project_id && matches!(p.status, ConstructionStatus::Approved | ConstructionStatus::InProgress) {
                 p.status = ConstructionStatus::InProgress;
-                p.progress_days = p.progress_days.saturating_add(days);
+                // Clamp to the remaining work so observer-driven advances can
+                // never push progress past the project's declared duration.
+                p.progress_days = (p.progress_days.saturating_add(days)).min(p.total_days);
                 if p.progress_days >= p.total_days {
                     p.status = ConstructionStatus::Completed;
                     completed_proj = Some(p.clone());
                 }
                 break;
             }
+        }
+        if let Some((id, kind)) = approved {
+            let ev = WorldEvent::new(0, self.time, EventKind::Expansion,
+                format!("Construction approved: {} (project {})", kind.display(), id))
+                .with_cause("observer advance approved the queued request".to_string());
+            self.history.push(ev.clone());
+            self.events.emit(ev);
         }
         if let Some(proj) = completed_proj {
             let id = self.add_facility(proj.kind, proj.wing, proj.capacity);
@@ -1977,7 +2070,7 @@ impl World {
 
     /// Auditable policy mutation: emits a `PolicyChange` event (and history
     /// entry) when the value actually changes.
-    fn audit_policy_change(&mut self, key: &str, old: f32, new: f32) {
+    pub fn audit_policy_change(&mut self, key: &str, old: f32, new: f32) {
         if (old - new).abs() <= f32::EPSILON {
             return;
         }

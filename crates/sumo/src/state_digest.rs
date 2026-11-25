@@ -270,6 +270,34 @@ fn hash_parole_ledger(parole: &ParoleLedger, hasher: &mut impl Hasher) {
         time.secs.hash(hasher);
     }
 
+    // Decision conditions, reasons and release times are part of the auditable
+    // state and must survive save/load with the same digest.
+    let mut conditions: Vec<_> = parole.conditions.iter().collect();
+    conditions.sort_by_key(|(pid, _)| pid.raw());
+    for (pid, c) in conditions {
+        pid.raw().hash(hasher);
+        c.reporting_per_month.hash(hasher);
+        c.supervision_months.hash(hasher);
+        c.curfew.hash(hasher);
+        c.drug_testing.hash(hasher);
+        c.treatment_required.hash(hasher);
+        c.no_contact_order.hash(hasher);
+    }
+
+    let mut reasons: Vec<_> = parole.decision_reason.iter().collect();
+    reasons.sort_by_key(|(pid, _)| pid.raw());
+    for (pid, reason) in reasons {
+        pid.raw().hash(hasher);
+        reason.hash(hasher);
+    }
+
+    let mut released: Vec<_> = parole.released_at.iter().collect();
+    released.sort_by_key(|(pid, _)| pid.raw());
+    for (pid, at) in released {
+        pid.raw().hash(hasher);
+        at.secs.hash(hasher);
+    }
+
     parole.last_decision_at.map(|t| t.secs).hash(hasher);
 }
 

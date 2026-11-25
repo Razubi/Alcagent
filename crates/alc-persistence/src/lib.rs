@@ -21,8 +21,9 @@
 //! container-level `#[serde(default)]` where safe, and loading is version-aware:
 //! the format version is peeked from the bincode header before deserialization
 //! so older/newer/corrupt saves produce an actionable error. Known legacy
-//! bincode layouts (v1, v3) are migrated explicitly; other older serde-default
-//! compatible layouts are stamped forward when decodable.
+//! bincode layouts (v1, v3, v4) are migrated explicitly; other older
+//! serde-default compatible layouts are stamped forward when decodable.
+//! Version 5 appends parole decision conditions/reasons/release times.
 
 use alc_core::config::Config;
 use alc_events::WorldEvent;
@@ -35,7 +36,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const SAVE_FORMAT_VERSION: u32 = 4; // 0.05: structured incident fields + contraband resolution timestamps
+pub const SAVE_FORMAT_VERSION: u32 = 5; // 0.05: persisted parole conditions/decisions/releases
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SaveHeader {
@@ -107,6 +108,23 @@ pub struct ParoleLedger {
     pub adjustments: BTreeMap<u64, f32>,
     pub hearing_at: BTreeMap<u64, SimTime>,
     pub last_decision_at: Option<SimTime>,
+    /// Grant conditions (spec 006). `#[serde(default)]` keeps older saves loadable.
+    pub conditions: BTreeMap<u64, ParoleConditions>,
+    /// Persisted decision reasons (spec 006).
+    pub decision_reason: BTreeMap<u64, String>,
+    /// Time at which a granted prisoner left custody (spec 006).
+    pub released_at: BTreeMap<u64, SimTime>,
+}
+
+/// Persisted mirror of `sumo::ParoleConditions` (spec 006).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ParoleConditions {
+    pub reporting_per_month: u8,
+    pub supervision_months: u16,
+    pub curfew: bool,
+    pub drug_testing: bool,
+    pub treatment_required: bool,
+    pub no_contact_order: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -458,11 +476,36 @@ struct SaveFileV1 {
     world: alc_world::World,
 }
 
+/// Parole ledger layout through v4: before decision conditions, reasons and
+/// release times were persisted. Used by the v3/v4 migration paths.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+struct ParoleLedgerLegacy {
+    pub status: BTreeMap<u64, ParoleStatus>,
+    pub adjustments: BTreeMap<u64, f32>,
+    pub hearing_at: BTreeMap<u64, SimTime>,
+    pub last_decision_at: Option<SimTime>,
+}
+
+impl From<ParoleLedgerLegacy> for ParoleLedger {
+    fn from(legacy: ParoleLedgerLegacy) -> Self {
+        Self {
+            status: legacy.status,
+            adjustments: legacy.adjustments,
+            hearing_at: legacy.hearing_at,
+            last_decision_at: legacy.last_decision_at,
+            conditions: BTreeMap::new(),
+            decision_reason: BTreeMap::new(),
+            released_at: BTreeMap::new(),
+        }
+    }
+}
+
 /// v3 engine layout: predates `resolved_contraband_at`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct EngineStateV3 {
-    pub parole: ParoleLedger,
+    pub parole: ParoleLedgerLegacy,
     pub population_history: Vec<(u64, u32)>,
     pub incidents: Vec<WorldEvent>,
     pub incident_sidecar: Vec<Incident>,
@@ -487,7 +530,7 @@ struct SaveFileV3 {
 impl From<EngineStateV3> for EngineState {
     fn from(v3: EngineStateV3) -> Self {
         Self {
-            parole: v3.parole,
+            parole: v3.parole.into(),
             population_history: v3.population_history,
             incidents: v3.incidents,
             incident_sidecar: v3.incident_sidecar,
@@ -504,10 +547,58 @@ impl From<EngineStateV3> for EngineState {
     }
 }
 
+/// v4 engine layout: identical to the current engine state except the parole
+/// ledger, which predates conditions/reasons/release times.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+struct EngineStateV4 {
+    pub parole: ParoleLedgerLegacy,
+    pub population_history: Vec<(u64, u32)>,
+    pub incidents: Vec<WorldEvent>,
+    pub incident_sidecar: Vec<Incident>,
+    pub decision_log: Vec<Decision>,
+    pub decision_audit: Vec<DecisionAuditRecord>,
+    pub resolved_contraband_cases: std::collections::BTreeSet<u64>,
+    pub post_release: BTreeMap<u64, bool>,
+    pub policy_state: PolicyState,
+    pub policy_mode: PolicyMode,
+    pub autosave_interval_days: Option<u64>,
+    pub last_autosave_day: Option<u64>,
+    pub resolved_contraband_at: BTreeMap<u64, SimTime>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SaveFileV4 {
+    header: SaveHeader,
+    world: alc_world::World,
+    #[serde(default)]
+    engine_state: Option<EngineStateV4>,
+}
+
+impl From<EngineStateV4> for EngineState {
+    fn from(v4: EngineStateV4) -> Self {
+        Self {
+            parole: v4.parole.into(),
+            population_history: v4.population_history,
+            incidents: v4.incidents,
+            incident_sidecar: v4.incident_sidecar,
+            decision_log: v4.decision_log,
+            decision_audit: v4.decision_audit,
+            resolved_contraband_cases: v4.resolved_contraband_cases,
+            post_release: v4.post_release,
+            policy_state: v4.policy_state,
+            policy_mode: v4.policy_mode,
+            autosave_interval_days: v4.autosave_interval_days,
+            last_autosave_day: v4.last_autosave_day,
+            resolved_contraband_at: v4.resolved_contraband_at,
+        }
+    }
+}
+
 /// Migrate a save to the current format version.
 ///
-/// - v1 -> v4: v1 predates `engine_state`; an empty engine state is installed.
-/// - v2/v3 -> v4: fields added since those versions are serde-defaulted in
+/// - v1 -> v5: v1 predates `engine_state`; an empty engine state is installed.
+/// - v2/v3/v4 -> v5: fields added since those versions are serde-defaulted in
 ///   self-describing formats; for bincode, explicit legacy layouts are used
 ///   where trailing-field additions break direct decoding.
 /// - v0 or unknown older versions have no defined layout and are rejected
@@ -567,6 +658,14 @@ pub fn migrate_bytes(bytes: &[u8]) -> Result<SaveFile, SaveError> {
                 Err(_) => return Err(err),
             },
             3 => match bincode::deserialize::<SaveFileV3>(bytes) {
+                Ok(legacy) => SaveFile {
+                    header: legacy.header,
+                    world: legacy.world,
+                    engine_state: legacy.engine_state.map(EngineState::from),
+                },
+                Err(_) => return Err(err),
+            },
+            4 => match bincode::deserialize::<SaveFileV4>(bytes) {
                 Ok(legacy) => SaveFile {
                     header: legacy.header,
                     world: legacy.world,

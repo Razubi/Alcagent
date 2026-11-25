@@ -60,7 +60,7 @@ pub struct PolicySummary {
     pub security_level: f32,
     /// Privileges level 0.0-1.0.
     pub privileges_level: f32,
-    /// Rehab funding multiplier 0.0-2.0.
+    /// Rehab funding multiplier 0.0-3.0.
     pub rehab_funding_multiplier: f32,
     /// Intake paused by lockdown/max security.
     pub intake_paused: bool,
@@ -215,6 +215,9 @@ impl EngineState {
                 adjustments: self.parole.adjustments.iter().map(|(k, v)| (k.raw(), *v)).collect(),
                 hearing_at: self.parole.hearing_at.iter().map(|(k, v)| (k.raw(), *v)).collect(),
                 last_decision_at: self.parole.last_decision_at,
+                conditions: self.parole.conditions.iter().map(|(k, v)| (k.raw(), parole_conditions_to_persist(v))).collect(),
+                decision_reason: self.parole.decision_reason.iter().map(|(k, v)| (k.raw(), v.clone())).collect(),
+                released_at: self.parole.released_at.iter().map(|(k, v)| (k.raw(), *v)).collect(),
             },
             population_history: self.population_history.iter().map(|(t, p)| (t.secs, *p)).collect(),
             incidents: self.incidents.clone(),
@@ -283,6 +286,9 @@ impl EngineState {
                 adjustments: persist.parole.adjustments.into_iter().map(|(k, v)| (PrisonerId(k), v)).collect(),
                 hearing_at: persist.parole.hearing_at.into_iter().map(|(k, v)| (PrisonerId(k), v)).collect(),
                 last_decision_at: persist.parole.last_decision_at,
+                conditions: persist.parole.conditions.into_iter().map(|(k, v)| (PrisonerId(k), parole_conditions_from_persist(v))).collect(),
+                decision_reason: persist.parole.decision_reason.into_iter().map(|(k, v)| (PrisonerId(k), v)).collect(),
+                released_at: persist.parole.released_at.into_iter().map(|(k, v)| (PrisonerId(k), v)).collect(),
             },
             population_history: persist.population_history.into_iter().map(|(t, p)| (SimTime::from_secs(t), p)).collect(),
             autosave: persist.autosave_interval_days.map(|days| {
@@ -430,6 +436,30 @@ fn parole_status_from_persist(status: alc_persistence::ParoleStatus) -> ParoleSt
         alc_persistence::ParoleStatus::Granted => ParoleStatus::Granted,
         alc_persistence::ParoleStatus::Denied => ParoleStatus::Denied,
         alc_persistence::ParoleStatus::InHearing => ParoleStatus::InHearing,
+    }
+}
+
+/// Helper to convert parole conditions to their persistence mirror.
+fn parole_conditions_to_persist(c: &crate::parole::ParoleConditions) -> alc_persistence::ParoleConditions {
+    alc_persistence::ParoleConditions {
+        reporting_per_month: c.reporting_per_month,
+        supervision_months: c.supervision_months,
+        curfew: c.curfew,
+        drug_testing: c.drug_testing,
+        treatment_required: c.treatment_required,
+        no_contact_order: c.no_contact_order,
+    }
+}
+
+/// Helper to convert persisted parole conditions back to the engine type.
+fn parole_conditions_from_persist(c: alc_persistence::ParoleConditions) -> crate::parole::ParoleConditions {
+    crate::parole::ParoleConditions {
+        reporting_per_month: c.reporting_per_month,
+        supervision_months: c.supervision_months,
+        curfew: c.curfew,
+        drug_testing: c.drug_testing,
+        treatment_required: c.treatment_required,
+        no_contact_order: c.no_contact_order,
     }
 }
 

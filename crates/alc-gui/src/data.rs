@@ -193,11 +193,10 @@ impl PolicyChangeKind {
     }
 }
 
-/// Build the `WardenAction` the GUI emits for a policy change. The engine
-/// validates and applies it through `sumo::Sim::apply_warden_action` (§2/§9
-/// authority path); for the `lockdown` knob the engine applier has no
-/// "lockdown" arm in its `ChangePolicy` match, so the GUI sets the flag on
-/// the world after applying the action (see `alc_gui::app`).
+/// Build the `WardenAction` a caller can submit for a policy change. The GUI
+/// itself routes policy changes through validated `Command::Set*` variants in
+/// `alc_gui::app` (which call `sumo::Sim` setters); this helper is kept for
+/// tests and non-GUI callers of `sumo::Sim::apply_warden_action`.
 #[must_use]
 pub fn policy_change_action(kind: PolicyChangeKind, current: &alc_world::Policies) -> WardenAction {
     use PolicyChangeKind::*;
@@ -533,6 +532,10 @@ pub struct Snapshot {
     pub selected_agent: Option<AgentObservation>,
     pub selected_schedule: Option<ScheduleTimeline>,
     pub selected_parole: Option<String>,
+    /// Conditions and decision record for the selected prisoner (spec 006).
+    pub selected_parole_conditions: Option<sumo::ParoleConditions>,
+    pub selected_parole_reason: Option<String>,
+    pub selected_parole_released: bool,
 }
 
 /// Capture a read-only snapshot. `selected_prisoner` enriches the snapshot
@@ -578,6 +581,15 @@ pub fn capture(sim: &sumo::Sim, selected_prisoner: Option<PrisonerId>) -> Snapsh
     let selected_parole = selected_prisoner
         .and_then(|id| sim.parole_status(id))
         .map(|status| format!("{status:?}"));
+    let selected_parole_conditions = selected_prisoner
+        .and_then(|id| sim.parole_conditions(id))
+        .cloned();
+    let selected_parole_reason = selected_prisoner
+        .and_then(|id| sim.parole_decision_reason(id))
+        .map(str::to_string);
+    let selected_parole_released = selected_prisoner
+        .and_then(|id| sim.parole_released_at(id))
+        .is_some();
 
     Snapshot {
         speed: sim.speed(),
@@ -607,6 +619,9 @@ pub fn capture(sim: &sumo::Sim, selected_prisoner: Option<PrisonerId>) -> Snapsh
         selected_agent,
         selected_schedule,
         selected_parole,
+        selected_parole_conditions,
+        selected_parole_reason,
+        selected_parole_released,
     }
 }
 

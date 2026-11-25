@@ -4,7 +4,7 @@ use alc_core::{GangId, PrisonerId, RngStream, SimTime};
 use alc_social::{
     detect_roles, enemies_of, friends_of, influential_prisoners, isolated_prisoners, is_enemy,
     is_friend, is_rival, maybe_form_gang, rivals_of, Gang, PrisonerGangProfile, RelationshipDelta,
-    SocialGraph,
+    SocialGraph, SocialRole,
 };
 
 fn pid(n: u64) -> PrisonerId {

@@ -1,6 +1,6 @@
-# Spec 006 — Policy / construction / parole controls
+﻿# Spec 006 â€” Policy / construction / parole controls
 
-Status: pending
+Status: in_progress
 
 ## Requirements
 Institutional control surfaces must be validated, auditable, and consistent across frontends.
@@ -13,3 +13,4 @@ Institutional control surfaces must be validated, auditable, and consistent acro
 - [ ] Full workspace tests pass.
 
 Completion signal: `<promise>DONE</promise>`
+

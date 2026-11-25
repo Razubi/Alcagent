@@ -211,6 +211,9 @@ pub enum SocialRole {
     Victim,
     Loner,
     InformantSuspect,
+    // Appended for serde/bincode stability (Spec 012).
+    Ally,
+    Vulnerable,
 }
 
 // --- Dyad/social classifiers (Directive §6) --------------------------------
@@ -359,6 +362,8 @@ pub fn detect_roles(
         let mut bridge_score = 0.0f32;
         let mut staff_proximity_proxy = 0.0f32; // suspicion heuristic from unusual low-hostility/high-fear asymmetry cues
         let mut in_group_trust_proxy = 0.0f32;
+        let mut ally_score = 0.0f32;
+        let mut protection_sum = 0.0f32;
 
         let my_gangs = member_of.get(&id).cloned().unwrap_or_default();
 
@@ -378,6 +383,12 @@ pub fn detect_roles(
             }
             if r.bond_score() > 0.8 {
                 strong_ties += 1;
+            }
+            protection_sum += r.protection;
+            // Allies are derived from repeated affiliative exchanges, not from
+            // a hard-coded roster: trust + friendship must coexist with low hostility.
+            if r.friendship >= 0.35 && r.trust >= 0.35 && r.hostility < 0.25 {
+                ally_score += 0.4 + r.friendship * 0.35 + r.trust * 0.25;
             }
 
             // Broker heuristic: ties across different gang memberships / otherwise separated actors.
@@ -417,6 +428,16 @@ pub fn detect_roles(
         }
         if lonely_count > n * 0.7 {
             roles.push((SocialRole::Loner, (lonely_count / n).clamp(0.0, 1.0)));
+        }
+        if ally_score >= 0.9 {
+            roles.push((SocialRole::Ally, (ally_score / n).clamp(0.25, 1.0)));
+        }
+        let protection_avg = protection_sum / (n - 1.0).max(1.0);
+        let vulnerability = (feared / n) * 0.45
+            + (hostility_in / n) * 0.35
+            + (1.0 - protection_avg.clamp(0.0, 1.0)) * 0.20;
+        if vulnerability > 0.35 && strong_ties <= 1 {
+            roles.push((SocialRole::Vulnerable, vulnerability.clamp(0.0, 1.0)));
         }
 
         // Broker: moderate-to-high bridge score with spread contacts.

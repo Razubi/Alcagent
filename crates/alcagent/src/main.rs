@@ -116,6 +116,16 @@ impl SimDriver for EngineDriver {
     fn cancel_construction(&mut self, project_id: u64, reason: &str) -> bool { self.0.cancel_construction(project_id, reason) }
     fn fail_construction(&mut self, project_id: u64, reason: &str) -> bool { self.0.fail_construction(project_id, reason) }
     fn advance_construction(&mut self, project_id: u64, days: u32) -> bool { self.0.advance_construction(project_id, days) }
+    fn approve_construction(&mut self, project_id: u64, reason: &str) -> bool { self.0.approve_construction(project_id, reason) }
+    fn parole_due(&self) -> Vec<u64> { self.0.parole_due().iter().map(|id| id.raw()).collect() }
+    fn parole_status(&self, prisoner_id: u64) -> Option<sumo::ParoleStatus> { self.0.parole_status(alc_core::PrisonerId(prisoner_id)) }
+    fn parole_conditions(&self, prisoner_id: u64) -> Option<sumo::ParoleConditions> { self.0.parole_conditions(alc_core::PrisonerId(prisoner_id)).cloned() }
+    fn parole_decision_reason(&self, prisoner_id: u64) -> Option<String> { self.0.parole_decision_reason(alc_core::PrisonerId(prisoner_id)).map(str::to_string) }
+    fn parole_released_at(&self, prisoner_id: u64) -> Option<sumo::SimTime> { self.0.parole_released_at(alc_core::PrisonerId(prisoner_id)) }
+    fn start_parole_hearing(&mut self, prisoner_id: u64) -> bool { self.0.start_parole_hearing(alc_core::PrisonerId(prisoner_id)).is_some() }
+    fn grant_parole(&mut self, prisoner_id: u64) -> bool { self.0.grant_parole(alc_core::PrisonerId(prisoner_id)).is_some() }
+    fn deny_parole(&mut self, prisoner_id: u64, reason: &str) -> bool { self.0.deny_parole(alc_core::PrisonerId(prisoner_id), reason).is_some() }
+    fn release_on_parole(&mut self, prisoner_id: u64) -> bool { self.0.release_on_parole(alc_core::PrisonerId(prisoner_id)) }
     fn contraband_inventory(&self) -> Vec<sumo::ContrabandInventorySummary> { self.0.contraband_inventory() }
     fn schedule_timeline(&self, prisoner_id: u64) -> Option<sumo::ScheduleTimeline> { self.0.schedule_timeline(alc_core::PrisonerId(prisoner_id)) }
     fn budget_snapshot(&self) -> sumo::BudgetSnapshot { self.0.budget_snapshot() }

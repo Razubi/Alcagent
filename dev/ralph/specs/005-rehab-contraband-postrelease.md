@@ -1,6 +1,6 @@
-# Spec 005 — Rehab / contraband / post-release lifecycles
+﻿# Spec 005 â€” Rehab / contraband / post-release lifecycles
 
-Status: pending
+Status: done
 
 ## Requirements
 These systems must have end-to-end world state transitions, not isolated primitives.
@@ -13,3 +13,4 @@ These systems must have end-to-end world state transitions, not isolated primiti
 - [ ] `cargo test -p sumo --test alcagent_005_smoke` and full workspace pass.
 
 Completion signal: `<promise>DONE</promise>`
+

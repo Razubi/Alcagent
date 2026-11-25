@@ -46,6 +46,16 @@ pub struct ViewData {
     pub contraband_inventory: Vec<sumo::ContrabandInventorySummary>,
     pub budget_snapshot: sumo::BudgetSnapshot,
     pub selected_schedule: Option<sumo::ScheduleTimeline>,
+    /// Prisoners currently eligible for parole (spec 006 control surface).
+    pub parole_due: Vec<u64>,
+    /// Parole status of the selected prisoner.
+    pub selected_parole: Option<sumo::ParoleStatus>,
+    /// Conditions attached to the selected prisoner's grant.
+    pub selected_parole_conditions: Option<sumo::ParoleConditions>,
+    /// Persisted decision reason for the selected prisoner.
+    pub selected_parole_reason: Option<String>,
+    /// Time at which the selected prisoner was released on parole.
+    pub selected_parole_released_at: Option<sumo::SimTime>,
 }
 
 /// Extra context the status bar needs that is not part of the world snapshot.
@@ -74,7 +84,7 @@ const ALL_MODES: [ViewMode; 11] = [
 
 /// Full status-bar help text. Measured at render time; tests assert it stays
 /// in sync with the keys handled in `app::App::handle_key`.
-pub const HELP_WIDE: &str = " ←↑↓→ select · 1-9,0,A views · SPACE pause · +/- speed · S save · Ctrl-L load · / search · Ctrl-W clear query · Tab pin · n notes · V auto-pause · N/E/K policy bands · p policy mode · L/U lock · x/X lockdown (non-Warden) · Ctrl-R resolve critical · c/C/u/U/x/X/> build (Warden) · t/r/R rehab · f/F contraband · m/o filters · d/D decision filter · ? help · q quit";
+pub const HELP_WIDE: &str = " ←↑↓→ select · 1-9,0,A views · SPACE pause · +/- speed · S save · Ctrl-L load · / search · Ctrl-W clear query · Tab pin · n notes · V auto-pause · N/E/K policy bands · p policy mode · L/U lock · x/X lockdown (non-Warden) · Ctrl-R resolve critical · c/C/u/U/x/X/> build (Warden) · v approve build · H/G/J/Y parole hearing/grant/deny/release (Prisoner) · t/r/R rehab · f/F contraband · m/o filters · d/D decision filter · ? help · q quit";
 /// Compact status-bar help used when the terminal is too narrow for
 /// [`HELP_WIDE`] (measured by [`Line::width`]).
 pub const HELP_COMPACT: &str = " ↑↓ 1-9,0,A SPC +/- S Ctrl-L / Tab n V c/C u/U x/X N/E/K p ? q";
@@ -290,7 +300,10 @@ fn help_body() -> Vec<Line<'static>> {
         entry("[ ] , . Security/privileges sliders · ; ' Rehab funding"),
         Line::from(""),
         title("Construction (Warden view)"),
-        entry("c Cycle build kind · C Queue project · u/U Select project · x Cancel · X Fail · > Advance"),
+        entry("c Cycle build kind · C Queue project · u/U Select project · v Approve · x Cancel · X Fail · > Advance"),
+        Line::from(""),
+        title("Parole (Prisoner view)"),
+        entry("H Schedule hearing · G Grant · J Deny · Y Release on granted parole"),
         Line::from(""),
         title("Rehab (Prisoner/Warden views)"),
         entry("t Cycle program · r Enroll selected · R Drop from program"),
@@ -877,6 +890,23 @@ fn render_prisoner_detail(frame: &mut Frame, area: Rect, p: &PrisonerSummary, da
         tail.push(plain(format!("d{} {} sev {:.1}{}", c.at.as_days(), c.item.as_deref().unwrap_or("Unknown"), c.severity, if c.resolved { " resolved" } else { "" })));
     }
 
+    tail.push(plain("--- Parole (0.05) H:hearing G:grant J:deny Y:release ---"));
+    let due = data.parole_due.contains(&p.id.raw());
+    tail.push(kv("Eligibility", if due { "due for review" } else { "not due" }.to_string()));
+    tail.push(kv("Status", data.selected_parole.map(|s| format!("{s:?}")).unwrap_or_else(|| "none".into())));
+    if let Some(reason) = data.selected_parole_reason.as_deref() {
+        tail.push(kv("Decision", truncate(reason, 48)));
+    }
+    if let Some(c) = data.selected_parole_conditions.as_ref() {
+        tail.push(plain(format!(
+            "  Conditions: report {}/mo · {}mo supervision · curfew={} drug={} treat={} nocontact={}",
+            c.reporting_per_month, c.supervision_months, c.curfew, c.drug_testing, c.treatment_required, c.no_contact_order
+        )));
+    }
+    if let Some(at) = data.selected_parole_released_at {
+        tail.push(kv("Released", format!("day {}", at.as_days())));
+    }
+
     if let Some(pr) = data.post_release_records.iter().find(|r| r.prisoner_id == p.id) {
         tail.push(plain("--- Post-release ---"));
         tail.push(kv("Outcome", if pr.successful_reintegration { "successful" } else { "follow-up" }.to_string()));
@@ -1347,7 +1377,7 @@ fn render_warden(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
         .collect::<Vec<_>>()
         .join(" ");
     detail_lines.push(plain(format!("Catalog: {catalog}")));
-    detail_lines.push(plain("c cycle · C queue · x cancel · X fail · > advance"));
+    detail_lines.push(plain("c cycle · C queue · v approve · x cancel · X fail · > advance"));
     frame.render_widget(
         Paragraph::new(detail_lines).block(title_block(" Construction Detail ")),
         right[3],
@@ -2437,6 +2467,11 @@ mod tests {
             contraband_inventory: Vec::new(),
             budget_snapshot: sumo::BudgetSnapshot::default(),
             selected_schedule: None,
+            parole_due: Vec::new(),
+            selected_parole: None,
+            selected_parole_conditions: None,
+            selected_parole_reason: None,
+            selected_parole_released_at: None,
         }
     }
 

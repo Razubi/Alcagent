@@ -282,33 +282,39 @@ pub fn apply_warden_action(world: &mut World, at: SimTime, action: WardenAction)
         }
         WardenAction::ChangePolicy { policy, value } => {
             let value = value as f32;
-            let mut applied = true;
             match policy.as_str() {
-                "privileges" => world.policies.privileges_level = value.clamp(0.0, 1.0),
-                "security" => world.policies.security_level = value.clamp(0.0, 1.0),
-                "rehab_funding" => world.policies.rehab_funding_multiplier = value.clamp(0.2, 3.0),
-                "lockdown" => {
-                    // NOTE: this driver only has `&mut World`, so it cannot
-                    // update `Sim::engine_state.policy_state` (the authoritative
-                    // policy/lockdown mirror used by `check_invariants`).
-                    // Callers MUST use `Sim::set_lockdown(true)` instead of
-                    // applying this action directly when a real lockdown is
-                    // intended. The emitted event records the attempted change
-                    // so it is visible to the warden/UI; Wave 5 should change
-                    // the applier signature to take `&mut Sim` and sync state.
-                    world.policies.lockdown = true;
+                "privileges" => {
+                    let old = world.policies.privileges_level;
+                    world.policies.privileges_level = value.clamp(0.0, 1.0);
+                    world.audit_policy_change("privileges_level", old, world.policies.privileges_level);
                 }
-                _ => applied = false,
+                "security" => {
+                    let old = world.policies.security_level;
+                    world.policies.security_level = value.clamp(0.0, 1.0);
+                    world.audit_policy_change("security_level", old, world.policies.security_level);
+                }
+                "rehab_funding" => {
+                    let old = world.policies.rehab_funding_multiplier;
+                    world.policies.rehab_funding_multiplier = value.clamp(0.2, 3.0);
+                    world.audit_policy_change("rehab_funding_multiplier", old, world.policies.rehab_funding_multiplier);
+                }
+                "lockdown" => {
+                    // `Sim::apply_warden_action` reconciles the engine policy
+                    // mirror from the world after this driver runs, so the
+                    // requested value can be honoured directly.
+                    let enabled = value >= 0.5;
+                    let old = if world.policies.lockdown { 1.0 } else { 0.0 };
+                    world.policies.lockdown = enabled;
+                    world.lockdown_since_day = world.days_simulated;
+                    world.audit_policy_change("lockdown", old, if enabled { 1.0 } else { 0.0 });
+                }
+                _ => events.push(WorldEvent::new(
+                    0,
+                    at,
+                    EventKind::PolicyChange,
+                    format!("Policy change: {policy} = {value:.2} (unknown policy, ignored)"),
+                )),
             }
-            events.push(WorldEvent::new(
-                0,
-                at,
-                EventKind::PolicyChange,
-                format!(
-                    "Policy change: {policy} = {value:.2}{}",
-                    if applied { "" } else { " (unknown policy, ignored)" }
-                ),
-            ));
         }
         WardenAction::IncreaseSecurity => {
             world.policies.security_level = (world.policies.security_level + 0.1).min(1.0);

@@ -132,6 +132,28 @@ pub trait SimDriver {
     fn fail_construction(&mut self, _project_id: u64, _reason: &str) -> bool { false }
     /// Advance a construction project by days (0.05 control).
     fn advance_construction(&mut self, _project_id: u64, _days: u32) -> bool { false }
+    /// Approve a queued construction request (spec 006 control).
+    fn approve_construction(&mut self, _project_id: u64, _reason: &str) -> bool { false }
+
+    /// Prisoners eligible for a parole hearing (spec 006 read surface).
+    fn parole_due(&self) -> Vec<u64> { Vec::new() }
+    /// Parole status for a prisoner, if a record exists.
+    fn parole_status(&self, _prisoner_id: u64) -> Option<sumo::ParoleStatus> { None }
+    /// Persisted conditions for a decided prisoner.
+    fn parole_conditions(&self, _prisoner_id: u64) -> Option<sumo::ParoleConditions> { None }
+    /// Persisted decision reason for a prisoner.
+    fn parole_decision_reason(&self, _prisoner_id: u64) -> Option<String> { None }
+    /// Sim time at which a grant became an actual release.
+    fn parole_released_at(&self, _prisoner_id: u64) -> Option<sumo::SimTime> { None }
+    /// Schedule a parole hearing (validated control).
+    fn start_parole_hearing(&mut self, _prisoner_id: u64) -> bool { false }
+    /// Grant parole (validated control).
+    fn grant_parole(&mut self, _prisoner_id: u64) -> bool { false }
+    /// Deny parole (validated control).
+    fn deny_parole(&mut self, _prisoner_id: u64, _reason: &str) -> bool { false }
+    /// Execute a grant as an actual release from custody (validated control).
+    fn release_on_parole(&mut self, _prisoner_id: u64) -> bool { false }
+
     /// Resolved daily schedule timeline for a prisoner (0.05).
     fn schedule_timeline(&self, prisoner_id: u64) -> Option<sumo::ScheduleTimeline>;
     /// Budget snapshot over the trailing 30 days (0.05).
@@ -518,6 +540,11 @@ impl App {
             contraband_inventory: self.driver.contraband_inventory(),
             budget_snapshot: self.driver.budget_snapshot(),
             selected_schedule: self.ui.selected_prisoner.and_then(|id| self.driver.schedule_timeline(id)),
+            parole_due: self.driver.parole_due(),
+            selected_parole: self.ui.selected_prisoner.and_then(|id| self.driver.parole_status(id)),
+            selected_parole_conditions: self.ui.selected_prisoner.and_then(|id| self.driver.parole_conditions(id)),
+            selected_parole_reason: self.ui.selected_prisoner.and_then(|id| self.driver.parole_decision_reason(id)),
+            selected_parole_released_at: self.ui.selected_prisoner.and_then(|id| self.driver.parole_released_at(id)),
         }
     }
 
@@ -744,7 +771,7 @@ impl App {
             }
             KeyCode::Char('\'') => {
                 let mut ps = self.driver.policy_summary();
-                ps.rehab_funding_multiplier = (ps.rehab_funding_multiplier + 0.1).min(2.0);
+                ps.rehab_funding_multiplier = (ps.rehab_funding_multiplier + 0.1).min(3.0);
                 self.driver.set_rehab_funding(ps.rehab_funding_multiplier);
                 self.notify(format!("Rehab funding: {:.2}x", ps.rehab_funding_multiplier));
             }
@@ -820,6 +847,31 @@ impl App {
                     self.notify(format!("Advanced project #{id} by 1 day: {}", if ok { "ok" } else { "unavailable" }));
                 } else {
                     self.notify("No construction project selected");
+                }
+            }
+            KeyCode::Char('v') if matches!(self.ui.mode, ViewMode::Warden) => {
+                if let Some(id) = self.ui.selected_construction {
+                    let ok = self.driver.approve_construction(id, "observer approval");
+                    self.notify(format!("Project #{id} approval: {}", if ok { "recorded" } else { "unavailable" }));
+                } else {
+                    self.notify("No construction project selected");
+                }
+            }
+            KeyCode::Char('H' | 'G' | 'J' | 'Y') if matches!(self.ui.mode, ViewMode::Prisoner) => {
+                if let Some(id) = self.ui.selected_prisoner {
+                    let (verb, ok) = match code {
+                        KeyCode::Char('H') => ("hearing scheduled", self.driver.start_parole_hearing(id)),
+                        KeyCode::Char('G') => ("parole granted", self.driver.grant_parole(id)),
+                        KeyCode::Char('J') => ("parole denied", self.driver.deny_parole(id, "institutional conduct")),
+                        KeyCode::Char('Y') => ("released on parole", self.driver.release_on_parole(id)),
+                        _ => unreachable!(),
+                    };
+                    self.notify(format!(
+                        "Prisoner #{id} {verb}: {}",
+                        if ok { "recorded" } else { "rejected" }
+                    ));
+                } else {
+                    self.notify("Select a prisoner for parole controls");
                 }
             }
             KeyCode::Char('u') if matches!(self.ui.mode, ViewMode::Warden) => {
@@ -1118,6 +1170,10 @@ mod tests {
         decisions: Vec<sumo::DecisionAuditRecord>,
         /// Construction projects in the queue served by `construction_queue`.
         construction_queue: Vec<sumo::ConstructionSummary>,
+        /// Parole control calls observed by the spec 006 key tests.
+        parole_calls: Vec<String>,
+        /// Construction approvals observed by the spec 006 key tests.
+        approval_calls: Vec<u64>,
     }
 
     /// Borrow the concrete [`MockDriver`] behind an [`App`] (tests).
@@ -1211,6 +1267,31 @@ mod tests {
             });
             id
         }
+        fn approve_construction(&mut self, project_id: u64, _reason: &str) -> bool {
+            self.approval_calls.push(project_id);
+            true
+        }
+        fn parole_due(&self) -> Vec<u64> { self.sim.parole_due().iter().map(|id| id.raw()).collect() }
+        fn parole_status(&self, id: u64) -> Option<sumo::ParoleStatus> { self.sim.parole_status(alc_core::PrisonerId(id)) }
+        fn parole_conditions(&self, id: u64) -> Option<sumo::ParoleConditions> { self.sim.parole_conditions(alc_core::PrisonerId(id)).cloned() }
+        fn parole_decision_reason(&self, id: u64) -> Option<String> { self.sim.parole_decision_reason(alc_core::PrisonerId(id)).map(str::to_string) }
+        fn parole_released_at(&self, id: u64) -> Option<sumo::SimTime> { self.sim.parole_released_at(alc_core::PrisonerId(id)) }
+        fn start_parole_hearing(&mut self, id: u64) -> bool {
+            self.parole_calls.push(format!("hearing:{id}"));
+            true
+        }
+        fn grant_parole(&mut self, id: u64) -> bool {
+            self.parole_calls.push(format!("grant:{id}"));
+            true
+        }
+        fn deny_parole(&mut self, id: u64, _reason: &str) -> bool {
+            self.parole_calls.push(format!("deny:{id}"));
+            true
+        }
+        fn release_on_parole(&mut self, id: u64) -> bool {
+            self.parole_calls.push(format!("release:{id}"));
+            true
+        }
     }
 
     fn new_mock() -> MockDriver {
@@ -1223,6 +1304,8 @@ mod tests {
             resolved_incidents: Vec::new(),
             decisions: default_decisions(),
             construction_queue: Vec::new(),
+            parole_calls: Vec::new(),
+            approval_calls: Vec::new(),
         }
     }
 
@@ -1378,6 +1461,39 @@ mod tests {
         app.handle_key(KeyCode::Char('x'), KeyModifiers::NONE);
         app.handle_key(KeyCode::Char('X'), KeyModifiers::NONE);
         assert!(app.status_message().is_some());
+    }
+
+    #[test]
+    fn parole_and_approval_keys_route_through_validated_controls() {
+        let mut app = app();
+        let pid = app.driver().prisoners()[0].id.raw();
+
+        // Warden view: `v` approves the selected project.
+        app.handle_key(KeyCode::Char('5'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('C'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('v'), KeyModifiers::NONE);
+        assert_eq!(mock(&mut app).approval_calls, vec![1]);
+
+        // Prisoner view: H/G/J/Y mirror the GUI parole controls.
+        app.handle_key(KeyCode::Char('2'), KeyModifiers::NONE);
+        app.ui_mut().selected_prisoner = Some(pid);
+        for key in ['H', 'G', 'J', 'Y'] {
+            app.handle_key(KeyCode::Char(key), KeyModifiers::NONE);
+        }
+        assert_eq!(
+            mock(&mut app).parole_calls,
+            vec![
+                format!("hearing:{pid}"),
+                format!("grant:{pid}"),
+                format!("deny:{pid}"),
+                format!("release:{pid}"),
+            ]
+        );
+
+        // Read surfaces are bundled into ViewData for renderers.
+        app.driver_mut().start_parole_hearing(pid);
+        let data = app.build_view_data();
+        assert_eq!(data.selected_parole, app.driver().parole_status(pid));
     }
 
     #[test]

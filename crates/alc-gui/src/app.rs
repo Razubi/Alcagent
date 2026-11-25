@@ -36,6 +36,7 @@ pub enum Command {
         capacity: u32,
     },
     AdvanceConstruction(u64, u32),
+    ApproveConstruction(u64),
     CancelConstruction(u64),
     FailConstruction(u64),
     EnrollRehab {
@@ -51,6 +52,7 @@ pub enum Command {
     StartParole(PrisonerId),
     GrantParole(PrisonerId),
     DenyParole(PrisonerId, String),
+    ReleaseParole(PrisonerId),
     RecordPostRelease {
         prisoner: PrisonerId,
         release_type: String,
@@ -303,6 +305,13 @@ impl App {
                     if ok { "accepted" } else { "rejected" }
                 ));
             }
+            ApproveConstruction(id) => {
+                let ok = self.sim.approve_construction(id, "observer approval");
+                self.state.status = Some(format!(
+                    "Construction #{id} approval: {}",
+                    if ok { "accepted" } else { "rejected" }
+                ));
+            }
             CancelConstruction(id) => {
                 let ok = self.sim.cancel_construction(id, "observer control");
                 self.state.status = Some(format!(
@@ -369,6 +378,14 @@ impl App {
                     "Parole for prisoner {}: {}",
                     id.raw(),
                     if ok { "denied" } else { "rejected" }
+                ));
+            }
+            ReleaseParole(id) => {
+                let ok = self.sim.release_on_parole(id);
+                self.state.status = Some(format!(
+                    "Release on parole for prisoner {}: {}",
+                    id.raw(),
+                    if ok { "granted" } else { "rejected" }
                 ));
             }
             RecordPostRelease { prisoner, release_type, risk, plan } => {
@@ -487,6 +504,38 @@ mod tests {
         app.apply(Command::WardenAction(WardenAction::HireGuards { count: 1 }));
         assert!(app.state.status.is_some());
         assert!(app.sim.check_invariants().is_empty());
+    }
+
+    #[test]
+    fn construction_and_parole_commands_use_validated_controls() {
+        let mut app = App::new(0xC0FFEE_02);
+        let pid = app.sim.world().prisoners[0].id;
+        let total = app.sim.world().prisoners[0].sentence_days;
+        if let Some(p) = app.sim.world_mut().prisoners.iter_mut().find(|p| p.id == pid) {
+            p.sentence_served_days = (total * 7 / 10).max(1);
+            p.schedule.disciplinary_status = false;
+        }
+
+        app.apply(Command::StartParole(pid));
+        assert_eq!(app.sim.parole_status(pid), Some(sumo::ParoleStatus::Scheduled));
+        app.apply(Command::GrantParole(pid));
+        assert_eq!(app.sim.parole_status(pid), Some(sumo::ParoleStatus::Granted));
+        assert!(app.sim.parole_conditions(pid).is_some());
+
+        let audit_before = app.sim.decision_audit_log().len();
+        app.apply(Command::ReleaseParole(pid));
+        assert!(!app.sim.world().prisoners.iter().any(|p| p.id == pid));
+        assert_eq!(app.sim.parole_released_at(pid), Some(app.sim.world().time));
+        assert!(app.sim.decision_audit_log().len() > audit_before);
+
+        let project = app.sim.enqueue_construction(alc_world::FacilityKind::Medical, 1, 10);
+        app.apply(Command::ApproveConstruction(project));
+        assert_eq!(
+            app.sim.construction_queue().into_iter().find(|p| p.id == project).unwrap().status,
+            alc_world::ConstructionStatus::Approved
+        );
+        let violations = app.sim.check_invariants();
+        assert!(violations.is_empty(), "parole/construction commands left violations: {violations:?}");
     }
 
     #[test]

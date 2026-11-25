@@ -74,7 +74,7 @@ pub use alc_core::{GuardId, PrisonerId};
 pub use alc_events::EventBus;
 pub use alc_warden::WardenAction;
 pub use crate::decisions::DecisionOutcome;
-pub use crate::parole::ParoleLedger;
+pub use crate::parole::{ParoleLedger, ParoleStatus, ParoleConditions};
 
 use alc_core::TimeSpeed;
 use alc_guard::GuardReport;
@@ -83,7 +83,6 @@ use alc_prisoner::NeedTag;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::views::{contraband_severity_for_label, detect_contraband_item, parse_f32_after, parse_guard_cause, parse_plan_flag, rehab_state_for, write_back_rehab_state, ReleaseEventInfo, REHAB_PROGRAMS};
 use crate::autosave::AutosaveScheduler;
-use crate::parole::ParoleStatus;
 use alc_prisoner::{attendance_probability, current_block, resolve_schedule, AttendanceContext, SchedulePolicy, ScheduleTemplate};
 use alc_social::rehab::{enroll_in_program, RehabProgram};
 use alc_events::EventKind;
@@ -178,6 +177,30 @@ impl Sim {
         }
     }
 
+    /// Record a rejected/invalid control attempt. Unlike [`Self::audit_control`],
+    /// this marks the record as rejected so observers can distinguish validated
+    /// mutations from attempts the engine refused.
+    pub fn audit_control_rejected(
+        &mut self,
+        actor: impl Into<String>,
+        action: impl Into<String>,
+        summary: impl Into<String>,
+        reason: impl Into<String>,
+    ) {
+        self.record_decision_audit(DecisionAuditRecord {
+            time: self.world.time,
+            actor: actor.into(),
+            source: "control".to_string(),
+            action: action.into(),
+            summary: summary.into(),
+            validation: "rejected".to_string(),
+            reason: reason.into(),
+            rationale: String::new(),
+            repair_reason: String::new(),
+            outcome: alc_agents::decision::DecisionOutcomeState::Rejected,
+        });
+    }
+
     /// Record a control/observer mutation in the decision audit log (0.05).
     pub fn audit_control(
         &mut self,
@@ -187,17 +210,23 @@ impl Sim {
         validation: impl Into<String>,
         reason: impl Into<String>,
     ) {
+        let validation = validation.into();
+        let outcome = match validation.as_str() {
+            "repaired" => alc_agents::decision::DecisionOutcomeState::Repaired,
+            "rejected" => alc_agents::decision::DecisionOutcomeState::Rejected,
+            _ => alc_agents::decision::DecisionOutcomeState::Accepted,
+        };
         self.record_decision_audit(DecisionAuditRecord {
             time: self.world.time,
             actor: actor.into(),
             source: "control".to_string(),
             action: action.into(),
             summary: summary.into(),
-            validation: validation.into(),
+            validation,
             reason: reason.into(),
             rationale: String::new(),
             repair_reason: String::new(),
-            outcome: alc_agents::decision::DecisionOutcomeState::Accepted,
+            outcome,
         });
     }
 
@@ -313,6 +342,56 @@ impl Sim {
             .collect();
         for event in &new {
             self.mirror_conflict_event_to_engine_log(event);
+        }
+        self.mirror_parole_events(&new);
+    }
+
+    /// Reconcile the engine parole ledger with world-driven hearings. The
+    /// world runs deterministic daily hearings; without this mirror its
+    /// decisions would never reach the persisted ledger and observers would see
+    /// a prisoner as perpetually "due" after a world-level grant or denial.
+    fn mirror_parole_events(&mut self, events: &[WorldEvent]) {
+        for event in events {
+            let Some(&raw_id) = event.actors.first() else { continue };
+            let id = PrisonerId(raw_id);
+            match event.kind {
+                EventKind::ParoleHearing => {
+                    if !self.engine_state.parole.has(id) {
+                        self.engine_state.parole.set(id, ParoleStatus::Scheduled, event.at);
+                    }
+                    if self.engine_state.parole.hearing_at(id).is_none() {
+                        self.engine_state.parole.set_hearing_at(id, event.at);
+                    }
+                }
+                EventKind::ParoleGranted => {
+                    if !matches!(self.engine_state.parole.status(id), Some(ParoleStatus::Denied)) {
+                        self.engine_state.parole.set(id, ParoleStatus::Granted, event.at);
+                        if self.engine_state.parole.conditions(id).is_none() {
+                            let conditions = ParoleConditions::deterministic(id, 0.5, 0.5);
+                            self.engine_state.parole.set_conditions(id, conditions);
+                        }
+                        if self.engine_state.parole.decision_reason(id).is_none() {
+                            let reason = event.causes.first().cloned()
+                                .unwrap_or_else(|| "world parole board granted release".to_string());
+                            self.engine_state.parole.set_decision_reason(id, reason);
+                        }
+                        if !self.world.prisoners.iter().any(|p| p.id == id)
+                            && self.engine_state.parole.released_at(id).is_none()
+                        {
+                            self.engine_state.parole.set_released_at(id, event.at);
+                        }
+                    }
+                }
+                EventKind::ParoleDenied => {
+                    if !matches!(self.engine_state.parole.status(id), Some(ParoleStatus::Granted)) {
+                        self.engine_state.parole.set(id, ParoleStatus::Denied, event.at);
+                        let reason = event.causes.first().cloned()
+                            .unwrap_or_else(|| "world parole board denied release".to_string());
+                        self.engine_state.parole.set_decision_reason(id, reason);
+                    }
+                }
+                _ => {}
+            }
         }
     }
 
@@ -842,8 +921,9 @@ impl Sim {
 
     /// Construction queue for observer UI (0.05).
     ///
-    /// Backed by `World::construction_queue`; entries disappear when a project
-    /// completes (the facility is then in [`Sim::facilities`]).
+    /// Backed by `World::construction_queue`. Terminal projects are retained for
+    /// audit and pruned only after 365 simulated days; completed facilities also
+    /// appear in [`Sim::facilities`].
     pub fn construction_queue(&self) -> Vec<ConstructionSummary> {
         self.world.construction_queue.iter().map(|p| ConstructionSummary {
             id: p.id,
@@ -878,21 +958,40 @@ impl Sim {
         id
     }
 
+    /// Approve a requested construction project (observer/control, 0.05).
+    ///
+    /// Validates the request through `World::approve_construction` and records
+    /// both a decision-audit entry and the world's `Expansion` approval event.
+    pub fn approve_construction(&mut self, project_id: u64, reason: impl Into<String>) -> bool {
+        let reason = reason.into();
+        let before = self.world.events.recent().map(|e| e.id).max().unwrap_or(0);
+        let ok = self.world.approve_construction(project_id, reason.clone());
+        self.pump_events_into_engine_log(before);
+        self.audit_control(
+            "observer/control",
+            "ApproveConstruction",
+            format!("Construction project {project_id} {}", if ok { "approved" } else { "not approvable" }),
+            if ok { "accepted" } else { "rejected" },
+            if ok { reason } else { "unknown or non-requested construction project".to_string() },
+        );
+        ok
+    }
+
     /// Advance a queued construction project by `days` (observer/control, 0.05).
     ///
-    /// Engine-side queue management: world has no direct advance API, so Sim
-    /// mutates the authoritative world queue and finalizes completion using the
-    /// same completion effects as `World::construction_step` (add facility +
-    /// ConstructionComplete event). Returns `true` if the project existed.
+    /// Delegates to the authoritative `World::advance_construction` so manual
+    /// work uses the same completion effects as the daily build step (add
+    /// facility + `ConstructionComplete` event). Returns `true` if the project
+    /// existed and was advanceable.
     pub fn advance_construction(&mut self, project_id: u64, days: u32) -> bool {
         if days == 0 {
-            self.audit_control("observer/control", "AdvanceConstruction", format!("Construction project {project_id} advance ignored"), "rejected", "days must be > 0");
+            self.audit_control_rejected("observer/control", "AdvanceConstruction", format!("Construction project {project_id} advance ignored"), "days must be > 0");
             return false;
         }
         let before = self.world.events.recent().map(|e| e.id).max().unwrap_or(0);
         let proj = self.world.construction_queue.iter().find(|p| p.id == project_id).cloned();
         let Some(proj) = proj else {
-            self.audit_control("observer/control", "AdvanceConstruction", format!("Construction project {project_id} not found"), "rejected", "unknown construction project");
+            self.audit_control_rejected("observer/control", "AdvanceConstruction", format!("Construction project {project_id} not found"), "unknown construction project");
             return false;
         };
         let prev_progress = proj.progress_days;
@@ -900,7 +999,9 @@ impl Sim {
         let ok = self.world.advance_construction(project_id, days);
         self.pump_events_into_engine_log(before);
         let after_progress = self.world.construction_queue.iter().find(|p| p.id == project_id).map(|p| p.progress_days).unwrap_or(total);
-        let completed = ok && self.world.construction_queue.iter().all(|p| p.id != project_id);
+        let completed = self.world.construction_queue.iter()
+            .find(|p| p.id == project_id)
+            .is_some_and(|p| p.status == alc_world::ConstructionStatus::Completed);
         self.audit_control(
             "observer/control",
             "AdvanceConstruction",
@@ -1933,6 +2034,7 @@ impl Sim {
     /// Also updates the world's policies to affect simulation behavior.
     pub fn set_policy(&mut self, policy: Policy) {
         if self.engine_state.policy_state.policy != policy {
+            let old_security = self.world.policies.security_level;
             self.engine_state.policy_state.policy = policy;
             self.engine_state.policy_state.last_changed = self.world.time;
             
@@ -1954,19 +2056,20 @@ impl Sim {
                 }
                 Policy::Lockdown => {
                     self.world.policies.lockdown = true;
+                    self.world.lockdown_since_day = self.world.days_simulated;
                     self.world.policies.security_level = 1.0;
                     self.world.policies.privileges_level = 0.1;
                     self.engine_state.policy_state.lockdown = true;
                     self.engine_state.policy_state.security_level = 5;
                 }
             }
-            
-            self.emit_event(WorldEvent::new(
-                0,
-                self.world.time,
-                EventKind::PolicyChange,
-                format!("Policy changed to {:?}", policy),
-            ));
+            // Institutional memory: controls must be auditable in world.history,
+            // not only in the engine decision-audit log.
+            self.world.audit_policy_change(
+                &format!("policy={policy:?}"),
+                old_security,
+                self.world.policies.security_level,
+            );
             self.audit_control(
                 "warden/control",
                 "SetPolicy",
@@ -1986,7 +2089,10 @@ impl Sim {
         if self.engine_state.policy_state.lockdown != lockdown {
             self.engine_state.policy_state.lockdown = lockdown;
             self.engine_state.policy_state.last_changed = self.world.time;
-            
+
+            // Anchor the 14-day emergency-expiry clock to the observer action
+            // so an imposed lockdown does not expire on the next weekly sweep.
+            self.world.lockdown_since_day = self.world.days_simulated;
             // Sync with world.policies to affect simulation behavior
             self.world.policies.lockdown = lockdown;
             if lockdown {
@@ -1998,12 +2104,7 @@ impl Sim {
                 self.world.policies.privileges_level = (self.world.policies.privileges_level + 0.1).min(0.5);
             }
             
-            self.emit_event(WorldEvent::new(
-                0,
-                self.world.time,
-                EventKind::PolicyChange,
-                format!("Lockdown {} to {:?}", if lockdown { "enabled" } else { "disabled" }, self.engine_state.policy_state.policy),
-            ));
+            self.world.audit_policy_change("lockdown", if lockdown { 0.0 } else { 1.0 }, if lockdown { 1.0 } else { 0.0 });
             self.audit_control(
                 "warden/control",
                 "SetLockdown",
@@ -2028,56 +2129,60 @@ impl Sim {
 
     /// Set fine-grained security level (0.0-1.0) with validation and event feedback.
     pub fn set_security_level(&mut self, level: f32) {
-        let level = level.clamp(0.0, 1.0);
+        let clamped = level.clamp(0.0, 1.0);
+        let repaired = !level.is_finite() || (level - clamped).abs() > f32::EPSILON;
+        let level = clamped;
         let old = self.world.policies.security_level;
         if (old - level).abs() < f32::EPSILON { return; }
         self.world.policies.security_level = level;
         self.sync_policy_band_from_world();
         self.engine_state.policy_state.last_changed = self.world.time;
-        self.emit_event(WorldEvent::new(0, self.world.time, EventKind::PolicyChange,
-            format!("Security level {:.0}% -> {:.0}%", old * 100.0, level * 100.0)));
+        self.world.audit_policy_change("security_level", old, self.world.policies.security_level);
         self.audit_control(
             "warden/control",
             "SetSecurityLevel",
             format!("Security level {:.2} -> {:.2}", old, level),
-            "accepted",
-            "world.policies.security_level updated; policy band synced",
+            if repaired { "repaired" } else { "accepted" },
+            if repaired { "input clamped to 0.0..=1.0; policy band synced" } else { "world.policies.security_level updated; policy band synced" },
         );
     }
 
     /// Set privileges level (0.0-1.0) with validation and event feedback.
     pub fn set_privileges_level(&mut self, level: f32) {
-        let level = level.clamp(0.0, 1.0);
+        let clamped = level.clamp(0.0, 1.0);
+        let repaired = !level.is_finite() || (level - clamped).abs() > f32::EPSILON;
+        let level = clamped;
         let old = self.world.policies.privileges_level;
         if (old - level).abs() < f32::EPSILON { return; }
         self.world.policies.privileges_level = level;
         self.engine_state.policy_state.last_changed = self.world.time;
-        self.emit_event(WorldEvent::new(0, self.world.time, EventKind::PolicyChange,
-            format!("Privileges {:.0}% -> {:.0}%", old * 100.0, level * 100.0)));
+        self.world.audit_policy_change("privileges_level", old, level);
         self.audit_control(
             "warden/control",
             "SetPrivilegesLevel",
             format!("Privileges {:.2} -> {:.2}", old, level),
-            "accepted",
-            "world.policies.privileges_level updated",
+            if repaired { "repaired" } else { "accepted" },
+            if repaired { "input clamped to 0.0..=1.0" } else { "world.policies.privileges_level updated" },
         );
     }
 
-    /// Set rehabilitation funding multiplier (0.0-2.0) with validation and event feedback.
+    /// Set rehabilitation funding multiplier (0.0-3.0) with validation and
+    /// event feedback. The range matches the warden's `ChangePolicy` applier.
     pub fn set_rehab_funding(&mut self, multiplier: f32) {
-        let multiplier = multiplier.clamp(0.0, 2.0);
+        let clamped = multiplier.clamp(0.0, 3.0);
+        let repaired = !multiplier.is_finite() || (multiplier - clamped).abs() > f32::EPSILON;
+        let multiplier = clamped;
         let old = self.world.policies.rehab_funding_multiplier;
         if (old - multiplier).abs() < f32::EPSILON { return; }
         self.world.policies.rehab_funding_multiplier = multiplier;
         self.engine_state.policy_state.last_changed = self.world.time;
-        self.emit_event(WorldEvent::new(0, self.world.time, EventKind::PolicyChange,
-            format!("Rehab funding {:.2}x -> {:.2}x", old, multiplier)));
+        self.world.audit_policy_change("rehab_funding_multiplier", old, multiplier);
         self.audit_control(
             "warden/control",
             "SetRehabFunding",
             format!("Rehab funding {:.2} -> {:.2}", old, multiplier),
-            "accepted",
-            "world.policies.rehab_funding_multiplier updated",
+            if repaired { "repaired" } else { "accepted" },
+            if repaired { "input clamped to 0.0..=3.0" } else { "world.policies.rehab_funding_multiplier updated" },
         );
     }
 
@@ -2086,8 +2191,7 @@ impl Sim {
         if self.world.policies.intake_paused == paused { return; }
         self.world.policies.intake_paused = paused;
         self.engine_state.policy_state.last_changed = self.world.time;
-        self.emit_event(WorldEvent::new(0, self.world.time, EventKind::PolicyChange,
-            format!("Intake {}", if paused { "paused" } else { "resumed" })));
+        self.world.audit_policy_change("intake_paused", if paused { 0.0 } else { 1.0 }, if paused { 1.0 } else { 0.0 });
         self.audit_control(
             "warden/control",
             "SetIntakePaused",
@@ -2303,14 +2407,22 @@ impl Sim {
     }
 
     /// Schedule a parole hearing (§15 step 8); returns the new event id.
+    ///
+    /// Validated: the prisoner must exist, be eligible and have no prior
+    /// decision. Rejections are audited rather than silently returning `None`.
     pub fn start_parole_hearing(&mut self, id: PrisonerId) -> Option<u64> {
-        if !self.world.prisoners.iter().any(|p| p.id == id) {
-            return None;
-        }
-        if self.engine_state.parole.status(id).is_some() {
+        let eligible = self.world.prisoners.iter().any(|p| p.id == id && p.is_eligible_for_parole());
+        if !eligible || self.engine_state.parole.status(id).is_some() {
+            self.audit_control_rejected(
+                "observer/control",
+                "StartParoleHearing",
+                format!("Parole hearing for prisoner {} refused", id.raw()),
+                if eligible { "prisoner already has a parole record" } else { "prisoner is absent or ineligible" },
+            );
             return None;
         }
         self.engine_state.parole.set(id, ParoleStatus::Scheduled, self.world.time);
+        self.engine_state.parole.set_hearing_at(id, self.world.time);
         self.world.events.emit(
             WorldEvent::new(0, self.world.time, EventKind::ParoleHearing, format!("Parole hearing scheduled for prisoner {}", id.raw()))
                 .with_actor(id.raw()),
@@ -2321,64 +2433,158 @@ impl Sim {
             "StartParoleHearing",
             format!("Parole hearing scheduled for prisoner {}", id.raw()),
             "accepted",
-            "parole hearing scheduled",
+            "eligibility verified; hearing date recorded",
         );
         event_id
     }
 
+    /// Deterministic risk/rehabilitation inputs for a parole decision.
+    fn parole_decision_inputs(&self, id: PrisonerId) -> (f32, f32) {
+        let Some(p) = self.world.prisoners.iter().find(|p| p.id == id) else {
+            return (0.5, 0.5);
+        };
+        let risk = (p.escape_motivation() * 0.5
+            + p.traits.aggression * 0.25
+            + (1.0 - p.condition.mental_health.clamp(0.0, 1.0)) * 0.25)
+            .clamp(0.0, 1.0);
+        let rehab = p.rehab_motivation().clamp(0.0, 1.0);
+        (risk, rehab)
+    }
+
     /// Grant parole (§15 step 10); returns the new event id.
+    ///
+    /// A grant records deterministic conditions and a decision reason before
+    /// emitting `ParoleGranted`. Use [`Self::release_on_parole`] to carry the
+    /// grant through to an actual release from custody.
     pub fn grant_parole(&mut self, id: PrisonerId) -> Option<u64> {
-        if !self.world.prisoners.iter().any(|p| p.id == id) {
+        let eligible = self.world.prisoners.iter().any(|p| p.id == id && p.is_eligible_for_parole());
+        if !eligible || matches!(self.engine_state.parole.status(id), Some(ParoleStatus::Granted) | Some(ParoleStatus::Denied)) {
+            self.audit_control_rejected(
+                "observer/control",
+                "GrantParole",
+                format!("Parole grant for prisoner {} refused", id.raw()),
+                if eligible { "prisoner already has a terminal parole decision" } else { "prisoner is absent or ineligible" },
+            );
             return None;
         }
-        if matches!(self.engine_state.parole.status(id), Some(ParoleStatus::Granted) | Some(ParoleStatus::Denied)) {
-            return None;
-        }
+        let (risk, rehab) = self.parole_decision_inputs(id);
         if self.engine_state.parole.status(id).is_none() {
             self.engine_state.parole.set(id, ParoleStatus::InHearing, self.world.time);
         }
         self.engine_state.parole.set(id, ParoleStatus::Granted, self.world.time);
+        self.engine_state.parole.set_conditions(id, ParoleConditions::deterministic(id, risk, rehab));
+        let reason = format!("deterministic board decision: risk {risk:.2}, rehab {rehab:.2}");
+        self.engine_state.parole.set_decision_reason(id, reason.clone());
         self.world.events.emit(
-            WorldEvent::new(0, self.world.time, EventKind::ParoleGranted, format!("Parole granted to prisoner {}", id.raw())).with_actor(id.raw()),
+            WorldEvent::new(0, self.world.time, EventKind::ParoleGranted, format!("Parole granted to prisoner {}", id.raw()))
+                .with_actor(id.raw())
+                .with_cause(reason.clone()),
         );
         let event_id = self.world.events.recent().last().map(|e| e.id);
-        self.audit_control(
-            "observer/control",
-            "GrantParole",
-            format!("Parole granted to prisoner {}", id.raw()),
-            "accepted",
-            "parole granted by engine control",
-        );
+        self.audit_control("observer/control", "GrantParole", reason, "accepted", "parole granted by validated engine control");
         event_id
     }
 
     /// Deny parole (§15); returns the new event id.
     pub fn deny_parole(&mut self, id: PrisonerId, reason: impl Into<String>) -> Option<u64> {
-        if !self.world.prisoners.iter().any(|p| p.id == id) {
+        let eligible = self.world.prisoners.iter().any(|p| p.id == id && p.is_eligible_for_parole());
+        if !eligible || matches!(self.engine_state.parole.status(id), Some(ParoleStatus::Granted) | Some(ParoleStatus::Denied)) {
+            self.audit_control_rejected(
+                "observer/control",
+                "DenyParole",
+                format!("Parole denial for prisoner {} refused", id.raw()),
+                if eligible { "prisoner already has a terminal parole decision" } else { "prisoner is absent or ineligible" },
+            );
             return None;
         }
-        if matches!(self.engine_state.parole.status(id), Some(ParoleStatus::Granted) | Some(ParoleStatus::Denied)) {
-            return None;
-        }
-        self.engine_state.parole.set(id, ParoleStatus::Denied, self.world.time);
         let reason = reason.into();
+        self.engine_state.parole.set(id, ParoleStatus::Denied, self.world.time);
+        self.engine_state.parole.set_decision_reason(id, reason.clone());
         self.world.events.emit(
-            WorldEvent::new(0, self.world.time, EventKind::ParoleDenied, format!("Parole denied for prisoner {}: {}", id.raw(), reason)).with_actor(id.raw()),
+            WorldEvent::new(0, self.world.time, EventKind::ParoleDenied, format!("Parole denied for prisoner {}: {}", id.raw(), reason))
+                .with_actor(id.raw())
+                .with_cause(reason.clone()),
         );
         let event_id = self.world.events.recent().last().map(|e| e.id);
+        self.audit_control("observer/control", "DenyParole", format!("Parole denied for prisoner {}", id.raw()), "accepted", reason);
+        event_id
+    }
+
+    /// Attach or replace validated parole conditions for a decided prisoner.
+    pub fn set_parole_conditions(&mut self, id: PrisonerId, mut conditions: ParoleConditions) -> bool {
+        let decidable = matches!(self.engine_state.parole.status(id), Some(ParoleStatus::Granted) | Some(ParoleStatus::Scheduled) | Some(ParoleStatus::InHearing));
+        if !decidable {
+            self.audit_control_rejected("observer/control", "SetParoleConditions", format!("Conditions for prisoner {} refused", id.raw()), "no scheduled or granted parole decision");
+            return false;
+        }
+        let repaired = !conditions.is_normalized();
+        conditions.normalize();
+        self.engine_state.parole.set_conditions(id, conditions);
         self.audit_control(
             "observer/control",
-            "DenyParole",
-            format!("Parole denied for prisoner {}", id.raw()),
-            "accepted",
-            reason,
+            "SetParoleConditions",
+            format!("Parole conditions set for prisoner {}", id.raw()),
+            if repaired { "repaired" } else { "accepted" },
+            if repaired { "conditions clamped to validated ranges" } else { "validated conditions persisted" },
         );
-        event_id
+        true
+    }
+
+    /// Release a granted prisoner from custody through the authoritative world
+    /// release path. Returns `false` unless the prisoner is still present and
+    /// has a stored grant. The release time is recorded in the ledger.
+    pub fn release_on_parole(&mut self, id: PrisonerId) -> bool {
+        if !matches!(self.engine_state.parole.status(id), Some(ParoleStatus::Granted))
+            || self.engine_state.parole.released_at(id).is_some()
+        {
+            self.audit_control_rejected("observer/control", "ReleaseOnParole", format!("Release for prisoner {} refused", id.raw()), "no unexecuted parole grant");
+            return false;
+        }
+        let before = self.world.events.recent().map(|e| e.id).max().unwrap_or(0);
+        let released = self.world.release_on_parole(&[id]);
+        if !released.is_empty() {
+            // A control-driven release happens mid-day, so clean the departed
+            // pawn's auxiliary state now instead of waiting for the sweep.
+            self.world.prune_departed_agent_state(&released);
+        }
+        self.pump_events_into_engine_log(before);
+        let ok = released.first() == Some(&id);
+        if ok {
+            self.engine_state.parole.set_released_at(id, self.world.time);
+            // Keep the engine post-release ledger coherent with the world's
+            // authoritative release record (same prisoner, same reason).
+            let risk = self.engine_state.parole.conditions(id).map_or(0.25, |c| {
+                (0.1 + (c.reporting_per_month as f32 / 12.0) * 0.2
+                    + if c.no_contact_order { 0.2 } else { 0.0 }).clamp(0.0, 1.0)
+            });
+            let plan = self.engine_state.parole.conditions(id)
+                .is_some_and(|c| c.treatment_required || c.supervision_months >= 6);
+            self.record_post_release(id, "parole", risk, plan);
+            self.audit_control("observer/control", "ReleaseOnParole", format!("Prisoner {} released on parole", id.raw()), "accepted", "grant executed through World::release_on_parole");
+        } else {
+            self.audit_control_rejected("observer/control", "ReleaseOnParole", format!("Release for prisoner {} refused", id.raw()), "prisoner not present in custody");
+        }
+        ok
     }
 
     /// Get the parole status for a prisoner.
     pub fn parole_status(&self, id: PrisonerId) -> Option<ParoleStatus> {
         self.engine_state.parole.status(id)
+    }
+
+    /// Persisted conditions for a decided prisoner, if any.
+    pub fn parole_conditions(&self, id: PrisonerId) -> Option<&ParoleConditions> {
+        self.engine_state.parole.conditions(id)
+    }
+
+    /// Persisted decision reason for a prisoner, if any.
+    pub fn parole_decision_reason(&self, id: PrisonerId) -> Option<&str> {
+        self.engine_state.parole.decision_reason(id)
+    }
+
+    /// Sim time at which a granted prisoner left custody, if released.
+    pub fn parole_released_at(&self, id: PrisonerId) -> Option<SimTime> {
+        self.engine_state.parole.released_at(id)
     }
 
     // --- 4.6 Rehab (§14) ---

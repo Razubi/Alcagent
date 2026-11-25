@@ -265,6 +265,18 @@ fn prisoner(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                     if snap.parole_due.contains(&id) {
                         ui.label("Eligible for parole review.");
                     }
+                    if let Some(reason) = snap.selected_parole_reason.as_deref() {
+                        theme::kv(ui, "Decision reason", reason.to_string());
+                    }
+                    if let Some(c) = snap.selected_parole_conditions.as_ref() {
+                        ui.label(format!(
+                            "Conditions: report {}/mo · {}mo supervision · curfew={} drug={} treatment={} no-contact={}",
+                            c.reporting_per_month, c.supervision_months, c.curfew, c.drug_testing, c.treatment_required, c.no_contact_order
+                        ));
+                    }
+                    if snap.selected_parole_released {
+                        ui.label("Released from custody on parole.");
+                    }
                     if ui.button("Schedule hearing").clicked() {
                         ctx.emit(Command::StartParole(id));
                     }
@@ -273,6 +285,9 @@ fn prisoner(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                     }
                     if ui.button("Deny").clicked() {
                         ctx.emit(Command::DenyParole(id, "institutional conduct".to_string()));
+                    }
+                    if ui.button("Release on parole").clicked() {
+                        ctx.emit(Command::ReleaseParole(id));
                     }
                 });
                 panels::section(ui, "Contraband cases", |ui| {
@@ -477,7 +492,7 @@ fn warden(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                     ctx.emit(Command::SetPrivileges(privileges));
                 }
                 let mut funding = snap.policy.rehab_funding_multiplier;
-                if ui.add(egui::Slider::new(&mut funding, 0.0..=2.0).text("Rehab funding")).changed() {
+                if ui.add(egui::Slider::new(&mut funding, 0.0..=3.0).text("Rehab funding")).changed() {
                     ctx.emit(Command::SetRehabFunding(funding));
                 }
                 ui.horizontal(|ui| {
@@ -512,6 +527,7 @@ fn warden(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                         ui.horizontal(|ui| {
                             ui.label(format!("#{} {} W{} {}/{}d ({:?})", p.id, p.kind.display(), p.wing, p.progress_days, p.total_days, p.status));
                             if ui.button("+1d").clicked() { ctx.emit(Command::AdvanceConstruction(p.id, 1)); }
+                            if ui.small_button("Approve").clicked() { ctx.emit(Command::ApproveConstruction(p.id)); }
                             if ui.small_button("Cancel").clicked() { ctx.emit(Command::CancelConstruction(p.id)); }
                             if ui.small_button("Fail").clicked() { ctx.emit(Command::FailConstruction(p.id)); }
                         });
