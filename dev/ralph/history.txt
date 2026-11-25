@@ -1,0 +1,9 @@
+# Ralph history — Alcagent 0.05
+
+## 2026-11-25 — bootstrap
+
+- Integrated engine/persistence/CLI hardening, TUI MapFrame overhaul, buildable egui GUI, and warning cleanup.
+- Baseline commits: 40afb6f, 3e5696b, 9e6bc15, 97ff20d (all authored by Razubi <matthewmanning278@gmail.com>).
+- Created overnight spec backlog: dev/ralph/specs/001..014.
+- Loop entrypoint: dev/ralph/ralph-loop.ps1.
+
