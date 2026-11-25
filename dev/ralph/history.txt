@@ -8,4 +8,5 @@
 - Loop entrypoint: dev/ralph/ralph-loop.ps1.
 - Full `cargo test --workspace` passed (all suites, including 730-day chaos soak and 365-day review soak).
 - Final manifest cleanup removed the last unused dependency; `cargo build --workspace --all-targets` is warning-free.
+- Fixed Ralph launcher: temporarily downgrade `ErrorActionPreference` around the native CLI call so CLI stderr progress no longer aborts the loop; verify CLI exit code before accepting DONE.
 

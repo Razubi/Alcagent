@@ -109,8 +109,19 @@ while ($true) {
         break
     }
 
-    & $OpenCodeExe run --auto --archived --model $currentModel --title ("Ralph {0}" -f $name) $prompt 2>&1 |
-        Tee-Object -FilePath $iterLog
+    # The CLI writes progress to stderr; with ErrorActionPreference=Stop,
+    # PowerShell turns that into a terminating NativeCommandError. Temporarily
+    # downgrade it for this native invocation only.
+    $previousEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $OpenCodeExe run --auto --archived --model $currentModel --title ("Ralph {0}" -f $name) $prompt 2>&1 |
+            Tee-Object -FilePath $iterLog |
+            ForEach-Object { $_ | Out-String | Write-Output }
+        $cliExit = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousEap
+    }
     $output = Get-Content $iterLog -Raw
 
     Add-Content -Path $SessionLog -Value $output -Encoding UTF8
@@ -119,13 +130,16 @@ while ($true) {
     $blockedSignal = $output -match '<promise>BLOCKED</promise>'
     $statusDone = Spec-HasStatus -Spec $spec -Status 'done'
     $statusBlocked = Spec-HasStatus -Spec $spec -Status 'blocked'
+    if ($cliExit -ne 0) {
+        Write-Log ('CLI exited with code {0} for {1}.' -f $cliExit, $name) 'Red'
+    }
 
     if ($output -match 'usage limit|rate limit|free usage limit|429') {
         $modelIndex++
         Write-Log ('Rate limit detected; rotating to {0}' -f $Models[$modelIndex % $Models.Count]) 'Yellow'
     }
 
-    if ($doneSignal -and $statusDone) {
+    if ($cliExit -eq 0 -and $doneSignal -and $statusDone) {
         $gitStatus = & git -C $Root status --porcelain
         if ($gitStatus) {
             Write-Log 'DONE but working tree is dirty; agent must commit. Retrying spec.' 'Red'
