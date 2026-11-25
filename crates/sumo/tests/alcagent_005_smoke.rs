@@ -236,9 +236,13 @@ fn decision_audit_and_incident_records_are_present() {
         decision_log_before,
         "rejected decisions must not enter the decision log"
     );
-    assert_eq!(
-        sim.decision_audit_log().last().unwrap().validation,
-        "rejected"
+    assert!(
+        sim.decision_audit_log()
+            .last()
+            .unwrap()
+            .validation
+            .starts_with("rejected"),
+        "rejected decision should keep the canonical rejected validation prefix"
     );
 
     // Conflict decision -> mirrored into the incident log + sidecar.
@@ -606,7 +610,7 @@ fn policy_and_decision_audit_consistency_smoke() {
     assert!(
         new_audit
             .iter()
-            .any(|r| r.validation == "rejected" && r.source == "agent"),
+            .any(|r| r.validation.starts_with("rejected") && r.source == "agent"),
         "rejected decision should be audited as agent/rejected"
     );
     assert!(

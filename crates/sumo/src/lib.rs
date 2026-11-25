@@ -28,9 +28,9 @@ pub mod autosave;
 
 pub mod decisions;
 
-pub use crate::decisions::{DecisionProposal, DecisionType};
+pub use crate::decisions::{DecisionBatchOutcome, DecisionProposal, DecisionType};
 /// Re-export decision types for convenience and doctest accessibility.
-pub use alc_agents::ValidationResult;
+pub use alc_agents::{AiRuntimeSnapshot, ValidationResult};
 
 /// Council of drives: deterministic institutional decision evaluation (R3).
 pub mod council;
@@ -86,6 +86,7 @@ use crate::views::{
     parse_f32_after, parse_guard_cause, parse_plan_flag, rehab_state_for, write_back_rehab_state,
 };
 use alc_core::TimeSpeed;
+use alc_core::config::AiConfig;
 use alc_events::EventKind;
 use alc_guard::{GuardReport, PostType};
 use alc_persistence::{SaveError, SaveManager};
@@ -185,8 +186,17 @@ impl Sim {
     /// Create a new simulation from a seed. The world boots with the starting
     /// facility set, guards and prisoners (Directive §2 bootstrap).
     pub fn new(seed: u64) -> Self {
+        Self::new_with_config(seed, &AiConfig::default())
+    }
+
+    /// Create a simulation with an explicit AI orchestration policy.
+    ///
+    /// The config controls provider, model, token budgets, rate limiting,
+    /// retries, caching and batching. It is runtime-only and is not added to
+    /// the v5 save format.
+    pub fn new_with_config(seed: u64, ai: &AiConfig) -> Self {
         Self {
-            world: World::new(seed),
+            world: World::new_with_config(seed, ai),
             speed: TimeSpeed::Paused,
             engine_state: EngineState::default(),
             last_autosave_error: None,
@@ -379,14 +389,35 @@ impl Sim {
         let mut new_audits = Vec::new();
         for (pid, decision) in &self.world.current_decisions {
             if prev_decisions.get(pid) != Some(decision) {
+                // Fallback decisions are deterministic/utility choices, not AI
+                // proposals. They are validated by the same gate but must not
+                // be mislabelled as accepted agent output in the audit trail.
+                let fallback =
+                    decision.provenance == alc_agents::decision::DecisionProvenance::System;
+                let (source, validation, reason) = if fallback {
+                    (
+                        "world_tick_fallback",
+                        "deterministic_fallback",
+                        "applied by world tick without AI deliberation",
+                    )
+                } else {
+                    let validation = if decision.outcome
+                        == alc_agents::decision::DecisionOutcomeState::Repaired
+                    {
+                        "repaired"
+                    } else {
+                        "accepted"
+                    };
+                    ("world_tick", validation, "applied by world tick")
+                };
                 new_audits.push(DecisionAuditRecord {
                     time: self.world.time,
                     actor: format!("prisoner:{}", pid.raw()),
-                    source: "world_tick".to_string(),
+                    source: source.to_string(),
                     action: decision.action_name().to_string(),
                     summary: format!("{:?}", decision),
-                    validation: "accepted".to_string(),
-                    reason: "applied by world tick".to_string(),
+                    validation: validation.to_string(),
+                    reason: reason.to_string(),
                     rationale: decision.rationale.clone(),
                     repair_reason: decision.repair_reason.clone(),
                     outcome: decision.outcome,
@@ -728,6 +759,25 @@ impl Sim {
         decisions::deliver(self, id, decision)
     }
 
+    /// Deliver a bounded batch through the same canonical validation gate.
+    ///
+    /// Proposals are de-duplicated by prisoner id, capped by
+    /// [`AiConfig::max_batch_size`], validated against contexts captured before
+    /// any state mutation, and applied only when accepted or repaired.
+    ///
+    /// [`AiConfig::max_batch_size`]: alc_core::config::AiConfig::max_batch_size
+    pub fn deliver_decision_batch(
+        &mut self,
+        requests: Vec<(PrisonerId, Decision)>,
+    ) -> DecisionBatchOutcome {
+        decisions::deliver_batch(self, requests)
+    }
+
+    /// Snapshot the configured AI runtime policy and telemetry for observers.
+    pub fn ai_runtime_snapshot(&self) -> AiRuntimeSnapshot {
+        self.world.orchestrator.runtime_snapshot()
+    }
+
     /// Propose a decision without mutating world state.
     ///
     /// This generates a [`DecisionProposal`] by validating the decision
@@ -970,25 +1020,89 @@ impl Sim {
     }
 
     /// Get all gangs as summary types for the gang view.
+    ///
+    /// Relation intensities are computed from observed social ties, goals and
+    /// declared alliances/rivalries (not placeholder `1.0` values), and each
+    /// summary carries the durable gang timeline entries that mention it.
     pub fn gangs(&self) -> Vec<GangSummary> {
-        self.world
-            .gangs
+        let mut gangs: Vec<_> = self.world.gangs.iter().collect();
+        gangs.sort_by_key(|g| g.id.0);
+        let mut scores: BTreeMap<(u64, u64), (f32, f32)> = BTreeMap::new();
+        for (index, left) in gangs.iter().enumerate() {
+            for right in gangs.iter().skip(index + 1) {
+                let (affinity, hostility) =
+                    alc_social::gang_relation_scores(left, right, &self.world.social);
+                scores.insert((left.id.0, right.id.0), (affinity, hostility));
+            }
+        }
+        let pressure = self.world.gang_pressure();
+
+        gangs
             .iter()
-            .map(|g| GangSummary {
-                id: g.id.0,
-                name: g.name.clone(),
-                leader: g.leader,
-                members: g.members.clone(),
-                reputation: g.reputation,
-                resources: g.resources,
-                culture: g.culture.clone(),
-                formed_at: g.formed_at,
-                active: g.active,
-                hierarchy: g.hierarchy.clone(),
-                rivalries: g.rivalries.iter().map(|id| (id.0, 1.0)).collect(), // simplified
-                alliances: g.alliances.iter().map(|id| (id.0, 1.0)).collect(), // simplified
-                internal_disputes: g.internal_disputes.clone(),
-                goals: g.goals.clone(),
+            .copied()
+            .map(|g| {
+                let score_for = |other: u64| -> (f32, f32) {
+                    if g.id.0 <= other {
+                        scores.get(&(g.id.0, other)).copied().unwrap_or((0.5, 0.0))
+                    } else {
+                        scores
+                            .get(&(other, g.id.0))
+                            .copied()
+                            .map(|(affinity, hostility)| (affinity, hostility))
+                            .unwrap_or((0.5, 0.0))
+                    }
+                };
+                let mut rivalries: Vec<(u64, f32)> = g
+                    .rivalries
+                    .iter()
+                    .map(|id| (id.0, score_for(id.0).1.max(0.25)))
+                    .collect();
+                rivalries.sort_by_key(|(id, _)| *id);
+                let mut alliances: Vec<(u64, f32)> = g
+                    .alliances
+                    .iter()
+                    .map(|id| (id.0, score_for(id.0).0.max(0.25)))
+                    .collect();
+                alliances.sort_by_key(|(id, _)| *id);
+                let relations: Vec<GangRelationSummary> = gangs
+                    .iter()
+                    .copied()
+                    .filter(|other| other.id != g.id)
+                    .map(|other| {
+                        let (affinity, hostility) = score_for(other.id.0);
+                        GangRelationSummary {
+                            gang: other.id.0,
+                            affinity,
+                            hostility,
+                        }
+                    })
+                    .collect();
+                let history = self
+                    .world
+                    .gang_history()
+                    .iter()
+                    .filter(|entry| entry.gang == g.id)
+                    .cloned()
+                    .collect();
+                GangSummary {
+                    id: g.id.0,
+                    name: g.name.clone(),
+                    leader: g.leader,
+                    members: g.members.clone(),
+                    reputation: g.reputation,
+                    resources: g.resources,
+                    culture: g.culture.clone(),
+                    formed_at: g.formed_at,
+                    active: g.active,
+                    hierarchy: g.hierarchy.clone(),
+                    rivalries,
+                    alliances,
+                    internal_disputes: g.internal_disputes.clone(),
+                    goals: g.goals.clone(),
+                    pressure,
+                    history,
+                    relations,
+                }
             })
             .collect()
     }
@@ -1018,7 +1132,7 @@ impl Sim {
                 mistakes: g.mistake_count(),
                 violations: g.violation_count(),
                 tracked_opinions: g.opinion_count(),
-                history: g.history.clone(),
+                history: g.history.iter().rev().take(16).rev().cloned().collect(),
             })
             .collect()
     }
@@ -1049,7 +1163,7 @@ impl Sim {
                 .world
                 .warden
                 .audit_log
-                .recent(20)
+                .recent(16)
                 .into_iter()
                 .cloned()
                 .collect(),
@@ -2230,9 +2344,17 @@ impl Sim {
 
     /// Load a saved world with full EngineState restoration.
     pub fn load(dir: impl AsRef<Path>) -> Result<Sim, SaveError> {
+        Self::load_with_config(dir, &AiConfig::default())
+    }
+
+    /// Load a saved world and re-apply runtime-only AI configuration.
+    pub fn load_with_config(dir: impl AsRef<Path>, ai: &AiConfig) -> Result<Sim, SaveError> {
         let dir = dir.as_ref().to_path_buf();
         let manager = SaveManager::new(&dir);
-        let (world, engine_state) = manager.load_with_engine()?;
+        let (mut world, engine_state) = manager.load_with_engine()?;
+        // Runtime provider/cache/config state is deliberately skipped by the
+        // v5 save format. Re-apply the startup policy after deserialization.
+        world.configure_ai(ai);
 
         let speed = world.speed;
         Ok(Sim {
@@ -2358,6 +2480,9 @@ impl Sim {
         }
         if !crate::invariants::invariant_suspicion_claim_records_reference_existing_pawns(w) {
             errs.push("suspicion_claim_records_reference_existing_pawns violation".to_string());
+        }
+        if !crate::invariants::invariant_gang_membership_and_history(w) {
+            errs.push("gang_membership_and_history violation".to_string());
         }
         if !crate::invariants::invariant_policy_state_matches_world_policies(&self.engine_state, w)
         {

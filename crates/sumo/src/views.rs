@@ -38,6 +38,17 @@ pub struct PrisonerSummary {
     pub memory_summary: String,
 }
 
+/// Pairwise political score between two gangs (Spec 008).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GangRelationSummary {
+    /// Other gang's identifier.
+    pub gang: u64,
+    /// Relationship-driven likelihood of cooperation (`0..=1`).
+    pub affinity: f32,
+    /// Relationship-driven likelihood of hostility (`0..=1`).
+    pub hostility: f32,
+}
+
 /// Summary of a gang for the UI gang view.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GangSummary {
@@ -61,14 +72,20 @@ pub struct GangSummary {
     pub active: bool,
     /// Hierarchy of members.
     pub hierarchy: Vec<alc_social::MemberRecord>,
-    /// Rival gangs with intensity.
+    /// Rival gangs with observed hostility intensity.
     pub rivalries: Vec<(u64, f32)>,
-    /// Allied gangs with intensity.
+    /// Allied gangs with observed affinity intensity.
     pub alliances: Vec<(u64, f32)>,
     /// Internal dispute descriptions.
     pub internal_disputes: Vec<String>,
     /// Current goals.
     pub goals: Vec<String>,
+    /// Institutional pressure exerted by the current gang graph.
+    pub pressure: alc_social::GangPressure,
+    /// Durable political transitions involving this gang, oldest first.
+    pub history: Vec<alc_world::GangHistoryEntry>,
+    /// Relationship-derived scores for every other active gang.
+    pub relations: Vec<GangRelationSummary>,
 }
 
 /// Summary of a guard for the UI staff view.

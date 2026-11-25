@@ -539,6 +539,8 @@ pub struct Snapshot {
     pub gangs: Vec<GangSummary>,
     pub guards: Vec<GuardSummary>,
     pub warden: WardenSummary,
+    /// Runtime-only AI orchestration policy and telemetry.
+    pub ai_runtime: sumo::AiRuntimeSnapshot,
     pub economy: EconomySummary,
     pub social_edges: Vec<SocialEdge>,
     pub social_roles: Vec<SocialRoleSummary>,
@@ -628,6 +630,7 @@ pub fn capture(sim: &sumo::Sim, selected_prisoner: Option<PrisonerId>) -> Snapsh
         gangs: sim.gangs(),
         guards: sim.guards(),
         warden: sim.warden(),
+        ai_runtime: sim.ai_runtime_snapshot(),
         economy: sim.economy(),
         social_edges: sim.social_edges(),
         social_roles: sim.social_roles(),

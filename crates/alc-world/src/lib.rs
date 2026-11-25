@@ -8,8 +8,17 @@
 
 mod emergent;
 
-use alc_agents::{ActionCandidate, Decision, Disposition, Legality, Orchestrator, trait_bias};
-use alc_core::{FacilityId, GuardId, PrisonerId, RngStream, SimTime, TimeSpeed, WardenId};
+use alc_agents::{
+    ActionCandidate, Decision, Disposition, Legality, Orchestrator, PendingDecision, Role,
+    context::{DecisionRequest, EpistemicContext, hash_validation_context},
+    decision::{
+        DecisionAction, DecisionOutcomeState, DecisionProvenance, DecisionValidation,
+        ValidationContext, ValidationResult, ValidationStage, validate_decision_detailed,
+    },
+    memory::{EpistemicKind, EpistemicRecord, Memory},
+};
+use alc_core::config::AiConfig;
+use alc_core::{FacilityId, GangId, GuardId, PrisonerId, RngStream, SimTime, TimeSpeed, WardenId};
 use alc_economy::{Account, Economy, Money};
 use alc_events::{EventBus, EventKind, RehabFailureReason, WorldEvent};
 use alc_guard::{
@@ -20,12 +29,15 @@ use alc_prisoner::{
     ScheduleTemplate, current_block, generate_intake, resolve_schedule,
 };
 use alc_social::{
-    ContrabandItem, EscapeOutcome, Gang, PrisonerGangProfile, RelationshipDelta, SocialGraph,
-    apply_escape_consequences, maybe_form_gang, resolve_escape_attempt,
+    ConflictOutcome, ContrabandItem, DisputeAction, EscapeOutcome, Gang, GangHistoryKind,
+    GangPoliticsProfile, GroupDirective, PrisonerGangProfile, Relationship, RelationshipDelta,
+    SocialGraph, apply_escape_consequences, apply_outcome, detect_internal_disputes,
+    gang_event_cause, gang_pressure, gang_relation_scores, leadership_challenger, maybe_form_gang,
+    resolve_conflict, resolve_escape_attempt, split_candidates,
 };
 use alc_warden::{DecisionSource, Warden, WardenAction};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Loss-of-privileges status is a sanction with a finite sentence, not a
 /// permanent parole bar. Kept as a world rule so old saves (which may carry a
@@ -138,6 +150,15 @@ fn default_true() -> bool {
     true
 }
 
+/// Bounded heuristic score helper; NaN never leaks into persisted politics state.
+fn clamp01(value: f32) -> f32 {
+    if value.is_nan() {
+        0.0
+    } else {
+        value.clamp(0.0, 1.0)
+    }
+}
+
 /// Basic sentence info attached to a post-release record.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PostReleaseSentenceInfo {
@@ -194,6 +215,23 @@ pub struct PostReleaseOutcomeRecord {
     pub violation: bool,
     #[serde(default)]
     pub return_to_custody: bool,
+}
+
+/// Durable, append-only record of one gang-politics transition (Spec 008).
+///
+/// Gang state itself remains backwards-compatible: history lives on `World`
+/// with a serde default so older saves load as an empty timeline.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GangHistoryEntry {
+    pub id: u64,
+    pub gang: GangId,
+    pub kind: GangHistoryKind,
+    pub at: SimTime,
+    pub summary: String,
+    #[serde(default)]
+    pub actors: Vec<u64>,
+    #[serde(default)]
+    pub causes: Vec<String>,
 }
 
 /// Per-prisoner contraband inventory + flags (0.05 lifecycle; world-owned
@@ -276,6 +314,22 @@ impl Default for Policies {
             intake_paused: false,
         }
     }
+}
+
+/// One decision processed by the canonical AI batch gate.
+#[derive(Debug, Clone)]
+pub struct AiBatchEntry {
+    pub prisoner_id: PrisonerId,
+    pub result: ValidationResult,
+    pub applied: bool,
+}
+
+/// Bounded result of one AI decision batch.
+#[derive(Debug, Clone, Default)]
+pub struct AiBatchOutcome {
+    pub entries: Vec<AiBatchEntry>,
+    pub accepted: usize,
+    pub rejected: usize,
 }
 
 /// The full persistent world.
@@ -385,10 +439,23 @@ pub struct World {
     /// Day the last transfer-out fired (rate-limits the 0.05 pathway).
     #[serde(default)]
     pub last_transfer_day: u64,
+
+    // -- Spec 008 append-only fields (declared last for bincode v5 stability) --
+    /// Durable gang timeline. Select transitions are projected here so splits,
+    /// leadership changes and conflicts survive the bounded event bus.
+    #[serde(default)]
+    pub gang_history: Vec<GangHistoryEntry>,
+    #[serde(default)]
+    pub next_gang_history_id: u64,
 }
 
 impl World {
     pub fn new(seed: u64) -> Self {
+        Self::new_with_config(seed, &AiConfig::default())
+    }
+
+    /// Construct a world with an explicit AI orchestration policy.
+    pub fn new_with_config(seed: u64, config: &AiConfig) -> Self {
         let mut w = Self {
             seed,
             time: SimTime::EPOCH,
@@ -408,11 +475,13 @@ impl World {
             social: SocialGraph::default(),
             gangs: Vec::new(),
             next_gang_id: 1,
+            gang_history: Vec::new(),
+            next_gang_history_id: 1,
             economy: Economy::default(),
             policies: Policies::default(),
             events: EventBus::new(50_000),
             history: Vec::new(),
-            orchestrator: Orchestrator::new(4_000),
+            orchestrator: Orchestrator::from_config(config),
             days_simulated: 0,
             current_activity: HashMap::new(),
             current_decisions: HashMap::new(),
@@ -468,13 +537,47 @@ impl World {
         for _ in 0..24 {
             let id = self.next_prisoner_id;
             self.next_prisoner_id += 1;
-            self.prisoners
-                .push(generate_intake(self.seed, PrisonerId(id)));
+            let prisoner_id = PrisonerId(id);
+            self.prisoners.push(generate_intake(self.seed, prisoner_id));
+            self.register_ai_agent(prisoner_id, Role::Prisoner);
         }
 
         // Give observers a consistent view from the very first frame.
         self.resolve_schedules_step();
         self.assign_locations_from_schedule();
+    }
+
+    /// Register a prisoner with the AI scheduler using deterministic phase.
+    pub fn register_ai_agent(&mut self, id: PrisonerId, role: Role) {
+        let interval_secs = match role {
+            Role::Warden => self.ai_config().decision_interval_mins.saturating_mul(60) * 4,
+            Role::Guard => self.ai_config().decision_interval_mins.saturating_mul(60) / 2,
+            Role::Prisoner | Role::Unknown => {
+                self.ai_config().decision_interval_mins.saturating_mul(60)
+            }
+        }
+        .max(1);
+        let mut rng = RngStream::new(
+            self.seed ^ 0xA1CE_0117,
+            id.raw() ^ self.time.as_secs() ^ 0x9E37_79B9,
+        );
+        self.orchestrator.register_agent(
+            id.raw(),
+            role,
+            interval_secs,
+            self.time.as_secs(),
+            &mut rng,
+        );
+    }
+
+    /// Runtime AI configuration (not persisted in the v5 save format).
+    pub fn ai_config(&self) -> &AiConfig {
+        &self.orchestrator.runtime.config
+    }
+
+    /// Re-apply AI configuration to runtime state on a loaded world.
+    pub fn configure_ai(&mut self, config: &AiConfig) {
+        self.orchestrator.configure(config);
     }
 
     pub fn add_facility(&mut self, kind: FacilityKind, wing: u32, capacity: u32) -> FacilityId {
@@ -506,6 +609,458 @@ impl World {
 
     pub fn population(&self) -> u32 {
         self.prisoners.len() as u32
+    }
+
+    // -----------------------------------------------------------------------
+    // Gang membership + durable political history (Spec 008)
+    // -----------------------------------------------------------------------
+
+    /// The gang this prisoner is affiliated with, read through the world API.
+    /// Decision code should use this rather than raw `Prisoner` fields so the
+    /// roster and the affiliation cannot silently diverge.
+    #[must_use]
+    pub fn prisoner_gang(&self, prisoner: PrisonerId) -> Option<GangId> {
+        self.prisoners
+            .iter()
+            .find(|p| p.id == prisoner)
+            .and_then(|p| p.gang_affiliation.map(GangId))
+    }
+
+    /// Install a fully formed organization, synchronizing every member's
+    /// affiliation and recording its formation. Emergent formation uses this
+    /// so no caller can bypass roster/affiliation consistency.
+    pub fn register_gang(&mut self, gang: Gang) -> bool {
+        let id = gang.id;
+        let members = gang.members.clone();
+        let name = gang.name.clone();
+        let leader = gang.leader;
+        if self.gangs.iter().any(|g| g.id == id)
+            || members
+                .iter()
+                .any(|pid| !self.prisoners.iter().any(|p| p.id == *pid))
+        {
+            return false;
+        }
+        self.gangs.push(gang);
+        for pid in &members {
+            if let Some(p) = self.prisoners.iter_mut().find(|p| p.id == *pid) {
+                p.gang_affiliation = Some(id.0);
+            }
+        }
+        self.next_gang_id = self.next_gang_id.max(id.0.saturating_add(1));
+        self.record_gang_history(
+            id,
+            GangHistoryKind::Formed,
+            format!("Gang '{}' coalesced around {:?}", name, leader),
+            &members,
+            &[gang_event_cause(id), "emergent formation".into()],
+        );
+        true
+    }
+
+    /// Authoritative gang creation. Sets the founder's affiliation, records the
+    /// formation in durable history, and keeps the id allocator ahead of the
+    /// supplied identifier.
+    pub fn create_gang(
+        &mut self,
+        id: GangId,
+        name: impl Into<String>,
+        founder: PrisonerId,
+    ) -> bool {
+        if !self.prisoners.iter().any(|p| p.id == founder) {
+            return false;
+        }
+        self.register_gang(Gang::with_formed_at(id, name, founder, self.time))
+    }
+
+    /// Read-only view of the append-only gang timeline.
+    #[must_use]
+    pub fn gang_history(&self) -> &[GangHistoryEntry] {
+        &self.gang_history
+    }
+
+    /// Current institutional pressure exerted by the active gang graph.
+    #[must_use]
+    pub fn gang_pressure(&self) -> alc_social::GangPressure {
+        gang_pressure(&self.gangs, &self.social)
+    }
+
+    fn gang_history_event_kind(kind: GangHistoryKind) -> EventKind {
+        match kind {
+            GangHistoryKind::Formed => EventKind::GangFormed,
+            GangHistoryKind::Recruit => EventKind::GangRecruit,
+            GangHistoryKind::Loss => EventKind::RelationshipShift,
+            GangHistoryKind::LeadershipChange => EventKind::LeadershipDispute,
+            GangHistoryKind::Split => EventKind::GangFormed,
+            GangHistoryKind::Merge => EventKind::GangRecruit,
+            GangHistoryKind::Alliance | GangHistoryKind::Rivalry => EventKind::GangRivalry,
+            GangHistoryKind::Dispute => EventKind::LeadershipDispute,
+            GangHistoryKind::MajorConflict => EventKind::GangClash,
+            GangHistoryKind::Disbanded => EventKind::GangDisbanded,
+        }
+    }
+
+    /// Append a durable gang-history record without emitting a second event.
+    /// Callers that already return a world event to the engine use this path;
+    /// all other transitions use [`Self::record_gang_history`].
+    fn append_gang_history(
+        &mut self,
+        gang: GangId,
+        kind: GangHistoryKind,
+        summary: impl Into<String>,
+        actors: &[PrisonerId],
+        causes: &[String],
+    ) -> u64 {
+        let id = self.next_gang_history_id;
+        self.next_gang_history_id = self.next_gang_history_id.saturating_add(1);
+        self.gang_history.push(GangHistoryEntry {
+            id,
+            gang,
+            kind,
+            at: self.time,
+            summary: summary.into(),
+            actors: actors.iter().map(|p| p.raw()).collect(),
+            causes: causes.to_vec(),
+        });
+        id
+    }
+
+    /// Append a durable gang-history record and project it onto the event bus
+    /// and institutional history with a stable causal marker.
+    fn record_gang_history(
+        &mut self,
+        gang: GangId,
+        kind: GangHistoryKind,
+        summary: impl Into<String>,
+        actors: &[PrisonerId],
+        causes: &[String],
+    ) -> u64 {
+        let summary = summary.into();
+        let id = self.append_gang_history(gang, kind, summary.clone(), actors, causes);
+        let mut event = WorldEvent::new(
+            0,
+            self.time,
+            Self::gang_history_event_kind(kind),
+            format!("{}: {}", kind.label(), summary),
+        );
+        for &actor in actors {
+            event = event.with_actor(actor.raw());
+        }
+        for cause in causes {
+            event = event.with_cause(cause.clone());
+        }
+        let event_id = self.events.emit(event.clone());
+        event.id = event_id;
+        self.history.push(event);
+        id
+    }
+
+    /// Remove empty organizations and record their dissolution once.
+    fn prune_empty_gangs(&mut self) {
+        let empty: Vec<GangId> = self
+            .gangs
+            .iter()
+            .filter(|g| g.members.is_empty())
+            .map(|g| g.id)
+            .collect();
+        for gid in empty {
+            self.record_gang_history(
+                gid,
+                GangHistoryKind::Disbanded,
+                format!("Gang {} dissolved after losing all members", gid.0),
+                &[],
+                &[gang_event_cause(gid)],
+            );
+        }
+        self.gangs.retain(|g| !g.members.is_empty());
+    }
+
+    /// Authoritative membership transition. Handles switching gangs, records
+    /// recruitment in durable history, and keeps both roster sides in sync.
+    pub fn join_gang(&mut self, prisoner: PrisonerId, gang: GangId) -> bool {
+        if !self.prisoners.iter().any(|p| p.id == prisoner) {
+            return false;
+        }
+        if !self
+            .gangs
+            .iter()
+            .any(|g| g.id == gang && g.active && !g.members.is_empty())
+        {
+            return false;
+        }
+        if self.prisoner_gang(prisoner) == Some(gang)
+            && self
+                .gangs
+                .iter()
+                .any(|g| g.id == gang && g.members.contains(&prisoner))
+        {
+            return true;
+        }
+        if let Some(previous) = self.prisoner_gang(prisoner) {
+            if previous != gang {
+                self.leave_gang(prisoner);
+            }
+        }
+        let Some(index) = self.gangs.iter().position(|g| g.id == gang) else {
+            return false;
+        };
+        if !self.gangs[index].members.contains(&prisoner) {
+            self.gangs[index].recruit(prisoner);
+        }
+        if let Some(p) = self.prisoners.iter_mut().find(|p| p.id == prisoner) {
+            p.gang_affiliation = Some(gang.0);
+        }
+        self.record_gang_history(
+            gang,
+            GangHistoryKind::Recruit,
+            format!("Prisoner {} joined gang {}", prisoner.raw(), gang.0),
+            &[prisoner],
+            &[gang_event_cause(gang), "voluntary recruitment".into()],
+        );
+        true
+    }
+
+    /// Authoritative departure. `Gang::lose` reassigns leadership when needed;
+    /// the resulting leadership change and any dissolution are recorded.
+    pub fn leave_gang(&mut self, prisoner: PrisonerId) -> bool {
+        let Some(gid) = self.prisoner_gang(prisoner) else {
+            return false;
+        };
+        let Some(index) = self.gangs.iter().position(|g| g.id == gid) else {
+            if let Some(p) = self.prisoners.iter_mut().find(|p| p.id == prisoner) {
+                p.gang_affiliation = None;
+            }
+            return false;
+        };
+        let was_member = self.gangs[index].members.contains(&prisoner);
+        let old_leader = self.gangs[index].leader;
+        self.gangs[index].lose(prisoner);
+        let new_leader = self.gangs[index].leader;
+        if let Some(p) = self.prisoners.iter_mut().find(|p| p.id == prisoner) {
+            p.gang_affiliation = None;
+        }
+        if was_member {
+            self.record_gang_history(
+                gid,
+                GangHistoryKind::Loss,
+                format!("Prisoner {} left gang {}", prisoner.raw(), gid.0),
+                &[prisoner],
+                &[gang_event_cause(gid), "membership departure".into()],
+            );
+        }
+        if old_leader.is_some() && old_leader != new_leader {
+            let actors = new_leader.into_iter().collect::<Vec<_>>();
+            self.record_gang_history(
+                gid,
+                GangHistoryKind::LeadershipChange,
+                match new_leader {
+                    Some(leader) => format!(
+                        "Gang {} leadership passed from {} to {}",
+                        gid.0,
+                        old_leader.map_or(0, PrisonerId::raw),
+                        leader.raw()
+                    ),
+                    None => format!("Gang {} lost its leader", gid.0),
+                },
+                &actors,
+                &[gang_event_cause(gid), "leader departure".into()],
+            );
+        }
+        self.prune_empty_gangs();
+        true
+    }
+
+    /// Absorb one organization into another, moving every roster member and
+    /// rewriting affiliations. Returns `false` for unknown, inactive or
+    /// identical gangs.
+    pub fn merge_gangs(&mut self, source: GangId, target: GangId) -> bool {
+        if source == target {
+            return false;
+        }
+        let Some(source_index) = self
+            .gangs
+            .iter()
+            .position(|g| g.id == source && g.active && !g.members.is_empty())
+        else {
+            return false;
+        };
+        let Some(target_index) = self
+            .gangs
+            .iter()
+            .position(|g| g.id == target && g.active && !g.members.is_empty())
+        else {
+            return false;
+        };
+        if source_index == target_index {
+            return false;
+        }
+        let moved = if source_index < target_index {
+            let (left, right) = self.gangs.split_at_mut(target_index);
+            right[0].merge_from(&mut left[source_index])
+        } else {
+            let (left, right) = self.gangs.split_at_mut(source_index);
+            left[target_index].merge_from(&mut right[0])
+        };
+        for &pid in &moved {
+            if let Some(p) = self.prisoners.iter_mut().find(|p| p.id == pid) {
+                p.gang_affiliation = Some(target.0);
+            }
+        }
+        let causes = vec![
+            gang_event_cause(source),
+            gang_event_cause(target),
+            "sustained alliance and shared goals".into(),
+        ];
+        self.record_gang_history(
+            target,
+            GangHistoryKind::Merge,
+            format!(
+                "Gang {} absorbed {} ({} member(s) moved)",
+                target.0,
+                source.0,
+                moved.len()
+            ),
+            &moved,
+            &causes,
+        );
+        self.record_gang_history(
+            source,
+            GangHistoryKind::Merge,
+            format!("Gang {} merged into {}", source.0, target.0),
+            &moved,
+            &causes,
+        );
+        self.gangs.retain(|g| g.id != source);
+        true
+    }
+
+    /// Repair roster/affiliation drift (including legacy saves and repaired
+    /// decisions). Returns the number of repairs applied.
+    pub fn reconcile_gang_membership(&mut self) -> usize {
+        let live: BTreeSet<u64> = self.prisoners.iter().map(|p| p.id.raw()).collect();
+        let valid: BTreeSet<u64> = self
+            .gangs
+            .iter()
+            .filter(|g| g.active)
+            .map(|g| g.id.raw())
+            .collect();
+        let mut repairs = 0usize;
+
+        for p in &mut self.prisoners {
+            if let Some(raw) = p.gang_affiliation {
+                if !valid.contains(&raw) {
+                    p.gang_affiliation = None;
+                    repairs += 1;
+                }
+            }
+        }
+        for gang in &mut self.gangs {
+            let before = gang.members.len();
+            gang.members.retain(|p| live.contains(&p.raw()));
+            repairs += before.saturating_sub(gang.members.len());
+            if let Some(leader) = gang.leader {
+                if !gang.members.contains(&leader) {
+                    gang.leader = gang.members.first().copied();
+                    repairs += 1;
+                }
+            }
+        }
+
+        for raw in live.iter().copied() {
+            let pid = PrisonerId(raw);
+            // A legacy roster entry without an affiliation is repaired toward
+            // the roster; an explicit (different) affiliation is authoritative.
+            if self.prisoner_gang(pid).is_none() {
+                let roster_gang = self
+                    .gangs
+                    .iter()
+                    .find(|g| g.members.contains(&pid))
+                    .map(|g| g.id);
+                if let Some(gid) = roster_gang {
+                    if let Some(p) = self.prisoners.iter_mut().find(|p| p.id == pid) {
+                        p.gang_affiliation = Some(gid.0);
+                        repairs += 1;
+                    }
+                }
+            }
+            let current = self.prisoner_gang(pid);
+            for gang in &mut self.gangs {
+                if Some(gang.id) != current && gang.members.contains(&pid) {
+                    gang.lose(pid);
+                    repairs += 1;
+                }
+            }
+            let Some(gid) = current else { continue };
+            let Some(index) = self.gangs.iter().position(|g| g.id == gid) else {
+                continue;
+            };
+            if !self.gangs[index].members.contains(&pid) {
+                self.gangs[index].recruit(pid);
+                repairs += 1;
+            }
+        }
+        for gang in &self.gangs {
+            for &member in &gang.members {
+                if let Some(p) = self.prisoners.iter_mut().find(|p| p.id == member) {
+                    if p.gang_affiliation != Some(gang.id.0) {
+                        p.gang_affiliation = Some(gang.id.0);
+                        repairs += 1;
+                    }
+                }
+            }
+        }
+        self.prune_empty_gangs();
+        repairs
+    }
+
+    /// Gang-channel throughput for the contraband model. Higher pressure,
+    /// resources and member commitment make a gang a more effective channel;
+    /// discipline damps it. Always bounded to `0..=1`.
+    #[must_use]
+    pub fn gang_control_for(&self, prisoner: PrisonerId) -> f32 {
+        let Some(gid) = self.prisoner_gang(prisoner) else {
+            return 0.0;
+        };
+        let Some(gang) = self.gangs.iter().find(|g| g.id == gid) else {
+            return 0.0;
+        };
+        let Some(p) = self.prisoners.iter().find(|p| p.id == prisoner) else {
+            return 0.0;
+        };
+        let pressure = self.gang_pressure().total();
+        let standing = gang
+            .hierarchy
+            .iter()
+            .find(|record| record.prisoner == prisoner)
+            .map_or(0.0, |record| {
+                record.commitment * 0.1 + record.influence * 0.1
+            });
+        clamp01(
+            0.16 + gang.resources.clamp(0.0, 1.0) * 0.24
+                + pressure * 0.2
+                + standing
+                + (1.0 - p.traits.discipline.clamp(0.0, 1.0)) * 0.1,
+        )
+    }
+
+    /// `(rival, friendly)` relation between two prisoners' gangs. Same-gang
+    /// dyads count as friendly; declared alliances damp hostile encounters.
+    fn gang_tie(&self, a: Option<GangId>, b: Option<GangId>) -> (bool, bool) {
+        let (Some(a), Some(b)) = (a, b) else {
+            return (false, false);
+        };
+        if a == b {
+            return (false, true);
+        }
+        let Some(ga) = self.gangs.iter().find(|g| g.id == a) else {
+            return (false, false);
+        };
+        let Some(gb) = self.gangs.iter().find(|g| g.id == b) else {
+            return (false, false);
+        };
+        let rival = ga.rivalries.contains(&b) || gb.rivalries.contains(&a);
+        let friendly = ga.alliances.contains(&b) || gb.alliances.contains(&a);
+        (rival, friendly)
     }
 
     /// Local friction signal used by guard perception. Need pressure is a
@@ -888,6 +1443,796 @@ impl World {
     }
 
     // -----------------------------------------------------------------------
+    // Canonical AI decision gate (spec 011)
+    // -----------------------------------------------------------------------
+
+    /// Build the single canonical validation context for one prisoner.
+    ///
+    /// The context is sorted and bounded so provider hashes, dry-runs, batch
+    /// validation and delivery all observe exactly the same world slice.
+    pub fn validation_context(&self, id: PrisonerId) -> Option<ValidationContext> {
+        let prisoner = self.prisoners.iter().find(|p| p.id == id)?;
+        let facility = self.prisoner_location.get(&id).copied();
+        let guards_nearby = facility
+            .map(|f| {
+                self.guard_location
+                    .values()
+                    .filter(|loc| **loc == f)
+                    .count() as u32
+            })
+            .unwrap_or(0);
+
+        let mut visible_entities = Vec::new();
+        if let Some(facility) = facility {
+            visible_entities.extend(
+                self.prisoner_location
+                    .iter()
+                    .filter(|(_, loc)| **loc == facility)
+                    .map(|(pid, _)| pid.raw()),
+            );
+            visible_entities.extend(
+                self.guard_location
+                    .iter()
+                    .filter(|(_, loc)| **loc == facility)
+                    .map(|(gid, _)| gid.raw()),
+            );
+        }
+        if !visible_entities.contains(&id.raw()) {
+            visible_entities.push(id.raw());
+        }
+        visible_entities.sort_unstable();
+        visible_entities.dedup();
+
+        let mut known_facilities: Vec<u64> = self.facilities.iter().map(|f| f.id.0).collect();
+        known_facilities.sort_unstable();
+        known_facilities.dedup();
+
+        let has_contraband = self.contraband_state.get(&id).map_or(false, |state| {
+            state.inventory.values().any(|count| *count > 0)
+        });
+        let tokens_remaining_today = self
+            .orchestrator
+            .budget
+            .agent_budget(id.raw())
+            .map_or(self.orchestrator.token_budget_per_agent, |budget| {
+                budget.remaining()
+            });
+
+        Some(ValidationContext {
+            current_facility: facility.map(|f| f.0).unwrap_or(0),
+            lockdown: self.policies.lockdown,
+            stamina: prisoner.condition.hope,
+            tokens_remaining_today,
+            guards_nearby,
+            agent_id: id.raw(),
+            role: Role::Prisoner,
+            in_gang: prisoner.gang_affiliation.is_some(),
+            gang_id: prisoner.gang_affiliation,
+            is_gang_leader: self
+                .gangs
+                .iter()
+                .any(|g| g.leader.map(|leader| leader.raw()) == Some(id.raw())),
+            visible_entities,
+            known_facilities,
+            has_contraband,
+            last_decision: self.current_decisions.get(&id).cloned(),
+            now_secs: self.time.as_secs(),
+        })
+    }
+
+    /// Build a bounded provider request for one prisoner using the world's
+    /// need-derived action candidates.
+    pub fn provider_context(&self, id: PrisonerId) -> Option<DecisionRequest> {
+        let candidates = self.decision_candidates_from_world(id);
+        self.provider_context_with_candidates(id, candidates)
+    }
+
+    /// Build a provider request from an already-computed candidate set.
+    pub fn provider_context_with_candidates(
+        &self,
+        id: PrisonerId,
+        candidates: Vec<ActionCandidate>,
+    ) -> Option<DecisionRequest> {
+        let validation = self.validation_context(id)?;
+        let epistemic = self.epistemic_context(id);
+        Some(DecisionRequest::new(
+            id.raw(),
+            Role::Prisoner,
+            self.time.as_secs(),
+            candidates,
+            validation,
+            epistemic,
+        ))
+    }
+
+    /// Retrieve a bounded, epistemic-tagged memory slice for one prisoner.
+    ///
+    /// Direct observations, rumors, suspicions, beliefs and confirmed facts
+    /// are kept in distinct buckets so a provider cannot quietly promote a
+    /// rumor into a fact.
+    pub fn epistemic_context(&self, id: PrisonerId) -> EpistemicContext {
+        let top_k = self.ai_config().max_context_memories.max(1);
+        let now_secs = self.time.as_secs();
+        let mut memory = Memory::new();
+        let mut seen = BTreeMap::new();
+
+        for event in self.history.iter().chain(self.events.recent()) {
+            if !event.actors.contains(&id.raw()) {
+                continue;
+            }
+            seen.entry(event.id).or_insert_with(|| event.clone());
+        }
+        let mut events: Vec<_> = seen.into_values().collect();
+        events.sort_by(|a, b| {
+            a.at.as_secs()
+                .cmp(&b.at.as_secs())
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        // Keep the most recent bounded slice; the memory layer performs the
+        // final importance/recency ranking.
+        let skip = events.len().saturating_sub(top_k.saturating_mul(2));
+        for event in events.into_iter().skip(skip) {
+            let kind = Self::epistemic_kind_for(event.kind, event.actors.contains(&id.raw()));
+            let source = event
+                .actors
+                .iter()
+                .copied()
+                .find(|actor| *actor != id.raw())
+                .unwrap_or(event.id);
+            let mut record = EpistemicRecord::new(kind, id.raw(), event.summary.clone())
+                .with_time(event.at.as_secs());
+            record.confidence = event.confidence.clamp(0.0, 1.0);
+            record.salience = 0.5;
+            record.source = Some(source);
+            memory.remember_scored(record);
+        }
+
+        if let Some(prisoner) = self.prisoners.iter().find(|p| p.id == id) {
+            if !prisoner.memory_summary.trim().is_empty() {
+                let mut record = EpistemicRecord::new(
+                    EpistemicKind::Belief,
+                    id.raw(),
+                    prisoner.memory_summary.clone(),
+                )
+                .with_time(now_secs);
+                record.confidence = 0.45;
+                record.source = Some(id.raw());
+                memory.remember_scored(record);
+            }
+        }
+
+        EpistemicContext::from_memory(&memory, Some(id.raw()), &[], top_k, now_secs)
+    }
+
+    fn epistemic_kind_for(kind: EventKind, witnessed: bool) -> EpistemicKind {
+        match kind {
+            EventKind::Rumor => EpistemicKind::Rumor,
+            EventKind::Investigation | EventKind::EscapeAttempt | EventKind::Theft
+                if !witnessed =>
+            {
+                EpistemicKind::Suspicion
+            }
+            EventKind::PolicyChange
+            | EventKind::ParoleGranted
+            | EventKind::ParoleDenied
+            | EventKind::Release
+            | EventKind::RehabilitationSuccess
+            | EventKind::ContrabandConfiscated => EpistemicKind::ConfirmedFact,
+            EventKind::Fight
+            | EventKind::Argument
+            | EventKind::Threat
+            | EventKind::RelationshipShift
+            | EventKind::Injury
+            | EventKind::MedicalEmergency
+                if witnessed =>
+            {
+                EpistemicKind::DirectKnowledge
+            }
+            _ => EpistemicKind::Belief,
+        }
+    }
+
+    /// Validate a decision against the canonical context for its agent.
+    pub fn validate_decision_for(&self, id: PrisonerId, decision: &Decision) -> DecisionValidation {
+        let Some(ctx) = self.validation_context(id) else {
+            return DecisionValidation {
+                result: ValidationResult::Rejected {
+                    reason: format!("unknown prisoner id {}", id.raw()),
+                },
+                stage: Some(ValidationStage::WorldState),
+                reason: Some(format!("unknown prisoner id {}", id.raw())),
+                retryable: false,
+            };
+        };
+        self.validate_decision_in_context(id, decision, &ctx)
+    }
+
+    /// Validate a decision against an explicitly supplied context. Batch
+    /// delivery uses this to validate every proposal in one canonical slice.
+    pub fn validate_decision_in_context(
+        &self,
+        id: PrisonerId,
+        decision: &Decision,
+        ctx: &ValidationContext,
+    ) -> DecisionValidation {
+        let validation = validate_decision_detailed(decision, ctx);
+        if validation.is_accepted() {
+            let validated = validation
+                .accepted_decision()
+                .cloned()
+                .unwrap_or_else(|| decision.clone());
+            if let Err(reason) = self.engine_rules_for(id, &validated) {
+                return DecisionValidation {
+                    result: ValidationResult::Rejected {
+                        reason: reason.clone(),
+                    },
+                    stage: Some(ValidationStage::WorldState),
+                    reason: Some(reason),
+                    retryable: false,
+                };
+            }
+        }
+        validation
+    }
+
+    /// Validate a proposal whose pending context hash must still match.
+    pub fn validate_decision_for_with_hash(
+        &self,
+        id: PrisonerId,
+        decision: &Decision,
+        context_hash: u64,
+    ) -> DecisionValidation {
+        let Some(ctx) = self.validation_context(id) else {
+            return self.validate_decision_for(id, decision);
+        };
+        if context_hash != 0 && context_hash != hash_validation_context(&ctx) {
+            return DecisionValidation {
+                result: ValidationResult::Rejected {
+                    reason: "stale context".to_string(),
+                },
+                stage: Some(ValidationStage::WorldState),
+                reason: Some("stale context".to_string()),
+                retryable: false,
+            };
+        }
+        self.validate_decision_in_context(id, decision, &ctx)
+    }
+
+    fn engine_rules_for(&self, id: PrisonerId, decision: &Decision) -> Result<(), String> {
+        match &decision.action {
+            DecisionAction::MoveTo { target_facility } => {
+                if self.policies.lockdown {
+                    return Err("lockdown active: movement restricted".to_string());
+                }
+                if !self.facilities.iter().any(|f| f.id.0 == *target_facility) {
+                    return Err(format!("unknown facility {target_facility}"));
+                }
+            }
+            DecisionAction::Socialize { with } | DecisionAction::Trade { with, .. } => {
+                if !self.prisoners.iter().any(|p| p.id.raw() == *with) {
+                    return Err("unknown target prisoner".to_string());
+                }
+            }
+            DecisionAction::Fight { target } => {
+                if !self.prisoners.iter().any(|p| p.id.raw() == *target) {
+                    return Err("unknown target prisoner".to_string());
+                }
+            }
+            DecisionAction::SpreadRumor { about, content } => {
+                if !self.prisoners.iter().any(|p| p.id.raw() == *about) {
+                    return Err("unknown target prisoner".to_string());
+                }
+                if content.trim().is_empty() {
+                    return Err("rumor content is empty".to_string());
+                }
+            }
+            DecisionAction::JoinGang { gang } => {
+                if !self.gangs.iter().any(|g| g.id.raw() == *gang) {
+                    return Err(format!("unknown gang {gang}"));
+                }
+            }
+            DecisionAction::LeadGang { gang } => {
+                match self.gangs.iter().find(|g| g.id.raw() == *gang) {
+                    None => return Err(format!("unknown gang {gang}")),
+                    Some(g) if !g.members.iter().any(|member| *member == id) => {
+                        return Err("prisoner is not a member of the gang".to_string());
+                    }
+                    Some(_) => {}
+                }
+            }
+            DecisionAction::EscapeAttempt if self.policies.lockdown => {
+                return Err("lockdown active: escape attempts blocked".to_string());
+            }
+            DecisionAction::EscapeAttempt
+            | DecisionAction::RequestMedical
+            | DecisionAction::Comply
+            | DecisionAction::Refuse
+            | DecisionAction::LeaveGang
+            | DecisionAction::None => {}
+        }
+        Ok(())
+    }
+
+    /// Apply an already-validated decision. Rejected results are never applied.
+    ///
+    /// Returns generated events without emitting them; the caller (world tick
+    /// or engine) remains responsible for bus/incident mirroring.
+    pub fn apply_validated_decision(
+        &mut self,
+        id: PrisonerId,
+        result: &ValidationResult,
+    ) -> Vec<WorldEvent> {
+        let mut decision = match result {
+            ValidationResult::Accepted(decision) | ValidationResult::Repaired(decision) => {
+                decision.clone()
+            }
+            ValidationResult::Rejected { .. } => return Vec::new(),
+        };
+        decision.outcome = match result {
+            ValidationResult::Accepted(_) => DecisionOutcomeState::Accepted,
+            ValidationResult::Repaired(_) => DecisionOutcomeState::Repaired,
+            ValidationResult::Rejected { .. } => return Vec::new(),
+        };
+        let events = self.apply_decision_action(id, &decision);
+        if self.prisoners.iter().any(|p| p.id == id) {
+            self.current_decisions.insert(id, decision);
+        }
+        events
+    }
+
+    fn apply_decision_action(&mut self, id: PrisonerId, decision: &Decision) -> Vec<WorldEvent> {
+        let mut events = Vec::new();
+        match &decision.action {
+            DecisionAction::MoveTo { target_facility } => {
+                if let Some(facility) = self
+                    .facilities
+                    .iter()
+                    .find(|f| f.id.0 == *target_facility)
+                    .cloned()
+                {
+                    if let Some(prisoner) = self.prisoners.iter_mut().find(|p| p.id == id) {
+                        prisoner.schedule.wing = facility.wing;
+                    }
+                    self.prisoner_location.insert(id, facility.id);
+                }
+            }
+            DecisionAction::Socialize { with } => {
+                self.social.record(
+                    id,
+                    PrisonerId(*with),
+                    RelationshipDelta {
+                        familiarity: 0.08,
+                        friendship: 0.04,
+                        trust: 0.02,
+                        ..Default::default()
+                    },
+                );
+                events.push(Self::decision_event(
+                    self.time,
+                    EventKind::RelationshipShift,
+                    format!("{} socialized with {with}", id.raw()),
+                    vec![id.raw()],
+                ));
+            }
+            DecisionAction::Trade { with, item } => {
+                let other = PrisonerId(*with);
+                if self.prisoners.iter().any(|p| p.id == id)
+                    && self.prisoners.iter().any(|p| p.id == other)
+                {
+                    let amount = Money::from_major(1);
+                    let at = self.time.as_secs();
+                    self.economy.record(
+                        at,
+                        Account::Supplies,
+                        amount,
+                        format!("trade credit: {} -> {} ({item})", id.raw(), with),
+                    );
+                    self.economy.record(
+                        at,
+                        Account::Supplies,
+                        Money(-amount.0),
+                        format!("trade debit: {} -> {} ({item})", id.raw(), with),
+                    );
+                }
+                self.social.record(
+                    id,
+                    other,
+                    RelationshipDelta {
+                        familiarity: 0.12,
+                        friendship: 0.03,
+                        trust: 0.01,
+                        ..Default::default()
+                    },
+                );
+                events.push(Self::decision_event(
+                    self.time,
+                    EventKind::RelationshipShift,
+                    format!("{} traded with {with} ({item})", id.raw()),
+                    vec![id.raw(), *with],
+                ));
+            }
+            DecisionAction::Fight { target } => {
+                events.extend(self.fight_events(id, PrisonerId(*target)))
+            }
+            DecisionAction::EscapeAttempt => events.extend(self.escape_events(id)),
+            DecisionAction::SpreadRumor { about, content } => {
+                events.push(Self::decision_event(
+                    self.time,
+                    EventKind::Rumor,
+                    format!("{} spreads rumor about {about}: {content}", id.raw()),
+                    vec![id.raw()],
+                ));
+            }
+            DecisionAction::JoinGang { gang } => {
+                // Membership is authoritative in `World`: the API keeps the
+                // prisoner field and both gang rosters consistent and writes
+                // a durable Recruit history entry.
+                self.join_gang(id, GangId(*gang));
+            }
+            DecisionAction::LeadGang { gang } => {
+                let gid = GangId(*gang);
+                if let Some(index) = self.gangs.iter().position(|g| g.id == gid) {
+                    let old_leader = self.gangs[index].leader;
+                    if self.gangs[index].change_leader(id) && old_leader != Some(id) {
+                        self.record_gang_history(
+                            gid,
+                            GangHistoryKind::LeadershipChange,
+                            format!("Prisoner {} took leadership of gang {}", id.raw(), gid.0),
+                            &[id],
+                            &[gang_event_cause(gid), "direct leadership decision".into()],
+                        );
+                    }
+                }
+            }
+            DecisionAction::LeaveGang => {
+                self.leave_gang(id);
+            }
+            DecisionAction::RequestMedical => {
+                // A request is an attempt to obtain care, not a new injury.
+                // Relieve the deficit slightly (bounded by staff coverage) so
+                // repeated requests cannot create a runaway medical spiral.
+                let relief = 0.12 * self.staff_coverage();
+                if let Some(prisoner) = self.prisoners.iter_mut().find(|p| p.id == id) {
+                    prisoner.needs.relieve(NeedTag::Medical, relief);
+                }
+            }
+            DecisionAction::Comply | DecisionAction::Refuse | DecisionAction::None => {}
+        }
+        events
+    }
+
+    fn decision_event(
+        at: SimTime,
+        kind: EventKind,
+        summary: String,
+        actors: Vec<u64>,
+    ) -> WorldEvent {
+        let mut event = WorldEvent::new(0, at, kind, summary);
+        for actor in actors {
+            event = event.with_actor(actor);
+        }
+        event
+    }
+
+    fn fight_events(&mut self, a: PrisonerId, b: PrisonerId) -> Vec<WorldEvent> {
+        let Some(pa) = self.prisoners.iter().find(|p| p.id == a).cloned() else {
+            return Vec::new();
+        };
+        let Some(pb) = self.prisoners.iter().find(|p| p.id == b).cloned() else {
+            return Vec::new();
+        };
+        let mut rng = RngStream::new(self.seed, self.time.as_secs());
+        let tension = 0.5 + (pa.traits.aggression + pb.traits.aggression) * 0.15;
+        let outcome = resolve_conflict(
+            &mut rng,
+            tension,
+            0.15,
+            pa.aggression_modifier(),
+            pa.traits.discipline,
+            0.1,
+        );
+        let gang_a = pa.gang_affiliation.map(GangId);
+        let gang_b = pb.gang_affiliation.map(GangId);
+        let (rival, _) = self.gang_tie(gang_a, gang_b);
+        let context = match (rival, gang_a, gang_b) {
+            (true, Some(left), Some(right)) => Some((left, right)),
+            _ => None,
+        };
+        let effects = apply_outcome(
+            &mut self.social,
+            &mut self.gangs,
+            &[a, b],
+            outcome,
+            0.6,
+            context,
+        );
+        if let Some((left, right)) = context {
+            self.append_gang_history(
+                left,
+                GangHistoryKind::MajorConflict,
+                format!(
+                    "Gangs {} and {} clashed in a direct confrontation ({:?})",
+                    left.0, right.0, effects.incident
+                ),
+                &[a, b],
+                &[gang_event_cause(left), gang_event_cause(right)],
+            );
+        }
+        let kind = match outcome {
+            ConflictOutcome::Compliance => None,
+            ConflictOutcome::Retreat | ConflictOutcome::Argument => Some(EventKind::Argument),
+            ConflictOutcome::Threat | ConflictOutcome::Intimidation | ConflictOutcome::Bullying => {
+                Some(EventKind::Threat)
+            }
+            ConflictOutcome::Theft => Some(EventKind::Theft),
+            ConflictOutcome::Fight => Some(EventKind::Fight),
+            ConflictOutcome::GangClash | ConflictOutcome::Disturbance => Some(EventKind::GangClash),
+        };
+        kind.map_or(Vec::new(), |kind| {
+            let mut event = Self::decision_event(
+                self.time,
+                kind,
+                format!("conflict resolved: {outcome:?} ({:?})", effects.incident),
+                vec![a.raw(), b.raw()],
+            );
+            if let Some((left, _)) = context {
+                event = event.with_cause(gang_event_cause(left));
+            }
+            vec![event]
+        })
+    }
+
+    fn escape_events(&mut self, id: PrisonerId) -> Vec<WorldEvent> {
+        let Some(prisoner) = self.prisoners.iter().find(|p| p.id == id).cloned() else {
+            return Vec::new();
+        };
+        let mut rng = RngStream::new(self.seed, self.time.as_secs());
+        let outcome = resolve_escape_attempt(
+            &mut rng,
+            prisoner.escape_motivation(),
+            self.policies.security_level,
+            0.5,
+            0.2,
+        );
+        let consequences = apply_escape_consequences(outcome, self.policies.security_level, &[id]);
+        let kind = match outcome {
+            EscapeOutcome::SuccessfulEscape => EventKind::EscapeSucceeded,
+            EscapeOutcome::AttemptPrevented => EventKind::EscapePrevented,
+            _ => EventKind::EscapeAttempt,
+        };
+
+        if outcome == EscapeOutcome::SuccessfulEscape {
+            let outcome_event = self.record_escape_post_release(&prisoner);
+            self.purge_gang_members(&[id]);
+            self.prisoners.retain(|p| p.id != id);
+            self.prune_departed_agent_state(&[id]);
+            let live: std::collections::HashSet<PrisonerId> =
+                self.prisoners.iter().map(|p| p.id).collect();
+            self.social.retain(&live);
+            self.policies.security_level =
+                (self.policies.security_level + consequences.security_level_delta).clamp(0.0, 1.0);
+            if consequences.lockdown_recommended {
+                self.policies.lockdown = true;
+            }
+            // Emit the outcome event as well as the lifecycle release event so
+            // the engine can reconcile its post-release ledger without reading
+            // world internals.
+            return vec![
+                Self::decision_event(
+                    self.time,
+                    EventKind::EscapeSucceeded,
+                    format!("escape attempt outcome: {outcome:?}"),
+                    vec![id.raw()],
+                ),
+                outcome_event,
+            ];
+        }
+
+        vec![Self::decision_event(
+            self.time,
+            kind,
+            format!("escape attempt outcome: {outcome:?}"),
+            vec![id.raw()],
+        )]
+    }
+
+    fn record_escape_post_release(&mut self, prisoner: &Prisoner) -> WorldEvent {
+        let outcome_seed = RngStream::new(
+            self.seed,
+            prisoner.id.raw() ^ (self.days_simulated << 12) ^ 0x0E5C_A9E1,
+        )
+        .next_u64();
+        let rehab_progress = self
+            .rehab_records
+            .get(&prisoner.id)
+            .map(|records| {
+                let done = records.iter().filter(|r| r.completed).count() as f32;
+                let attended: u32 = records.iter().map(|r| r.attendance_days).sum();
+                (done * 0.6 + (attended.min(180) as f32 / 180.0) * 0.4).clamp(0.0, 1.0)
+            })
+            .unwrap_or(0.0);
+        let (employment, housing, violation, return_to_custody) = Self::post_release_outcomes(
+            outcome_seed,
+            prisoner.id.raw(),
+            "escape",
+            prisoner.sentence_days,
+            prisoner.sentence_served_days,
+            rehab_progress,
+        );
+        let record_id = self.next_post_release_id;
+        self.next_post_release_id += 1;
+        let record = PostReleaseRecord {
+            id: record_id,
+            prisoner_id: prisoner.id.raw(),
+            name: prisoner.name.clone(),
+            reason: "escape".to_string(),
+            day: self.days_simulated,
+            sentence_info: PostReleaseSentenceInfo {
+                sentence_days: prisoner.sentence_days,
+                sentence_served_days: prisoner.sentence_served_days,
+                classification: prisoner.classification,
+                escape_motivation_at_exit: prisoner.escape_motivation(),
+            },
+            outcome_seed,
+            employment,
+            housing,
+            violation,
+            return_to_custody,
+        };
+        self.post_release_outcomes.push(PostReleaseOutcomeRecord {
+            id: record_id,
+            post_release_id: record.id,
+            prisoner_id: prisoner.id.raw(),
+            name: prisoner.name.clone(),
+            day: self.days_simulated,
+            outcome_seed,
+            employment,
+            housing,
+            violation,
+            return_to_custody,
+        });
+        self.post_release_records.push(record);
+        let event = Self::decision_event(
+            self.time,
+            EventKind::Release,
+            format!(
+                "Prisoner {} left the institution: escape",
+                prisoner.id.raw()
+            ),
+            vec![prisoner.id.raw()],
+        )
+        .with_cause("lifecycle: post-release record");
+        self.history.push(event.clone());
+        event
+    }
+
+    fn post_release_outcomes(
+        seed: u64,
+        prisoner_id: u64,
+        reason: &str,
+        sentence_days: u32,
+        served_days: u32,
+        rehab_progress: f32,
+    ) -> (bool, bool, bool, bool) {
+        let mut rng = RngStream::new(seed, prisoner_id ^ 0x9E37_79B9_7F4A_7C15);
+        let served_fraction = (served_days as f32 / sentence_days.max(1) as f32).clamp(0.0, 1.0);
+        let stability =
+            (served_fraction * 0.55 + rehab_progress.clamp(0.0, 1.0) * 0.45).clamp(0.0, 0.95);
+        let penalty = if reason == "escape" { 0.3 } else { 0.0 };
+        let employment = rng.chance((stability * 0.85 + 0.05).min(0.95) as f64);
+        let housing = rng.chance((stability * 0.8 + 0.1).min(0.95) as f64);
+        let violation = rng.chance((0.32 - stability * 0.27 + penalty).clamp(0.02, 0.9) as f64);
+        let return_to_custody = violation && rng.chance(0.55);
+        (employment, housing, violation, return_to_custody)
+    }
+
+    /// Submit a bounded batch of decision proposals through the canonical
+    /// gate. Only accepted/repaired decisions are applied.
+    pub fn submit_ai_batch(&mut self, proposals: Vec<(PrisonerId, Decision)>) -> AiBatchOutcome {
+        self.submit_ai_batch_with_contexts(
+            proposals
+                .into_iter()
+                .map(|(id, decision)| (id, decision, 0))
+                .collect(),
+        )
+    }
+
+    /// Batch variant that rejects proposals whose pending context hash no
+    /// longer matches the canonical validation slice.
+    pub fn submit_ai_batch_with_contexts(
+        &mut self,
+        proposals: Vec<(PrisonerId, Decision, u64)>,
+    ) -> AiBatchOutcome {
+        let cap = self.ai_config().max_batch_size.max(1);
+        let mut selected: BTreeMap<u64, (PrisonerId, Decision, u64)> = BTreeMap::new();
+        for (id, decision, context_hash) in proposals {
+            if self.prisoners.iter().any(|p| p.id == id) {
+                selected.insert(id.raw(), (id, decision, context_hash));
+            }
+        }
+        while selected.len() > cap {
+            selected.pop_last();
+        }
+
+        let mut outcome = AiBatchOutcome::default();
+        // Capture every context before applying anything: one agent's move
+        // must not change another agent's validation slice within a batch.
+        let mut prepared = Vec::with_capacity(selected.len());
+        for (_, (id, decision, context_hash)) in selected {
+            match self.validation_context(id) {
+                Some(ctx) => prepared.push((id, decision, ctx, context_hash)),
+                None => outcome.rejected += 1,
+            }
+        }
+        self.orchestrator.record_batch(prepared.len());
+
+        let mut generated = Vec::new();
+        for (id, decision, ctx, context_hash) in prepared {
+            let validation = if context_hash != 0 && context_hash != hash_validation_context(&ctx) {
+                DecisionValidation {
+                    result: ValidationResult::Rejected {
+                        reason: "stale context".to_string(),
+                    },
+                    stage: Some(ValidationStage::WorldState),
+                    reason: Some("stale context".to_string()),
+                    retryable: false,
+                }
+            } else {
+                self.validate_decision_in_context(id, &decision, &ctx)
+            };
+
+            let repaired = matches!(validation.result, ValidationResult::Repaired(_));
+            let accepted = validation.is_accepted();
+            if accepted {
+                let validated = validation
+                    .accepted_decision()
+                    .cloned()
+                    .expect("accepted validation carries a decision");
+                let apply_result = if repaired {
+                    ValidationResult::Repaired(validated)
+                } else {
+                    ValidationResult::Accepted(validated)
+                };
+                generated.extend(self.apply_validated_decision(id, &apply_result));
+                self.orchestrator.record_validated(repaired);
+                outcome.accepted += 1;
+            } else {
+                self.orchestrator.record_rejected();
+                outcome.rejected += 1;
+            }
+            outcome.entries.push(AiBatchEntry {
+                prisoner_id: id,
+                result: validation.result,
+                applied: accepted,
+            });
+            self.orchestrator.pending.retain(|p| p.agent != id.raw());
+        }
+
+        self.emit_batch_events(generated);
+        outcome
+    }
+
+    fn emit_batch_events(&mut self, events: Vec<WorldEvent>) {
+        for mut event in events {
+            event.at = self.time;
+            event.id = self.events.emit(event.clone());
+        }
+    }
+
+    fn decision_candidates_from_world(&self, id: PrisonerId) -> Vec<ActionCandidate> {
+        let Some(prisoner) = self.prisoners.iter().find(|p| p.id == id) else {
+            return Vec::new();
+        };
+        let ids: Vec<PrisonerId> = {
+            let mut ids: Vec<PrisonerId> = self.prisoners.iter().map(|p| p.id).collect();
+            ids.sort_by_key(|pid| pid.raw());
+            ids
+        };
+        let locations = self.prisoner_location.clone();
+        self.decision_candidates(prisoner, &ids, &locations)
+    }
+
+    // -----------------------------------------------------------------------
     // Step 4 — need-driven decisions (Directive §3.7, §19)
     // -----------------------------------------------------------------------
 
@@ -914,40 +2259,65 @@ impl World {
             })
             .collect();
 
-        let mut decisions = HashMap::with_capacity(plans.len());
-        let mut new_locations = locations;
+        // AI deliberation is a scheduled, budgeted privilege. Agents that do
+        // not receive a slot still decide deterministically, but their
+        // decisions are never labelled as AI output.
+        let granted: std::collections::BTreeSet<u64> = self
+            .orchestrator
+            .take_ai_slots(now_secs)
+            .into_iter()
+            .collect();
+        let mut proposals = Vec::with_capacity(plans.len());
         for (id, disposition, candidates) in plans {
-            // AI deliberation is a budgeted/rate-limited privilege. When the
-            // orchestrator declines, the deterministic utility chooser decides.
-            let may_ai = self.orchestrator.may_deliberate(now_secs);
-            let decision = if may_ai {
-                self.orchestrator.telemetry.ai_decisions += 1;
-                candidates
-                    .iter()
-                    .max_by(|a, b| {
-                        let au = a.adjusted_utility() + trait_bias(&disposition, &a.decision);
-                        let bu = b.adjusted_utility() + trait_bias(&disposition, &b.decision);
-                        au.partial_cmp(&bu).unwrap_or(std::cmp::Ordering::Equal)
-                    })
-                    .map(|c| c.decision.clone())
-                    .unwrap_or(Decision::new(alc_agents::decision::DecisionAction::None))
+            let mut decision = if granted.contains(&id.raw()) {
+                match self
+                    .provider_context_with_candidates(id, candidates.clone())
+                    .and_then(|request| {
+                        let validation_hash = request.validation_hash;
+                        self.orchestrator
+                            .propose(request, now_secs)
+                            .map(|decision| (decision, validation_hash))
+                    }) {
+                    Some((decision, validation_hash)) => {
+                        self.orchestrator.submit_pending(PendingDecision::new(
+                            id.raw(),
+                            now_secs,
+                            decision.clone(),
+                            validation_hash,
+                        ));
+                        decision
+                    }
+                    None => {
+                        self.orchestrator.record_fallback();
+                        self.orchestrator.telemetry.utility_decisions += 1;
+                        self.orchestrator
+                            .fallback_decision_with_disposition(&candidates, &disposition)
+                    }
+                }
             } else {
+                self.orchestrator.telemetry.utility_decisions += 1;
                 self.orchestrator
                     .fallback_decision_with_disposition(&candidates, &disposition)
             };
-            if may_ai {
-                self.orchestrator.charge(1);
-            }
-            if let alc_agents::decision::DecisionAction::MoveTo { target_facility } =
-                &decision.action
+            decision.provenance = if granted.contains(&id.raw())
+                && decision.provenance != DecisionProvenance::System
             {
-                new_locations.insert(id, FacilityId(*target_facility));
-            }
-            decisions.insert(id, decision);
+                DecisionProvenance::Agent
+            } else {
+                DecisionProvenance::System
+            };
+            // Outcome stays Proposed until the canonical gate accepts it.
+            decision.outcome = alc_agents::decision::DecisionOutcomeState::Proposed;
+            proposals.push((id, decision));
         }
 
-        self.current_decisions = decisions;
-        self.prisoner_location = new_locations;
+        // Bounded batches, one canonical validation slice per agent, one apply
+        // path. Rejected proposals never reach `current_decisions`. Chunking
+        // keeps the batch cap configurable without starving large populations.
+        let batch_size = self.ai_config().max_batch_size.max(1);
+        for chunk in proposals.chunks(batch_size) {
+            let _ = self.submit_ai_batch(chunk.to_vec());
+        }
     }
 
     /// Translate a prisoner's dominant need into a ranked action set. The
@@ -1077,8 +2447,10 @@ impl World {
             manipulation: f32,
             respect: f32,
             stimulation: f32,
+            gang: Option<GangId>,
         }
 
+        let pressure = self.gang_pressure().total();
         let snaps: HashMap<PrisonerId, Snap> = self
             .prisoners
             .iter()
@@ -1091,6 +2463,7 @@ impl World {
                         manipulation: p.traits.manipulation,
                         respect: p.needs.respect,
                         stimulation: p.needs.stimulation,
+                        gang: p.gang_affiliation.map(GangId),
                     },
                 )
             })
@@ -1127,25 +2500,48 @@ impl World {
                         continue;
                     }
 
-                    let hostility = ((sa.aggression + sb.aggression) * 0.5
-                        + (sa.respect + sb.respect) * 0.15)
-                        * 0.45
-                        * (1.0 - deterrence);
+                    let (rival, friendly) = self.gang_tie(sa.gang, sb.gang);
+                    let hostility = clamp01(
+                        ((sa.aggression + sb.aggression) * 0.5 + (sa.respect + sb.respect) * 0.15)
+                            * 0.45
+                            * (1.0 - deterrence)
+                            + if rival { 0.18 } else { 0.0 }
+                            + pressure * 0.05
+                            - if friendly { 0.08 } else { 0.0 },
+                    );
                     let rumor_bias = 0.12 + (sa.manipulation + sb.manipulation) * 0.12;
                     let roll = rng.next_f64() as f32;
                     let mut delta = RelationshipDelta::default();
                     let mut reverse = RelationshipDelta::default();
+                    let mut cause = format!(
+                        "co-presence encounter; stimulation {:.2}/{:.2}, gang pressure {:.2}",
+                        sa.stimulation, sb.stimulation, pressure
+                    );
                     let (kind, summary) = if roll < hostility {
-                        delta.hostility = 0.06;
-                        delta.resentment = 0.04;
-                        reverse.hostility = 0.05;
-                        reverse.resentment = 0.05;
-                        need_effects.push((a, NeedTag::Respect, 0.06, false));
-                        need_effects.push((b, NeedTag::Safety, 0.05, false));
-                        (
-                            EventKind::Argument,
-                            format!("Argument between {} and {}", a.raw(), b.raw()),
-                        )
+                        if rival {
+                            delta.hostility = 0.09;
+                            delta.rivalry = 0.05;
+                            delta.resentment = 0.04;
+                            reverse.hostility = 0.08;
+                            reverse.rivalry = 0.05;
+                            reverse.resentment = 0.05;
+                            if let Some(gid) = sa.gang {
+                                cause.push_str(&format!("; {}", gang_event_cause(gid)));
+                            }
+                            (
+                                EventKind::GangClash,
+                                format!("Gang clash between {} and {}", a.raw(), b.raw()),
+                            )
+                        } else {
+                            delta.hostility = 0.06;
+                            delta.resentment = 0.04;
+                            reverse.hostility = 0.05;
+                            reverse.resentment = 0.05;
+                            (
+                                EventKind::Argument,
+                                format!("Argument between {} and {}", a.raw(), b.raw()),
+                            )
+                        }
                     } else if roll < hostility + 0.22 {
                         delta.familiarity = 0.05;
                         delta.trust = 0.02;
@@ -1179,16 +2575,19 @@ impl World {
                         )
                     };
 
+                    if friendly {
+                        delta.loyalty = 0.03;
+                        reverse.loyalty = 0.03;
+                        delta.trust += 0.01;
+                        reverse.trust += 0.01;
+                    }
                     self.social.record(a, b, delta);
                     self.social.record(b, a, reverse);
                     let ev = WorldEvent::new(0, self.time, kind, summary)
                         .with_actor(a.raw())
                         .with_actor(b.raw())
-                        .with_cause(format!(
-                            "co-presence encounter; stimulation {:.2}/{:.2}",
-                            sa.stimulation, sb.stimulation
-                        ));
-                    self.events.emit(ev);
+                        .with_cause(cause);
+                    let _ = self.events.emit(ev);
                 }
             }
         }
@@ -1211,20 +2610,420 @@ impl World {
         if departed.is_empty() {
             return;
         }
-        for gang in &mut self.gangs {
+        for index in 0..self.gangs.len() {
+            let was_member = departed
+                .iter()
+                .any(|pid| self.gangs[index].members.contains(pid));
+            if !was_member {
+                continue;
+            }
+            let gid = self.gangs[index].id;
+            let old_leader = self.gangs[index].leader;
             for &pid in departed {
-                gang.lose(pid);
+                self.gangs[index].lose(pid);
+            }
+            let new_leader = self.gangs[index].leader;
+            self.record_gang_history(
+                gid,
+                GangHistoryKind::Loss,
+                format!("Gang {} lost {} departed member(s)", gid.0, departed.len()),
+                departed,
+                &[gang_event_cause(gid), "prisoner departure".into()],
+            );
+            if old_leader.is_some() && old_leader != new_leader {
+                let summary = match new_leader {
+                    Some(leader) => format!(
+                        "Gang {} leadership passed to {} after departure",
+                        gid.0,
+                        leader.raw()
+                    ),
+                    None => format!("Gang {} lost its leader after departure", gid.0),
+                };
+                let actors = new_leader.into_iter().collect::<Vec<_>>();
+                self.record_gang_history(
+                    gid,
+                    GangHistoryKind::LeadershipChange,
+                    summary,
+                    &actors,
+                    &[gang_event_cause(gid), "leader departure".into()],
+                );
             }
         }
-        let before = self.gangs.len();
-        self.gangs.retain(|g| !g.members.is_empty());
-        for _ in self.gangs.len()..before {
-            self.events.emit(WorldEvent::new(
-                0,
-                self.time,
-                EventKind::GangDisbanded,
-                "Gang dissolved after losing all members",
-            ));
+        self.prune_empty_gangs();
+    }
+
+    /// Build one politics profile per gang member, directly from traits/needs
+    /// and the observed leader relationship (no omniscient world knowledge).
+    fn politics_profiles(&self, gang_index: usize) -> Vec<GangPoliticsProfile> {
+        let leader = self.gangs[gang_index].leader;
+        let mut members = self.gangs[gang_index].members.clone();
+        members.sort_unstable_by_key(|p| p.0);
+        members
+            .into_iter()
+            .filter_map(|id| {
+                let p = self.prisoners.iter().find(|p| p.id == id)?;
+                let rel = leader.map_or_else(Relationship::default, |leader| {
+                    self.social.get(id, leader).clone()
+                });
+                Some(GangPoliticsProfile {
+                    prisoner: id,
+                    loyalty: clamp01(
+                        p.traits.loyalty * 0.65
+                            + rel.loyalty * 0.2
+                            + rel.trust * 0.1
+                            + p.needs.safety * 0.05,
+                    ),
+                    autonomy: clamp01(
+                        0.2 + p.needs.autonomy * 0.45
+                            + (1.0 - p.traits.discipline) * 0.2
+                            + p.needs.freedom * 0.15,
+                    ),
+                    discipline: clamp01(p.traits.discipline),
+                    leadership: clamp01(p.traits.leadership),
+                    ambition: clamp01(p.traits.ambition),
+                    goal_conflict: clamp01(
+                        (1.0 - p.needs.stability) * 0.25
+                            + p.needs.freedom * 0.2
+                            + p.needs.autonomy * 0.15
+                            + (1.0 - p.condition.hope) * 0.15
+                            + (1.0 - p.traits.loyalty) * 0.25,
+                    ),
+                })
+            })
+            .collect()
+    }
+
+    fn gang_directive(
+        &self,
+        gang_index: usize,
+        pressure: alc_social::GangPressure,
+    ) -> GroupDirective {
+        let gang = &self.gangs[gang_index];
+        GroupDirective {
+            description: format!("weekly expectations of {}", gang.name),
+            pressure: clamp01(0.26 + pressure.total() * 0.34 + self.policies.security_level * 0.16),
+            expected_gain: clamp01(gang.resources * 0.3 + self.policies.privileges_level * 0.2),
+            personal_risk: clamp01(
+                self.policies.security_level * 0.4
+                    + gang.rivalries.len() as f32 * 0.06
+                    + pressure.rivalry * 0.18,
+            ),
+        }
+    }
+
+    /// Weekly gang-politics pass (Spec 008). Pure helpers decide disputes,
+    /// leadership challenges, fractures and inter-gang relations; only this
+    /// world-owned method mutates state and records explainable causes.
+    pub fn gang_politics_step(&mut self) {
+        self.reconcile_gang_membership();
+        if self.gangs.is_empty() {
+            return;
+        }
+        let pressure = self.gang_pressure();
+        let mut rng = RngStream::new(self.seed, self.days_simulated ^ 0x6011_C5A7);
+        let mut gang_ids: Vec<GangId> = self
+            .gangs
+            .iter()
+            .filter(|g| g.active)
+            .map(|g| g.id)
+            .collect();
+        gang_ids.sort_unstable_by_key(|g| g.0);
+
+        // Internal disagreement is resolved per gang, in id order.
+        for gid in &gang_ids {
+            let Some(index) = self.gangs.iter().position(|g| g.id == *gid) else {
+                continue;
+            };
+            if !self.gangs[index].active {
+                continue;
+            }
+            let directive = self.gang_directive(index, pressure);
+            let profiles = self.politics_profiles(index);
+            let disputes =
+                detect_internal_disputes(&self.gangs[index], &self.social, &profiles, &directive);
+            if disputes.is_empty() {
+                continue;
+            }
+
+            for dispute in &disputes {
+                if let Some(record) = self.gangs[index]
+                    .hierarchy
+                    .iter_mut()
+                    .find(|r| r.prisoner == dispute.prisoner)
+                {
+                    let delta = if dispute.action == DisputeAction::Negotiate {
+                        -0.05
+                    } else {
+                        dispute.grievance_delta
+                    };
+                    record.grievances = clamp01(record.grievances + delta);
+                }
+                match dispute.action {
+                    DisputeAction::Refuse => {
+                        self.gangs[index].reputation = clamp01(self.gangs[index].reputation - 0.02);
+                        if let Some(p) =
+                            self.prisoners.iter_mut().find(|p| p.id == dispute.prisoner)
+                        {
+                            p.needs.impulse(NeedTag::Respect, -0.02);
+                        }
+                    }
+                    DisputeAction::Covert => {
+                        self.gangs[index].resources += 0.02;
+                        if let Some(p) =
+                            self.prisoners.iter_mut().find(|p| p.id == dispute.prisoner)
+                        {
+                            p.traits.manipulation = clamp01(p.traits.manipulation + 0.01);
+                            p.needs.relieve(NeedTag::Freedom, 0.01);
+                        }
+                    }
+                    DisputeAction::Negotiate => {
+                        if let Some(p) =
+                            self.prisoners.iter_mut().find(|p| p.id == dispute.prisoner)
+                        {
+                            p.needs.relieve(NeedTag::Respect, 0.02);
+                            p.needs.relieve(NeedTag::Safety, 0.02);
+                        }
+                    }
+                    DisputeAction::ChallengeLeader => {
+                        if let Some(p) =
+                            self.prisoners.iter_mut().find(|p| p.id == dispute.prisoner)
+                        {
+                            p.needs.impulse(NeedTag::Respect, 0.02);
+                        }
+                    }
+                }
+            }
+
+            let actors: Vec<PrisonerId> = disputes.iter().map(|d| d.prisoner).collect();
+            let summary = format!(
+                "{} member dispute(s) in gang {}: {}",
+                disputes.len(),
+                gid.0,
+                disputes
+                    .iter()
+                    .map(|d| format!("{} ({})", d.prisoner.raw(), d.reason))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            );
+            self.gangs[index].record_dispute(summary.clone());
+            self.record_gang_history(
+                *gid,
+                GangHistoryKind::Dispute,
+                summary,
+                &actors,
+                &[gang_event_cause(*gid), "weekly politics review".into()],
+            );
+
+            let challenger = leadership_challenger(&self.gangs[index], &profiles, &mut rng);
+            if let Some(challenger) = challenger {
+                let challenges = disputes.iter().any(|d| {
+                    d.prisoner == challenger && d.action == DisputeAction::ChallengeLeader
+                });
+                if challenges && rng.chance(0.55) {
+                    let old_leader = self.gangs[index].leader;
+                    if self.gangs[index].change_leader(challenger) && old_leader != Some(challenger)
+                    {
+                        self.record_gang_history(
+                            *gid,
+                            GangHistoryKind::LeadershipChange,
+                            format!(
+                                "Gang {} leadership changed from {:?} to {}",
+                                gid.0,
+                                old_leader.map(PrisonerId::raw),
+                                challenger.raw()
+                            ),
+                            &[challenger],
+                            &[gang_event_cause(*gid), "leadership challenge".into()],
+                        );
+                    }
+                }
+            }
+
+            if let Some(split) = split_candidates(&self.gangs[index], &disputes) {
+                if rng.chance((0.22 + pressure.total() * 0.25) as f64) {
+                    let new_id = GangId(self.next_gang_id);
+                    self.next_gang_id = self.next_gang_id.saturating_add(1);
+                    if let Some(splinter) = self.gangs[index].fracture(&split, new_id) {
+                        // Leadership rank in the splinter is already authoritative;
+                        // mirror the roster onto every affected affiliation.
+                        let new_members = splinter.members.clone();
+                        let new_name = splinter.name.clone();
+                        self.gangs.push(splinter);
+                        for pid in &new_members {
+                            if let Some(p) = self.prisoners.iter_mut().find(|p| p.id == *pid) {
+                                p.gang_affiliation = Some(new_id.0);
+                            }
+                        }
+                        self.record_gang_history(
+                            *gid,
+                            GangHistoryKind::Split,
+                            format!("Gang {} fractured into {}", gid.0, new_name),
+                            &new_members,
+                            &[gang_event_cause(*gid), "shared member grievances".into()],
+                        );
+                        self.record_gang_history(
+                            new_id,
+                            GangHistoryKind::Formed,
+                            format!("Splinter gang {} formed from {}", new_name, gid.0),
+                            &new_members,
+                            &[gang_event_cause(new_id), gang_event_cause(*gid)],
+                        );
+                    }
+                }
+            }
+        }
+
+        // Inter-gang relations: affinity/alliance vs hostility/rivalry. Scores
+        // come only from observed relationships, goals and declared ties.
+        let active: Vec<(usize, GangId)> = self
+            .gangs
+            .iter()
+            .enumerate()
+            .filter(|(_, gang)| gang.active)
+            .map(|(index, gang)| (index, gang.id))
+            .collect();
+        let mut pairs: Vec<(usize, usize, GangId, GangId)> = Vec::new();
+        for (offset, (left_index, left_id)) in active.iter().enumerate() {
+            for (right_index, right_id) in active.iter().skip(offset + 1) {
+                pairs.push((*left_index, *right_index, *left_id, *right_id));
+            }
+        }
+        pairs.sort_unstable_by_key(|(_, _, a, b)| (a.0, b.0));
+        let mut merge_candidates: Vec<(GangId, GangId)> = Vec::new();
+        for (i, j, gid_a, gid_b) in pairs {
+            let (affinity, hostility) =
+                gang_relation_scores(&self.gangs[i], &self.gangs[j], &self.social);
+            let causes = vec![
+                gang_event_cause(gid_a),
+                gang_event_cause(gid_b),
+                format!("affinity {affinity:.2}, hostility {hostility:.2}"),
+            ];
+            let already_rival = self.gangs[i].rivalries.contains(&gid_b)
+                || self.gangs[j].rivalries.contains(&gid_a);
+            let already_allied = self.gangs[i].alliances.contains(&gid_b)
+                || self.gangs[j].alliances.contains(&gid_a);
+            if hostility > 0.55
+                && affinity < 0.5
+                && !already_rival
+                && rng.chance((0.12 + pressure.rivalry * 0.3) as f64)
+            {
+                {
+                    let (left, right) = self.gangs.split_at_mut(j);
+                    left[i].form_rivalry(&mut right[0]);
+                }
+                self.record_gang_history(
+                    gid_a,
+                    GangHistoryKind::Rivalry,
+                    format!("Gang {} became rivals with {}", gid_a.0, gid_b.0),
+                    &[],
+                    &causes,
+                );
+            } else if affinity > 0.6
+                && hostility < 0.4
+                && !already_allied
+                && rng.chance((0.1 + (1.0 - pressure.rivalry) * 0.16) as f64)
+            {
+                {
+                    let (left, right) = self.gangs.split_at_mut(j);
+                    left[i].form_alliance(&mut right[0]);
+                }
+                self.record_gang_history(
+                    gid_a,
+                    GangHistoryKind::Alliance,
+                    format!("Gang {} formed an alliance with {}", gid_a.0, gid_b.0),
+                    &[],
+                    &causes,
+                );
+            } else if already_allied
+                && affinity > 0.78
+                && hostility < 0.2
+                && self.gangs[i].members.len() + self.gangs[j].members.len() <= 10
+                && rng.chance((0.04 + (1.0 - pressure.rivalry) * 0.04) as f64)
+            {
+                let (source, target) = if self.gangs[i].members.len() <= self.gangs[j].members.len()
+                {
+                    (gid_a, gid_b)
+                } else {
+                    (gid_b, gid_a)
+                };
+                merge_candidates.push((source, target));
+            }
+        }
+        merge_candidates.sort_unstable_by_key(|(source, target)| (source.0, target.0));
+        for (source, target) in merge_candidates {
+            self.merge_gangs(source, target);
+        }
+
+        // A high-pressure rivalry can escalate into a major conflict. Outcomes
+        // are resolved by the social layer with explicit gang context, then
+        // reflected in institutional security posture.
+        if pressure.total() > 0.4 && rng.chance((0.08 + pressure.total() * 0.2) as f64) {
+            let rival_pair = self.gangs.iter().enumerate().find_map(|(i, a)| {
+                if !a.active {
+                    return None;
+                }
+                self.gangs
+                    .iter()
+                    .enumerate()
+                    .skip(i + 1)
+                    .find(|(_, b)| {
+                        b.active && (a.rivalries.contains(&b.id) || b.rivalries.contains(&a.id))
+                    })
+                    .map(|(j, b)| (i, j, a.id, b.id))
+            });
+            if let Some((i, j, gid_a, gid_b)) = rival_pair {
+                if let (Some(&a), Some(&b)) =
+                    (self.gangs[i].members.first(), self.gangs[j].members.first())
+                {
+                    let severity = clamp01(0.4 + pressure.total() * 0.5);
+                    let effects = apply_outcome(
+                        &mut self.social,
+                        &mut self.gangs,
+                        &[a, b],
+                        ConflictOutcome::Fight,
+                        severity,
+                        Some((gid_a, gid_b)),
+                    );
+                    let causes = vec![
+                        gang_event_cause(gid_a),
+                        gang_event_cause(gid_b),
+                        format!("gang pressure {:.2}", pressure.total()),
+                    ];
+                    self.append_gang_history(
+                        gid_a,
+                        GangHistoryKind::MajorConflict,
+                        format!("Gang {} clashed with {}", gid_a.0, gid_b.0),
+                        &[a, b],
+                        &causes,
+                    );
+                    self.record_gang_history(
+                        gid_b,
+                        GangHistoryKind::MajorConflict,
+                        format!(
+                            "Gang {} clashes with {} (severity {:.2}{})",
+                            gid_b.0,
+                            gid_a.0,
+                            severity,
+                            if effects.investigation_recommended {
+                                ", investigation recommended"
+                            } else {
+                                ""
+                            }
+                        ),
+                        &[a, b],
+                        &causes,
+                    );
+                    self.warden.security_incidents_this_week =
+                        self.warden.security_incidents_this_week.saturating_add(1);
+                    let old_security = self.policies.security_level;
+                    self.policies.security_level = clamp01(old_security + 0.04 * severity);
+                    self.audit_policy_change(
+                        "security_level",
+                        old_security,
+                        self.policies.security_level,
+                    );
+                }
+            }
         }
     }
 
@@ -1248,23 +3047,7 @@ impl World {
 
         let mut rng = RngStream::new(self.seed, self.days_simulated ^ 0x5A17);
         if let Some(gang) = maybe_form_gang(&profiles, &self.social, &self.gangs, &mut rng) {
-            let gang_id = gang.id.0;
-            let leader = gang.leader;
-            let member_ids: Vec<PrisonerId> = gang.members.clone();
-            let name = gang.name.clone();
-            self.gangs.push(gang);
-            self.next_gang_id = self.next_gang_id.max(gang_id + 1);
-            for pid in member_ids {
-                if let Some(p) = self.prisoners.iter_mut().find(|p| p.id == pid) {
-                    p.gang_affiliation = Some(gang_id);
-                }
-            }
-            self.events.emit(WorldEvent::new(
-                0,
-                self.time,
-                EventKind::GangFormed,
-                format!("Emergent gang '{}' coalesced around {:?}", name, leader),
-            ));
+            self.register_gang(gang);
         }
     }
 
@@ -1327,8 +3110,28 @@ impl World {
 
         // Refresh warden context and reset trailing-week incident count weekly.
         if self.days_simulated % 7 == 0 {
-            let quiet_week = self.warden.security_incidents_this_week <= 2;
+            // Gang politics runs before de-escalation so leadership disputes,
+            // splits and rivalries can shape the new security posture.
+            self.gang_politics_step();
+            let gang_pressure = self.gang_pressure().total();
+            let quiet_week = self.warden.security_incidents_this_week <= 2 && gang_pressure < 0.5;
             self.warden.reset_weekly_incidents();
+            // Sustained gang pressure keeps the institution on edge even when
+            // no single incident crossed the reporting threshold.
+            if gang_pressure > 0.6 {
+                let old = self.policies.security_level;
+                self.policies.security_level = clamp01(old + 0.03 * gang_pressure);
+                self.audit_policy_change("security_level", old, self.policies.security_level);
+                self.events.emit(WorldEvent::new(
+                    0,
+                    self.time,
+                    EventKind::PolicyChange,
+                    format!(
+                        "Security tightened to {:.2} under gang pressure {:.2}",
+                        self.policies.security_level, gang_pressure
+                    ),
+                ));
+            }
             // De-escalation: security posture relaxes after a quiet week —
             // otherwise incident spikes ratchet it to 1.0 permanently.
             if quiet_week && self.policies.security_level > 0.45 {
@@ -1439,8 +3242,13 @@ impl World {
 
     /// Once per day, high-motivation prisoners roll an abstract escape attempt.
     fn resolve_escape_step(&mut self) {
-        let staff_response =
-            (self.staff_coverage() * 0.6 + self.policies.security_level * 0.4).clamp(0.0, 1.0);
+        // Gang pressure raises the institutional response to escape attempts
+        // (more scrutiny after unrest), while the base still depends on real
+        // staffing and the warden's security posture.
+        let gang_pressure = self.gang_pressure().total();
+        let staff_response = clamp01(
+            self.staff_coverage() * 0.6 + self.policies.security_level * 0.4 + gang_pressure * 0.08,
+        );
         let candidates: Vec<(PrisonerId, f32, f32)> = self
             .prisoners
             .iter()
@@ -1863,6 +3671,7 @@ impl World {
                 )),
             );
             self.prisoners.push(p);
+            self.register_ai_agent(pid, Role::Prisoner);
         }
     }
 
@@ -1875,6 +3684,8 @@ impl World {
         self.prisoner_location.retain(|id, _| !gone.contains(id));
         self.contraband_state.retain(|id, _| !gone.contains(id));
         self.rehab_records.retain(|id, _| !gone.contains(id));
+        let departed: Vec<u64> = departed.iter().map(|id| id.raw()).collect();
+        self.orchestrator.prune_departed(&departed);
         // Social dyads are pruned by the daily `prune_agent_state` sweep; doing
         // an O(edges) retain here would make frequent parole releases costly.
     }
@@ -1886,6 +3697,15 @@ impl World {
         self.prisoner_location.retain(|id, _| live.contains(id));
         self.contraband_state.retain(|id, _| live.contains(id));
         self.rehab_records.retain(|id, _| live.contains(id));
+        let departed: Vec<u64> = self
+            .orchestrator
+            .scheduler
+            .agents
+            .keys()
+            .copied()
+            .filter(|id| !live.iter().any(|p| p.raw() == *id))
+            .collect();
+        self.orchestrator.prune_departed(&departed);
         // Also prune social dyads so stale relationships never survive a
         // release/escape (R6 invariant: claims must reference existing pawns).
         let live_set: std::collections::HashSet<PrisonerId> = live.into_iter().collect();
@@ -2199,6 +4019,10 @@ impl World {
                 freedom: p.needs.freedom,
                 safety: p.needs.safety,
                 desperation: p.needs.desperation(),
+                // Gang-channel throughput is derived from live political state:
+                // pressure, resources, standing and personal discipline all
+                // change how effectively a member can move contraband.
+                gang_control: self.gang_control_for(p.id),
             })
             .collect();
 

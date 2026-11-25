@@ -298,7 +298,7 @@ fn rejected_parole_controls_are_audited_without_mutating() {
     assert!(sim.parole_status(ineligible).is_none());
     let rejected: Vec<_> = sim.decision_audit_log()[audit_before..]
         .iter()
-        .filter(|r| r.validation == "rejected")
+        .filter(|r| r.validation.starts_with("rejected"))
         .collect();
     assert_eq!(
         rejected.len(),

@@ -31,20 +31,13 @@
 //! mutating the world.
 
 use crate::Sim;
-use alc_agents::{
-    Decision, DecisionAction, DecisionValidator, DefaultValidator, ValidationContext,
-    ValidationResult,
-};
-use alc_core::{PrisonerId, RngStream, SimTime};
-use alc_economy::{Account as EconomyAccount, Money};
-use alc_events::{EventKind, WorldEvent};
+use alc_agents::{Decision, DecisionAction, ValidationResult};
+use alc_core::PrisonerId;
+use alc_events::EventKind;
 use alc_prisoner::Prisoner;
-use alc_social::{
-    ConflictOutcome, EscapeOutcome, RelationshipDelta, apply_escape_consequences, apply_outcome,
-    resolve_conflict, resolve_escape_attempt,
-};
 use alc_world::World;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// Maximum number of memory citations attached to one [`DecisionProposal`].
 ///
@@ -606,6 +599,8 @@ pub fn evaluate_candidates(world: &World, id: PrisonerId) -> Vec<DecisionProposa
                     .cmp(&b.target.map_or(u64::MAX, |t| t.raw()))
             })
     });
+    // Inspector DTOs stay bounded even if new decision types are added.
+    proposals.truncate(16);
     proposals
 }
 
@@ -708,6 +703,13 @@ fn describe_validation(result: &ValidationResult) -> &'static str {
     }
 }
 
+fn validation_label(result: &ValidationResult) -> String {
+    match result {
+        ValidationResult::Rejected { reason } => format!("rejected: {reason}"),
+        _ => describe_validation(result).to_string(),
+    }
+}
+
 /// Outcome of one [`Sim::deliver_decision`] call.
 #[derive(Debug, Clone)]
 pub struct DecisionOutcome {
@@ -721,6 +723,19 @@ pub struct DecisionOutcome {
     pub applied: bool,
 }
 
+/// Aggregate result of one bounded decision batch.
+#[derive(Debug, Clone, Default)]
+pub struct DecisionBatchOutcome {
+    /// Per-proposal outcomes in deterministic prisoner-id order.
+    pub outcomes: Vec<DecisionOutcome>,
+    /// Number of accepted or repaired proposals.
+    pub accepted: usize,
+    /// Number of rejected proposals.
+    pub rejected: usize,
+    /// Number of proposals actually applied to the world.
+    pub applied: usize,
+}
+
 /// Validate + apply one decision on the engine.
 ///
 /// Audit policy: applied decisions enter [`Sim::decision_log`] and every
@@ -730,61 +745,170 @@ pub struct DecisionOutcome {
 pub fn deliver(sim: &mut Sim, id: PrisonerId, decision: Decision) -> DecisionOutcome {
     tracing::debug!(agent = id.raw(), ?decision, "deliver_decision");
     let (ok, result) = validate(&sim.world, id, &decision);
-    let outcome = DecisionOutcome {
-        agent: id,
-        decision: decision.clone(),
-        result: result.clone(),
-        applied: false,
-    };
+    let validated = result
+        .accepted_decision()
+        .cloned()
+        .unwrap_or_else(|| decision.clone());
+    let label = validation_label(&result);
     if !ok {
-        let reason = match &result {
-            ValidationResult::Rejected { reason, .. } => reason.clone(),
-            _ => "validation failed".to_string(),
-        };
+        let reason = result
+            .rejected_reason()
+            .unwrap_or("validation failed")
+            .to_string();
         sim.record_decision_audit(crate::DecisionAuditRecord {
             time: sim.world.time,
             actor: format!("prisoner:{}", id.raw()),
             source: "agent".to_string(),
             action: decision.action_name().to_string(),
             summary: format!("{:?}", decision),
-            validation: "rejected".to_string(),
+            validation: label,
             reason,
             rationale: decision.rationale.clone(),
             repair_reason: decision.repair_reason.clone(),
             outcome: decision.outcome,
         });
-        return outcome;
+        return DecisionOutcome {
+            agent: id,
+            decision,
+            result,
+            applied: false,
+        };
     }
-    let mut events = apply(&mut sim.world, id, &result);
+
+    let mut applied_decision = validated;
+    applied_decision.outcome = match &result {
+        ValidationResult::Accepted(_) => alc_agents::decision::DecisionOutcomeState::Accepted,
+        ValidationResult::Repaired(_) => alc_agents::decision::DecisionOutcomeState::Repaired,
+        ValidationResult::Rejected { .. } => unreachable!("rejected result handled above"),
+    };
+    let apply_result = match &result {
+        ValidationResult::Accepted(_) => ValidationResult::Accepted(applied_decision.clone()),
+        ValidationResult::Repaired(_) => ValidationResult::Repaired(applied_decision.clone()),
+        ValidationResult::Rejected { .. } => unreachable!("rejected result handled above"),
+    };
+    let mut events = sim.world.apply_validated_decision(id, &apply_result);
     if events.iter().any(|e| e.kind == EventKind::EscapeSucceeded) {
         sim.engine_state.post_release.insert(id, false);
     }
-    let validation = match &result {
-        ValidationResult::Repaired(_) => "repaired".to_string(),
-        ValidationResult::Accepted(_) => "accepted".to_string(),
-        ValidationResult::Rejected { reason } => format!("rejected: {reason}"),
-    };
-    sim.record_decision(decision.clone());
+    sim.record_decision(applied_decision.clone());
     sim.record_decision_audit(crate::DecisionAuditRecord {
         time: sim.world.time,
         actor: format!("prisoner:{}", id.raw()),
         source: "agent".to_string(),
-        action: decision.action_name().to_string(),
-        summary: format!("{:?}", decision),
-        validation,
+        action: applied_decision.action_name().to_string(),
+        summary: format!("{:?}", applied_decision),
+        validation: label,
         reason: "applied by engine".to_string(),
-        rationale: decision.rationale.clone(),
-        repair_reason: decision.repair_reason.clone(),
-        outcome: decision.outcome,
+        rationale: applied_decision.rationale.clone(),
+        repair_reason: applied_decision.repair_reason.clone(),
+        outcome: applied_decision.outcome,
     });
     // Emits with bus-assigned ids and mirrors conflict kinds exactly once.
     sim.emit_events(&mut events);
     DecisionOutcome {
         agent: id,
-        decision,
+        decision: applied_decision,
         result,
         applied: true,
     }
+}
+
+/// Deliver a bounded batch through one canonical validation slice per agent.
+pub(crate) fn deliver_batch(
+    sim: &mut Sim,
+    requests: Vec<(PrisonerId, Decision)>,
+) -> DecisionBatchOutcome {
+    let cap = sim.world.ai_config().max_batch_size.max(1);
+    let mut selected: BTreeMap<u64, (PrisonerId, Decision)> = BTreeMap::new();
+    for (id, decision) in requests {
+        if sim.world.prisoners.iter().any(|p| p.id == id) {
+            selected.insert(id.raw(), (id, decision));
+        }
+    }
+    while selected.len() > cap {
+        selected.pop_last();
+    }
+
+    // Capture all contexts before applying anything in the batch.
+    let mut prepared = Vec::with_capacity(selected.len());
+    for (_, (id, decision)) in selected {
+        if let Some(ctx) = sim.world.validation_context(id) {
+            prepared.push((id, decision, ctx));
+        }
+    }
+    sim.world.orchestrator.record_batch(prepared.len());
+
+    let mut batch = DecisionBatchOutcome::default();
+    let mut all_events = Vec::new();
+    for (id, decision, ctx) in prepared {
+        let validation = sim.world.validate_decision_in_context(id, &decision, &ctx);
+        let accepted = validation.is_accepted();
+        let label = validation_label(&validation.result);
+        let reason = if accepted {
+            "applied by engine batch".to_string()
+        } else {
+            validation
+                .rejected_reason()
+                .unwrap_or("validation failed")
+                .to_string()
+        };
+        if accepted {
+            let mut validated = validation
+                .accepted_decision()
+                .cloned()
+                .expect("accepted validation carries a decision");
+            validated.outcome = match &validation.result {
+                ValidationResult::Accepted(_) => {
+                    alc_agents::decision::DecisionOutcomeState::Accepted
+                }
+                ValidationResult::Repaired(_) => {
+                    alc_agents::decision::DecisionOutcomeState::Repaired
+                }
+                ValidationResult::Rejected { .. } => unreachable!(),
+            };
+            let apply_result = match &validation.result {
+                ValidationResult::Accepted(_) => ValidationResult::Accepted(validated.clone()),
+                ValidationResult::Repaired(_) => ValidationResult::Repaired(validated.clone()),
+                ValidationResult::Rejected { .. } => unreachable!(),
+            };
+            all_events.extend(sim.world.apply_validated_decision(id, &apply_result));
+            if all_events
+                .iter()
+                .any(|e| e.kind == EventKind::EscapeSucceeded)
+            {
+                sim.engine_state.post_release.insert(id, false);
+            }
+            sim.record_decision(validated.clone());
+            sim.world
+                .orchestrator
+                .record_validated(matches!(validation.result, ValidationResult::Repaired(_)));
+            batch.accepted += 1;
+            batch.applied += 1;
+        } else {
+            sim.world.orchestrator.record_rejected();
+            batch.rejected += 1;
+        }
+        sim.record_decision_audit(crate::DecisionAuditRecord {
+            time: sim.world.time,
+            actor: format!("prisoner:{}", id.raw()),
+            source: "agent".to_string(),
+            action: decision.action_name().to_string(),
+            summary: format!("{:?}", decision),
+            validation: label,
+            reason,
+            rationale: decision.rationale.clone(),
+            repair_reason: decision.repair_reason.clone(),
+            outcome: decision.outcome,
+        });
+        batch.outcomes.push(DecisionOutcome {
+            agent: id,
+            decision,
+            result: validation.result,
+            applied: accepted,
+        });
+    }
+    sim.emit_events(&mut all_events);
+    batch
 }
 
 /// Coarse severity mapping for mirrored conflict incidents.
@@ -798,522 +922,20 @@ fn severity_for(kind: EventKind) -> f32 {
     }
 }
 
-/// Validate a decision: default validator, then engine-side rules.
+/// Validate a decision through the World's canonical gate.
 fn validate(world: &World, id: PrisonerId, d: &Decision) -> (bool, ValidationResult) {
-    if !world.prisoners.iter().any(|p| p.id == id) {
-        return (
-            false,
-            ValidationResult::Rejected {
-                reason: format!("unknown prisoner id {}", id.raw()),
-            },
-        );
-    }
-    let ctx = validation_context(world, id);
-    let v = DefaultValidator.validate(d, &ctx);
-    if matches!(v, ValidationResult::Rejected { .. }) {
-        return (false, v);
-    }
-    if matches!(v, ValidationResult::Repaired(_)) {
-        return (true, v);
-    }
-    engine_rules(world, id, d)
+    let validation = world.validate_decision_for(id, d);
+    (validation.is_accepted(), validation.result)
 }
 
-/// Build the single, canonical validation context for a prisoner.
+/// Dry-run validation shared by proposals, candidate evaluation and delivery.
 ///
-/// This is shared by the engine-side decision pipeline. `lib.rs` currently
-/// duplicates this construction in `propose_decision`/`validate_only`; those
-/// should be switched to this helper by the lead so all three paths agree on
-/// facility, nearby guards, visible entities and contraband state.
-pub(crate) fn validation_context(world: &World, id: PrisonerId) -> ValidationContext {
-    // Real location from the movement map (not the schedule wing).
-    let facility = world.prisoner_location.get(&id).copied();
-    let guards_nearby = facility
-        .map(|f| {
-            world
-                .guard_location
-                .values()
-                .filter(|loc| **loc == f)
-                .count() as u32
-        })
-        .unwrap_or(0);
-    // Visibility is facility-local: self, same-facility prisoners and guards.
-    let mut visible_entities: Vec<u64> = Vec::new();
-    if let Some(f) = facility {
-        for (pid, loc) in &world.prisoner_location {
-            if *loc == f {
-                visible_entities.push(pid.raw());
-            }
-        }
-        for (gid, loc) in &world.guard_location {
-            if *loc == f {
-                visible_entities.push(gid.raw());
-            }
-        }
-    }
-    if !visible_entities.contains(&id.raw()) {
-        visible_entities.push(id.raw());
-    }
-
-    ValidationContext {
-        current_facility: facility.map(|f| f.0).unwrap_or(0),
-        lockdown: world.policies.lockdown,
-        stamina: world
-            .prisoners
-            .iter()
-            .find(|p| p.id == id)
-            .map(|p| p.condition.hope)
-            .unwrap_or(1.0),
-        tokens_remaining_today: world.orchestrator.token_budget_per_agent,
-        guards_nearby,
-        agent_id: id.raw(),
-        role: alc_agents::Role::Prisoner,
-        in_gang: world
-            .prisoners
-            .iter()
-            .any(|p| p.id == id && p.gang_affiliation.is_some()),
-        gang_id: world
-            .prisoners
-            .iter()
-            .find(|p| p.id == id)
-            .and_then(|p| p.gang_affiliation),
-        is_gang_leader: world
-            .gangs
-            .iter()
-            .any(|g| g.leader.map(|l| l.raw()) == Some(id.raw())),
-        visible_entities,
-        known_facilities: world.facilities.iter().map(|f| f.id.0).collect(),
-        // TODO: model real contraband per prisoner. No contraband field exists
-        // yet, so skills are used as the closest available proxy.
-        has_contraband: world
-            .prisoners
-            .iter()
-            .find(|p| p.id == id)
-            .map(|p| !p.skills.is_empty())
-            .unwrap_or(false),
-        last_decision: world.current_decisions.get(&id).cloned(),
-        now_secs: world.time.as_secs(),
-    }
-}
-
-/// Engine-side validation rules (Directive §19 world-state / authority layers).
-/// Validate a decision through BOTH the agent validator and the engine rules.
-/// All public validation surfaces (delivery, proposals, dry-runs and candidate
-/// evaluation) use this so they agree on the outcome for the same world state.
+/// This is a thin adapter over [`World::validate_decision_for`] so every
+/// public surface validates through one canonical, bounded world slice.
 pub(crate) fn validate_with_engine_rules(
     world: &World,
     id: PrisonerId,
     decision: &Decision,
 ) -> ValidationResult {
-    let ctx = validation_context(world, id);
-    let base = alc_agents::validate_decision(decision, &ctx);
-    match base {
-        ValidationResult::Rejected { .. } => base,
-        ValidationResult::Repaired(_) => base,
-        ValidationResult::Accepted(_) => engine_rules(world, id, decision).1,
-    }
-}
-
-pub(crate) fn engine_rules(
-    world: &World,
-    id: PrisonerId,
-    d: &Decision,
-) -> (bool, ValidationResult) {
-    let reject = |reason: String| (false, ValidationResult::Rejected { reason });
-    let ok = || (true, ValidationResult::Accepted(d.clone()));
-    match &d.action {
-        DecisionAction::MoveTo { target_facility } => {
-            if world.policies.lockdown {
-                return reject("lockdown active: movement restricted".into());
-            }
-            if !world.facilities.iter().any(|f| f.id.0 == *target_facility) {
-                return reject(format!("unknown facility {target_facility}"));
-            }
-            ok()
-        }
-        DecisionAction::Socialize { with } | DecisionAction::Trade { with, .. } => {
-            if !world.prisoners.iter().any(|p| p.id.raw() == *with) {
-                return reject("unknown target prisoner".into());
-            }
-            ok()
-        }
-        DecisionAction::Fight { target } => {
-            if !world.prisoners.iter().any(|p| p.id.raw() == *target) {
-                return reject("unknown target prisoner".into());
-            }
-            ok()
-        }
-        DecisionAction::SpreadRumor { about, content } => {
-            if !world.prisoners.iter().any(|p| p.id.raw() == *about) {
-                return reject("unknown target prisoner".into());
-            }
-            if content.trim().is_empty() {
-                return reject("rumor content is empty".into());
-            }
-            ok()
-        }
-        DecisionAction::JoinGang { gang } => {
-            if !world.gangs.iter().any(|g| g.id.raw() == *gang) {
-                return reject(format!("unknown gang {gang}"));
-            }
-            ok()
-        }
-        DecisionAction::LeadGang { gang } => match world.gangs.iter().find(|g| g.id.raw() == *gang)
-        {
-            None => reject(format!("unknown gang {gang}")),
-            Some(g) if !g.members.iter().any(|&m| m == id) => {
-                reject("prisoner is not a member of the gang".into())
-            }
-            Some(_) => ok(),
-        },
-        DecisionAction::EscapeAttempt if world.policies.lockdown => {
-            reject("lockdown active: escape attempts blocked".into())
-        }
-        DecisionAction::EscapeAttempt => ok(),
-        DecisionAction::RequestMedical
-        | DecisionAction::Comply
-        | DecisionAction::Refuse
-        | DecisionAction::LeaveGang
-        | DecisionAction::None => ok(),
-        // All 13 current variants are handled above. The arm is kept as a
-        // defensive guard: if a future variant is added to Decision without
-        // an engine rule, it must be rejected instead of silently accepted as
-        // a no-op. It is unreachable today, hence the explicit allow.
-        #[allow(unreachable_patterns)]
-        other => reject(format!("unsupported decision {:?}", other)),
-    }
-}
-
-/// Apply a validated decision to the world; return events to emit.
-fn apply(world: &mut World, id: PrisonerId, result: &ValidationResult) -> Vec<WorldEvent> {
-    let mut events = Vec::new();
-    let decision = match result {
-        ValidationResult::Accepted(d) | ValidationResult::Repaired(d) => d.clone(),
-        ValidationResult::Rejected { .. } => return events,
-    };
-    match decision.action {
-        DecisionAction::MoveTo { target_facility } => {
-            if let Some(f) = world.facilities.iter().find(|f| f.id.0 == target_facility) {
-                if let Some(p) = world.prisoners.iter_mut().find(|p| p.id == id) {
-                    p.schedule.wing = f.wing;
-                }
-                // Keep the movement map authoritative: MapFrame, co-presence
-                // encounters and validation visibility all read this map.
-                world.prisoner_location.insert(id, f.id);
-            }
-        }
-        DecisionAction::Socialize { with } => {
-            world.social.record(
-                id,
-                PrisonerId(with),
-                RelationshipDelta {
-                    familiarity: 0.08,
-                    friendship: 0.04,
-                    trust: 0.02,
-                    ..Default::default()
-                },
-            );
-            events.push(ev(
-                world.time,
-                EventKind::RelationshipShift,
-                format!("{} socialized with {with}", id.raw()),
-                vec![id.raw()],
-            ));
-        }
-        DecisionAction::Trade { with, item } => {
-            let other = PrisonerId(with);
-            let both_exist = world.prisoners.iter().any(|p| p.id == id)
-                && world.prisoners.iter().any(|p| p.id == other);
-            if both_exist {
-                // Prisoners have no personal wallets in the current World model
-                // (economy.cash is the institution's ledger). Model the trade
-                // as a small, balanced pair of ledger entries in the prison
-                // economy plus a familiarity gain. TODO: wire a real prisoner
-                // cash ledger when one exists so value transfers between
-                // inmates rather than only being observable in the ledger.
-                let amount = Money::from_major(1);
-                let at = world.time.as_secs();
-                world.economy.record(
-                    at,
-                    EconomyAccount::Supplies,
-                    amount,
-                    format!("trade credit: {} -> {} ({item})", id.raw(), with),
-                );
-                world.economy.record(
-                    at,
-                    EconomyAccount::Supplies,
-                    Money(-amount.0),
-                    format!("trade debit: {} -> {} ({item})", id.raw(), with),
-                );
-            }
-            // A trade is a stronger social signal than a casual conversation.
-            let delta = RelationshipDelta {
-                familiarity: 0.12,
-                friendship: 0.03,
-                trust: 0.01,
-                ..Default::default()
-            };
-            world.social.record(id, other, delta);
-            events.push(ev(
-                world.time,
-                EventKind::RelationshipShift,
-                format!("{} traded with {with} ({item})", id.raw()),
-                vec![id.raw(), with],
-            ));
-        }
-        DecisionAction::Fight { target } => {
-            events.extend(fight_events(world, id, PrisonerId(target)))
-        }
-        DecisionAction::EscapeAttempt => events.extend(escape_events(world, id)),
-        DecisionAction::SpreadRumor { about, content } => {
-            events.push(ev(
-                world.time,
-                EventKind::Rumor,
-                format!("{} spreads rumor about {about}: {content}", id.raw()),
-                vec![id.raw()],
-            ));
-        }
-        DecisionAction::JoinGang { gang } => {
-            if let Some(p) = world.prisoners.iter_mut().find(|p| p.id == id) {
-                p.gang_affiliation = Some(gang);
-            }
-            events.push(ev(
-                world.time,
-                EventKind::GangRecruit,
-                format!("{} joins gang {gang}", id.raw()),
-                vec![id.raw()],
-            ));
-        }
-        DecisionAction::LeadGang { gang } => {
-            if let Some(g) = world.gangs.iter_mut().find(|g| g.id.raw() == gang) {
-                g.change_leader(id);
-            }
-            events.push(ev(
-                world.time,
-                EventKind::LeadershipDispute,
-                format!("{} takes leadership of gang {gang}", id.raw()),
-                vec![id.raw()],
-            ));
-        }
-        DecisionAction::LeaveGang => {
-            if let Some(p) = world.prisoners.iter_mut().find(|p| p.id == id) {
-                p.gang_affiliation = None;
-            }
-        }
-        DecisionAction::RequestMedical => {
-            if let Some(p) = world.prisoners.iter_mut().find(|p| p.id == id) {
-                p.needs.medical_need = (p.needs.medical_need + 0.35).min(1.0);
-            }
-        }
-        DecisionAction::Comply | DecisionAction::Refuse | DecisionAction::None => {}
-    }
-    events
-}
-
-/// Event helper: fresh event id (assigned by the bus) + time + actors.
-fn ev(at: SimTime, kind: EventKind, summary: String, actors: Vec<u64>) -> WorldEvent {
-    let mut e = WorldEvent::new(0, at, kind, summary);
-    for a in actors {
-        e = e.with_actor(a);
-    }
-    e
-}
-
-/// Resolve a fight into world effects and an event (Directive §8).
-fn fight_events(world: &mut World, a: PrisonerId, b: PrisonerId) -> Vec<WorldEvent> {
-    let Some(pa) = world.prisoners.iter().find(|p| p.id == a).cloned() else {
-        return Vec::new();
-    };
-    let Some(pb) = world.prisoners.iter().find(|p| p.id == b).cloned() else {
-        return Vec::new();
-    };
-    let mut rng = RngStream::new(world.seed, world.time.secs);
-    let tension = 0.5 + (pa.traits.aggression + pb.traits.aggression) * 0.15;
-    let outcome = resolve_conflict(
-        &mut rng,
-        tension,
-        0.15,
-        pa.aggression_modifier(),
-        pa.traits.discipline,
-        0.1,
-    );
-    let _effects = apply_outcome(
-        &mut world.social,
-        &mut world.gangs,
-        &[a, b],
-        outcome,
-        0.6,
-        None,
-    );
-    let kind = match outcome {
-        ConflictOutcome::Compliance => None,
-        ConflictOutcome::Retreat | ConflictOutcome::Argument => Some(EventKind::Argument),
-        ConflictOutcome::Threat => Some(EventKind::Threat),
-        ConflictOutcome::Intimidation | ConflictOutcome::Bullying => Some(EventKind::Threat),
-        ConflictOutcome::Theft => Some(EventKind::Theft),
-        ConflictOutcome::Fight => Some(EventKind::Fight),
-        ConflictOutcome::GangClash | ConflictOutcome::Disturbance => Some(EventKind::GangClash),
-    };
-    match kind {
-        Some(k) => vec![ev(
-            world.time,
-            k,
-            format!("conflict resolved: {outcome:?}"),
-            vec![a.raw(), b.raw()],
-        )],
-        None => Vec::new(),
-    }
-}
-
-fn derive_post_release_outcomes(
-    seed: u64,
-    prisoner_id: u64,
-    reason: &str,
-    sentence_days: u32,
-    served_days: u32,
-    rehab_progress: f32,
-) -> (bool, bool, bool, bool) {
-    let mut rng = RngStream::new(seed, prisoner_id ^ 0x9E37_79B9_7F4A_7C15);
-    let served_fraction = (served_days as f32 / sentence_days.max(1) as f32).clamp(0.0, 1.0);
-    let stability =
-        (served_fraction * 0.55 + rehab_progress.clamp(0.0, 1.0) * 0.45).clamp(0.0, 0.95);
-    let penalty = if reason == "escape" { 0.3 } else { 0.0 };
-    let employment = rng.chance((stability * 0.85 + 0.05).min(0.95) as f64);
-    let housing = rng.chance((stability * 0.8 + 0.1).min(0.95) as f64);
-    let violation = rng.chance((0.32 - stability * 0.27 + penalty).clamp(0.02, 0.9) as f64);
-    let return_to_custody = violation && rng.chance(0.55);
-    (employment, housing, violation, return_to_custody)
-}
-
-fn record_escape_post_release(world: &mut World, prisoner: &alc_prisoner::Prisoner) {
-    let outcome_seed = RngStream::new(
-        world.seed,
-        prisoner.id.raw() ^ (world.days_simulated << 12) ^ 0x0E5C_A9E1,
-    )
-    .next_u64();
-    let rehab_progress = world
-        .rehab_records
-        .get(&prisoner.id)
-        .map(|records| {
-            let done = records.iter().filter(|r| r.completed).count() as f32;
-            let attended: u32 = records.iter().map(|r| r.attendance_days).sum();
-            (done * 0.6 + (attended.min(180) as f32 / 180.0) * 0.4).clamp(0.0, 1.0)
-        })
-        .unwrap_or(0.0);
-    let (employment, housing, violation, return_to_custody) = derive_post_release_outcomes(
-        outcome_seed,
-        prisoner.id.raw(),
-        "escape",
-        prisoner.sentence_days,
-        prisoner.sentence_served_days,
-        rehab_progress,
-    );
-    let rec = alc_world::PostReleaseRecord {
-        id: world.next_post_release_id,
-        prisoner_id: prisoner.id.raw(),
-        name: prisoner.name.clone(),
-        reason: "escape".to_string(),
-        day: world.days_simulated,
-        sentence_info: alc_world::PostReleaseSentenceInfo {
-            sentence_days: prisoner.sentence_days,
-            sentence_served_days: prisoner.sentence_served_days,
-            classification: prisoner.classification,
-            escape_motivation_at_exit: prisoner.escape_motivation(),
-        },
-        outcome_seed,
-        employment,
-        housing,
-        violation,
-        return_to_custody,
-    };
-    world
-        .post_release_outcomes
-        .push(alc_world::PostReleaseOutcomeRecord {
-            id: world.next_post_release_id,
-            post_release_id: rec.id,
-            prisoner_id: prisoner.id.raw(),
-            name: prisoner.name.clone(),
-            day: world.days_simulated,
-            outcome_seed,
-            employment,
-            housing,
-            violation,
-            return_to_custody,
-        });
-    world.next_post_release_id += 1;
-    world.post_release_records.push(rec);
-    let ev = WorldEvent::new(
-        0,
-        world.time,
-        EventKind::Release,
-        format!(
-            "Prisoner {} left the institution: escape",
-            prisoner.id.raw()
-        ),
-    )
-    .with_actor(prisoner.id.raw())
-    .with_cause("lifecycle: post-release record");
-    world.history.push(ev.clone());
-    world.events.emit(ev);
-}
-
-/// Resolve an escape attempt into world consequences and an event (Directive §16).
-fn escape_events(world: &mut World, p: PrisonerId) -> Vec<WorldEvent> {
-    let Some(prisoner) = world.prisoners.iter().find(|x| x.id == p).cloned() else {
-        return Vec::new();
-    };
-    let mut rng = RngStream::new(world.seed, world.time.secs);
-    let outcome = resolve_escape_attempt(
-        &mut rng,
-        prisoner.escape_motivation(),
-        world.policies.security_level,
-        0.5,
-        0.2,
-    );
-    let consequences = apply_escape_consequences(outcome, world.policies.security_level, &[p]);
-    let kind = match outcome {
-        EscapeOutcome::SuccessfulEscape => EventKind::EscapeSucceeded,
-        EscapeOutcome::AttemptPrevented => EventKind::EscapePrevented,
-        _ => EventKind::EscapeAttempt,
-    };
-    if outcome == EscapeOutcome::SuccessfulEscape {
-        record_escape_post_release(world, &prisoner);
-        // Purge gang membership with disband events, matching world escape path.
-        for gang in &mut world.gangs {
-            gang.lose(p);
-        }
-        let before = world.gangs.len();
-        world.gangs.retain(|g| !g.members.is_empty());
-        let disbanded = before.saturating_sub(world.gangs.len());
-        for _ in 0..disbanded {
-            world.events.emit(WorldEvent::new(
-                0,
-                world.time,
-                EventKind::GangDisbanded,
-                "Gang dissolved after losing all members",
-            ));
-        }
-
-        world.prisoners.retain(|x| x.id != p);
-        world.prisoner_location.remove(&p);
-        world.current_activity.remove(&p);
-        world.current_decisions.remove(&p);
-        let live: std::collections::HashSet<alc_core::PrisonerId> =
-            world.prisoners.iter().map(|x| x.id).collect();
-        world.social.retain(&live);
-        world.rehab_records.remove(&p);
-        world.contraband_state.remove(&p);
-        // Mirror institutional consequences from the world's escape path.
-        world.policies.security_level =
-            (world.policies.security_level + consequences.security_level_delta).clamp(0.0, 1.0);
-        if consequences.lockdown_recommended {
-            world.policies.lockdown = true;
-        }
-    }
-    vec![ev(
-        world.time,
-        kind,
-        format!("escape attempt outcome: {outcome:?}"),
-        vec![p.raw()],
-    )]
+    world.validate_decision_for(id, decision).result
 }

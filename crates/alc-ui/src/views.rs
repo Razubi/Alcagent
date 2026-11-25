@@ -29,6 +29,8 @@ pub struct ViewData {
     pub gangs: Vec<GangSummary>,
     pub guards: Vec<GuardSummary>,
     pub warden: WardenSummary,
+    /// Runtime-only AI orchestration policy and telemetry for observer surfaces.
+    pub ai_runtime: sumo::AiRuntimeSnapshot,
     pub economy: EconomySummary,
     pub social_edges: Vec<SocialEdge>,
     /// Detected roles, ordered by prisoner id then role label.
@@ -1294,11 +1296,13 @@ fn render_gang(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
         kv("Culture", g.culture.clone()),
         kv("Formed", g.formed_at.to_string()),
         kv("Active", g.active.to_string()),
+        bar_line("Pressure", g.pressure.total(), 16),
     ];
     let detail_chunks = Layout::vertical([
-        Constraint::Length(10),
-        Constraint::Min(6),
-        Constraint::Length(6),
+        Constraint::Length(12),
+        Constraint::Min(5),
+        Constraint::Length(7),
+        Constraint::Min(4),
     ])
     .split(chunks[1]);
     frame.render_widget(
@@ -1341,15 +1345,40 @@ fn render_gang(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
     .block(title_block(" Hierarchy "));
     frame.render_widget(hierarchy, detail_chunks[1]);
 
+    let relation_scores = if g.relations.is_empty() {
+        "none".to_string()
+    } else {
+        truncate(
+            &g.relations
+                .iter()
+                .map(|r| format!("#{} a{:.2}/h{:.2}", r.gang, r.affinity, r.hostility))
+                .collect::<Vec<_>>()
+                .join("; "),
+            60,
+        )
+    };
     let tail = vec![
         kv(
-            "Rivalries",
-            format!("{:?}", g.rivalries.iter().map(|r| r.0).collect::<Vec<_>>()),
+            "Rivals",
+            format!(
+                "{:?}",
+                g.rivalries
+                    .iter()
+                    .map(|(id, score)| format!("#{id}:{score:.2}"))
+                    .collect::<Vec<_>>()
+            ),
         ),
         kv(
-            "Alliances",
-            format!("{:?}", g.alliances.iter().map(|r| r.0).collect::<Vec<_>>()),
+            "Allies",
+            format!(
+                "{:?}",
+                g.alliances
+                    .iter()
+                    .map(|(id, score)| format!("#{id}:{score:.2}"))
+                    .collect::<Vec<_>>()
+            ),
         ),
+        kv("Scores", relation_scores),
         kv(
             "Disputes",
             if g.internal_disputes.is_empty() {
@@ -1363,6 +1392,27 @@ fn render_gang(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
     frame.render_widget(
         Paragraph::new(tail).block(title_block(" Relations & Goals ")),
         detail_chunks[2],
+    );
+
+    let history: Vec<Line<'static>> = if g.history.is_empty() {
+        vec![plain("No recorded gang transitions yet.")]
+    } else {
+        g.history
+            .iter()
+            .rev()
+            .take(4)
+            .map(|entry| {
+                plain(format!(
+                    "{} {}",
+                    entry.kind.label(),
+                    truncate(&entry.summary, 60)
+                ))
+            })
+            .collect()
+    };
+    frame.render_widget(
+        Paragraph::new(history).block(title_block(" Gang History ")),
+        detail_chunks[3],
     );
 }
 
@@ -1523,7 +1573,8 @@ fn render_warden(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
         bar_line("Reputation focus", t.reputation_concerns, 14),
         good_bar("Competence", t.competence, 14),
     ];
-    let left = Layout::vertical([Constraint::Length(6), Constraint::Min(6)]).split(chunks[0]);
+    let left = Layout::vertical([Constraint::Length(7), Constraint::Min(6)]).split(chunks[0]);
+    let ai = &data.ai_runtime;
     frame.render_widget(
         Paragraph::new(vec![
             kv("Warden", w.name.clone()),
@@ -1532,6 +1583,20 @@ fn render_warden(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
             kv(
                 "Reports / decisions",
                 format!("{} / {}", w.inbox.len(), w.recent_decisions.len()),
+            ),
+            kv(
+                "AI runtime",
+                format!(
+                    "{} / {} · tok {}/{} · cache {}/{} · retry {} · limited {}",
+                    ai.provider,
+                    ai.model,
+                    ai.tokens_consumed_today,
+                    ai.max_tokens_per_day,
+                    ai.cache_hits,
+                    ai.cache_entries,
+                    ai.retries,
+                    ai.rate_limited
+                ),
             ),
         ])
         .block(title_block(" Warden Profile ")),
@@ -2958,7 +3023,7 @@ fn render_incidents(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
 
 fn render_decisions(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
     let chunks = Layout::vertical([
-        Constraint::Length(4),
+        Constraint::Length(5),
         Constraint::Min(4),
         Constraint::Length(10),
     ])
@@ -3011,6 +3076,20 @@ fn render_decisions(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
                     .len()
             ))
         },
+        kv(
+            "AI runtime",
+            format!(
+                "{} / {} · tok {}/{} · cache {}/{} · retry {} · limited {}",
+                data.ai_runtime.provider,
+                data.ai_runtime.model,
+                data.ai_runtime.tokens_consumed_today,
+                data.ai_runtime.max_tokens_per_day,
+                data.ai_runtime.cache_hits,
+                data.ai_runtime.cache_entries,
+                data.ai_runtime.retries,
+                data.ai_runtime.rate_limited
+            ),
+        ),
     ];
     frame.render_widget(
         Paragraph::new(summary).block(title_block(" Decision Audit Summary & Filters ")),
@@ -3177,24 +3256,76 @@ mod tests {
                 memory_summary: p.memory_summary.clone(),
             })
             .collect();
+        let pressure = world.gang_pressure();
         let gangs = world
             .gangs
             .iter()
-            .map(|g| GangSummary {
-                id: g.id.0,
-                name: g.name.clone(),
-                leader: g.leader,
-                members: g.members.clone(),
-                reputation: g.reputation,
-                resources: g.resources,
-                culture: g.culture.clone(),
-                formed_at: g.formed_at,
-                active: g.active,
-                hierarchy: g.hierarchy.clone(),
-                rivalries: g.rivalries.iter().map(|id| (id.0, 1.0)).collect(),
-                alliances: g.alliances.iter().map(|id| (id.0, 1.0)).collect(),
-                internal_disputes: g.internal_disputes.clone(),
-                goals: g.goals.clone(),
+            .map(|g| {
+                let relation_for = |other: &alc_social::Gang| {
+                    alc_social::gang_relation_scores(g, other, &world.social)
+                };
+                let mut rivalries: Vec<(u64, f32)> = g
+                    .rivalries
+                    .iter()
+                    .filter_map(|id| {
+                        world
+                            .gangs
+                            .iter()
+                            .find(|other| other.id == *id)
+                            .map(|other| (id.0, relation_for(other).1.max(0.25)))
+                    })
+                    .collect();
+                rivalries.sort_by_key(|(id, _)| *id);
+                let mut alliances: Vec<(u64, f32)> = g
+                    .alliances
+                    .iter()
+                    .filter_map(|id| {
+                        world
+                            .gangs
+                            .iter()
+                            .find(|other| other.id == *id)
+                            .map(|other| (id.0, relation_for(other).0.max(0.25)))
+                    })
+                    .collect();
+                alliances.sort_by_key(|(id, _)| *id);
+                let relations = world
+                    .gangs
+                    .iter()
+                    .filter(|other| other.id != g.id)
+                    .map(|other| {
+                        let (affinity, hostility) = relation_for(other);
+                        sumo::GangRelationSummary {
+                            gang: other.id.0,
+                            affinity,
+                            hostility,
+                        }
+                    })
+                    .collect();
+                let history = world
+                    .gang_history()
+                    .iter()
+                    .filter(|entry| entry.gang == g.id)
+                    .cloned()
+                    .collect();
+                GangSummary {
+                    id: g.id.0,
+                    name: g.name.clone(),
+                    leader: g.leader,
+                    members: g.members.clone(),
+                    reputation: g.reputation,
+                    resources: g.resources,
+                    culture: g.culture.clone(),
+                    formed_at: g.formed_at,
+                    active: g.active,
+                    hierarchy: g.hierarchy.clone(),
+                    rivalries,
+                    alliances,
+                    internal_disputes: g.internal_disputes.clone(),
+                    goals: g.goals.clone(),
+                    pressure,
+                    history,
+                    relations,
+                }
             })
             .collect();
         let guards = world
@@ -3284,6 +3415,7 @@ mod tests {
             gangs,
             guards,
             warden,
+            ai_runtime: sumo::AiRuntimeSnapshot::default(),
             economy,
             social_edges,
             social_roles: Vec::new(),
@@ -3424,6 +3556,54 @@ mod tests {
             }
         }
         assert!(rendered.contains("Broker"));
+    }
+
+    #[test]
+    fn gang_view_renders_pressure_scores_and_history() {
+        use alc_core::{GangId, SimTime};
+        use alc_social::{Gang as SocialGang, GangHistoryKind};
+        use alc_world::GangHistoryEntry;
+
+        let mut world = alc_world::World::new(21);
+        let leader = world.prisoners[0].id;
+        let member = world.prisoners[1].id;
+        let gid = GangId(7);
+        let mut gang = SocialGang::new(gid, "Iron Choir", leader);
+        gang.recruit(member);
+        gang.goals = vec!["control the yard".into()];
+        world.gangs.push(gang);
+        world.gang_history.push(GangHistoryEntry {
+            id: 0,
+            gang: gid,
+            kind: GangHistoryKind::LeadershipChange,
+            at: SimTime::from_secs(world.time.as_secs()),
+            summary: "Iron Choir leadership changed".into(),
+            actors: vec![member.raw()],
+            causes: vec!["gang:7".into()],
+        });
+        world.next_gang_history_id = 1;
+
+        let data = view_data_from_world(&world);
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let ui = UiState {
+            mode: ViewMode::Gang,
+            ..UiState::new()
+        };
+        terminal
+            .draw(|frame| draw(frame, &data, &ui, &status(false)))
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let mut rendered = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                rendered.push_str(buf[(x, y)].symbol());
+            }
+        }
+        assert!(rendered.contains("Pressure"), "{rendered}");
+        assert!(rendered.contains("Scores"), "{rendered}");
+        assert!(rendered.contains("Gang History"), "{rendered}");
+        assert!(rendered.contains("leadership"), "{rendered}");
     }
 
     #[test]

@@ -48,6 +48,10 @@ pub trait SimDriver {
     fn guards(&self) -> Vec<sumo::GuardSummary>;
     /// Get the warden for the warden view.
     fn warden(&self) -> sumo::WardenSummary;
+    /// Snapshot AI provider/budget/telemetry state for observer surfaces.
+    fn ai_runtime_snapshot(&self) -> sumo::AiRuntimeSnapshot {
+        sumo::AiRuntimeSnapshot::default()
+    }
     /// Get the economy for the financial view.
     fn economy(&self) -> sumo::EconomySummary;
     /// Get social graph edges for the social network view.
@@ -561,6 +565,7 @@ impl App {
             gangs: self.visible_gangs(),
             guards: self.visible_guards(),
             warden: self.driver.warden(),
+            ai_runtime: self.driver.ai_runtime_snapshot(),
             economy: self.driver.economy(),
             social_edges: self.driver.social_edges(),
             social_roles: if matches!(self.ui.mode, ViewMode::SocialNetwork) {

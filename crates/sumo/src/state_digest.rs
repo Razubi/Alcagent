@@ -360,12 +360,76 @@ pub fn compute_world_digest(world: &alc_world::World) -> u64 {
         g.stress.to_bits().hash(&mut hasher);
     }
 
-    // Gangs (Vec, already deterministic order)
-    for g in &world.gangs {
+    // Gangs: sort every collection so equivalent logical states hash equally.
+    let mut gangs: Vec<_> = world.gangs.iter().collect();
+    gangs.sort_by_key(|g| g.id.raw());
+    for g in gangs {
         g.id.hash(&mut hasher);
         g.leader.hash(&mut hasher);
-        for m in &g.members {
+        g.name.hash(&mut hasher);
+        g.culture.hash(&mut hasher);
+        g.reputation.to_bits().hash(&mut hasher);
+        g.resources.to_bits().hash(&mut hasher);
+        g.active.hash(&mut hasher);
+        g.formed_at.hash(&mut hasher);
+
+        let mut members: Vec<u64> = g.members.iter().map(|m| m.raw()).collect();
+        members.sort_unstable();
+        for m in members {
             m.hash(&mut hasher);
+        }
+        let mut hierarchy: Vec<_> = g.hierarchy.iter().collect();
+        hierarchy.sort_by_key(|record| record.prisoner.raw());
+        for record in hierarchy {
+            record.prisoner.hash(&mut hasher);
+            record.joined_at.hash(&mut hasher);
+            record.rank.hash(&mut hasher);
+            record.commitment.to_bits().hash(&mut hasher);
+            record.influence.to_bits().hash(&mut hasher);
+            record.grievances.to_bits().hash(&mut hasher);
+            record.expected_protection.to_bits().hash(&mut hasher);
+            record.contributions.to_bits().hash(&mut hasher);
+        }
+        let mut rivalries: Vec<u64> = g.rivalries.iter().map(|id| id.raw()).collect();
+        rivalries.sort_unstable();
+        for id in rivalries {
+            id.hash(&mut hasher);
+        }
+        let mut alliances: Vec<u64> = g.alliances.iter().map(|id| id.raw()).collect();
+        alliances.sort_unstable();
+        for id in alliances {
+            id.hash(&mut hasher);
+        }
+        let mut disputes = g.internal_disputes.clone();
+        disputes.sort_unstable();
+        for dispute in disputes {
+            dispute.hash(&mut hasher);
+        }
+        let mut goals = g.goals.clone();
+        goals.sort_unstable();
+        for goal in goals {
+            goal.hash(&mut hasher);
+        }
+    }
+
+    // Durable gang history is part of logical world state (Spec 008).
+    let mut history: Vec<_> = world.gang_history().iter().collect();
+    history.sort_by_key(|entry| entry.id);
+    for entry in history {
+        entry.id.hash(&mut hasher);
+        entry.gang.hash(&mut hasher);
+        entry.kind.hash(&mut hasher);
+        entry.at.hash(&mut hasher);
+        entry.summary.hash(&mut hasher);
+        let mut actors = entry.actors.clone();
+        actors.sort_unstable();
+        for actor in actors {
+            actor.hash(&mut hasher);
+        }
+        let mut causes = entry.causes.clone();
+        causes.sort_unstable();
+        for cause in causes {
+            cause.hash(&mut hasher);
         }
     }
 

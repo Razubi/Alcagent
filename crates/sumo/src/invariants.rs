@@ -575,6 +575,112 @@ pub fn invariant_post_release_ids_valid(sim: &Sim) -> bool {
     violations.is_empty()
 }
 
+/// Invariant 11: gang rosters, prisoner affiliations and durable history are
+/// mutually consistent (Spec 008).
+pub fn invariant_gang_membership_and_history(world: &World) -> bool {
+    let mut violations = Vec::new();
+    let mut gang_ids = HashSet::new();
+    let active_ids: HashSet<u64> = world
+        .gangs
+        .iter()
+        .filter(|g| g.active)
+        .map(|g| g.id.raw())
+        .collect();
+
+    for gang in &world.gangs {
+        if !gang_ids.insert(gang.id.raw()) {
+            violations.push(format!("duplicate gang id {}", gang.id.raw()));
+        }
+        if let Some(leader) = gang.leader {
+            if !gang.members.contains(&leader) {
+                violations.push(format!(
+                    "gang {} leader {:?} is not a member",
+                    gang.id.raw(),
+                    leader
+                ));
+            }
+        }
+        let mut hierarchy_ids = HashSet::new();
+        for record in &gang.hierarchy {
+            if !hierarchy_ids.insert(record.prisoner.raw()) {
+                violations.push(format!(
+                    "gang {} has duplicate hierarchy record for {:?}",
+                    gang.id.raw(),
+                    record.prisoner
+                ));
+            }
+            if !gang.members.contains(&record.prisoner) {
+                violations.push(format!(
+                    "gang {} hierarchy references non-member {:?}",
+                    gang.id.raw(),
+                    record.prisoner
+                ));
+            }
+        }
+        for &member in &gang.members {
+            match world
+                .prisoners
+                .iter()
+                .find(|p| p.id == member)
+                .and_then(|p| p.gang_affiliation)
+            {
+                Some(raw) if raw == gang.id.raw() => {}
+                Some(raw) => violations.push(format!(
+                    "gang {} member {:?} is affiliated with gang {}",
+                    gang.id.raw(),
+                    member,
+                    raw
+                )),
+                None => violations.push(format!(
+                    "gang {} member {:?} has no gang affiliation",
+                    gang.id.raw(),
+                    member
+                )),
+            }
+        }
+    }
+
+    for prisoner in &world.prisoners {
+        if let Some(raw) = prisoner.gang_affiliation {
+            if !active_ids.contains(&raw) {
+                violations.push(format!(
+                    "prisoner {:?} is affiliated with missing/inactive gang {}",
+                    prisoner.id, raw
+                ));
+                continue;
+            }
+            let in_roster = world
+                .gangs
+                .iter()
+                .find(|g| g.id.raw() == raw)
+                .is_some_and(|g| g.members.contains(&prisoner.id));
+            if !in_roster {
+                violations.push(format!(
+                    "prisoner {:?} is affiliated with gang {} but absent from its roster",
+                    prisoner.id, raw
+                ));
+            }
+        }
+    }
+
+    let mut history_ids = HashSet::new();
+    let mut max_history_id = 0u64;
+    for entry in world.gang_history() {
+        if !history_ids.insert(entry.id) {
+            violations.push(format!("duplicate gang history id {}", entry.id));
+        }
+        max_history_id = max_history_id.max(entry.id);
+    }
+    if world.next_gang_history_id <= max_history_id && !history_ids.is_empty() {
+        violations.push(format!(
+            "next gang history id {} does not exceed max id {}",
+            world.next_gang_history_id, max_history_id
+        ));
+    }
+
+    violations.is_empty()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

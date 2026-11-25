@@ -414,24 +414,9 @@ fn gang(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                 .id_salt("gang_detail")
                 .show(ui, |ui| {
                     ui.heading(&g.name);
-                    theme::kv(
-                        ui,
-                        "Leader",
-                        g.leader.map_or_else(
-                            || "none".into(),
-                            |l| {
-                                name_map
-                                    .get(&l.raw())
-                                    .cloned()
-                                    .unwrap_or_else(|| format!("prisoner #{}", l.raw()))
-                            },
-                        ),
-                    );
-                    theme::kv(ui, "Members", g.members.len().to_string());
-                    theme::kv(ui, "Culture", &g.culture);
-                    theme::metric_bar(ui, "Reputation", g.reputation, true);
-                    theme::metric_bar(ui, "Resources", g.resources, false);
-                    theme::kv(ui, "Formed", g.formed_at.to_string());
+                    for (key, value) in gang_detail_rows(g, &name_map) {
+                        theme::kv(ui, &key, value);
+                    }
                     panels::section(ui, "Hierarchy", |ui| {
                         egui::Grid::new("gang_hierarchy")
                             .striped(true)
@@ -455,37 +440,96 @@ fn gang(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                                 }
                             });
                     });
-                    panels::section(ui, "Relations & goals", |ui| {
-                        theme::kv(
-                            ui,
-                            "Rivalries",
-                            format!(
-                                "{:?}",
-                                g.rivalries.iter().map(|(id, _)| *id).collect::<Vec<_>>()
-                            ),
-                        );
-                        theme::kv(
-                            ui,
-                            "Alliances",
-                            format!(
-                                "{:?}",
-                                g.alliances.iter().map(|(id, _)| *id).collect::<Vec<_>>()
-                            ),
-                        );
-                        theme::kv(
-                            ui,
-                            "Disputes",
-                            if g.internal_disputes.is_empty() {
-                                "none".into()
-                            } else {
-                                g.internal_disputes.join("; ")
-                            },
-                        );
-                        theme::kv(ui, "Goals", g.goals.join(", "));
-                    });
                 });
         },
     );
+}
+
+/// Text rows used by the gang detail screen. Kept pure so tests can verify
+/// that pressure, relationship scores and durable history are exposed without
+/// needing a live egui context.
+fn gang_detail_rows(
+    g: &sumo::GangSummary,
+    name_map: &HashMap<u64, String>,
+) -> Vec<(String, String)> {
+    let leader = g.leader.map_or_else(
+        || "none".to_string(),
+        |id| {
+            name_map
+                .get(&id.raw())
+                .cloned()
+                .unwrap_or_else(|| format!("prisoner #{}", id.raw()))
+        },
+    );
+    let rivalries = if g.rivalries.is_empty() {
+        "none".to_string()
+    } else {
+        g.rivalries
+            .iter()
+            .map(|(id, score)| format!("#{id}:{score:.2}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let alliances = if g.alliances.is_empty() {
+        "none".to_string()
+    } else {
+        g.alliances
+            .iter()
+            .map(|(id, score)| format!("#{id}:{score:.2}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let scores = if g.relations.is_empty() {
+        "none".to_string()
+    } else {
+        g.relations
+            .iter()
+            .map(|r| format!("#{} a{:.2}/h{:.2}", r.gang, r.affinity, r.hostility))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let history = if g.history.is_empty() {
+        "none".to_string()
+    } else {
+        g.history
+            .iter()
+            .rev()
+            .take(3)
+            .map(|entry| {
+                format!(
+                    "{}: {} ({})",
+                    entry.kind.label(),
+                    data::short_truncate(&entry.summary, 48),
+                    entry.at
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" | ")
+    };
+
+    vec![
+        ("Leader".into(), leader),
+        ("Members".into(), g.members.len().to_string()),
+        ("Culture".into(), g.culture.clone()),
+        ("Reputation".into(), format!("{:.2}", g.reputation)),
+        ("Resources".into(), format!("{:.2}", g.resources)),
+        ("Formed".into(), g.formed_at.to_string()),
+        ("Active".into(), g.active.to_string()),
+        ("Pressure".into(), format!("{:.2}", g.pressure.total())),
+        ("Rivalries".into(), rivalries),
+        ("Alliances".into(), alliances),
+        ("Scores".into(), scores),
+        (
+            "Disputes".into(),
+            if g.internal_disputes.is_empty() {
+                "none".into()
+            } else {
+                g.internal_disputes.join("; ")
+            },
+        ),
+        ("Goals".into(), g.goals.join(", ")),
+        ("History".into(), history),
+    ]
 }
 
 // ---------------------------------------------------------------------------
@@ -591,6 +635,35 @@ fn warden(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
             theme::kv(ui, "Philosophy", &w.philosophy);
             theme::metric_bar(ui, "Attention", w.attention, true);
             theme::kv(ui, "Last decision", w.last_decision_at.to_string());
+            panels::section(ui, "AI runtime", |ui| {
+                let ai = &snap.ai_runtime;
+                theme::kv(
+                    ui,
+                    "Provider / model",
+                    format!("{} / {}", ai.provider, ai.model),
+                );
+                theme::kv(
+                    ui,
+                    "Tokens today",
+                    format!("{} / {}", ai.tokens_consumed_today, ai.max_tokens_per_day),
+                );
+                theme::kv(
+                    ui,
+                    "Cache",
+                    format!(
+                        "{} entries · {} hits · {} misses",
+                        ai.cache_entries, ai.cache_hits, ai.cache_misses
+                    ),
+                );
+                theme::kv(
+                    ui,
+                    "Control",
+                    format!(
+                        "{} retries · {} rate-limited · {} failures · batch {}",
+                        ai.retries, ai.rate_limited, ai.provider_failures, ai.max_batch_size
+                    ),
+                );
+            });
             panels::section(ui, "Leadership traits", |ui| {
                 let t = &w.traits;
                 for (label, value) in [
@@ -1304,6 +1377,24 @@ fn audit(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
             }
         }
     });
+    let ai = &snap.ai_runtime;
+    theme::kv(
+        ui,
+        "AI runtime",
+        format!(
+            "{} / {} · tokens {}/{} · cache {}/{} · retries {} · rate-limited {} · batches {}",
+            ai.provider,
+            ai.model,
+            ai.tokens_consumed_today,
+            ai.max_tokens_per_day,
+            ai.cache_hits,
+            ai.cache_entries,
+            ai.retries,
+            ai.rate_limited,
+            ai.batches
+        ),
+    );
+    ui.separator();
     let filter = ctx.state.decision_validation_filter.clone();
     let visible: Vec<_> = snap
         .decision_audit
@@ -1366,4 +1457,68 @@ fn audit(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
             }
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alc_core::{GangId, PrisonerId, SimTime};
+    use alc_social::GangPressure;
+    use alc_world::GangHistoryEntry;
+    use sumo::{GangRelationSummary, GangSummary};
+
+    #[test]
+    fn gang_detail_rows_expose_politics_history_and_relation_scores() {
+        let mut names = HashMap::new();
+        names.insert(1, "Rook".to_string());
+        let summary = GangSummary {
+            id: 7,
+            name: "Iron Choir".into(),
+            leader: Some(PrisonerId(1)),
+            members: vec![PrisonerId(1), PrisonerId(2)],
+            reputation: 0.62,
+            resources: 0.31,
+            culture: "mutual protection".into(),
+            formed_at: SimTime::from_secs(0),
+            active: true,
+            hierarchy: Vec::new(),
+            rivalries: vec![(9, 0.72)],
+            alliances: vec![(11, 0.66)],
+            internal_disputes: vec!["goal conflict".into()],
+            goals: vec!["hold the yard".into()],
+            pressure: GangPressure {
+                rivalry: 0.5,
+                disputes: 0.3,
+                contraband: 0.4,
+            },
+            history: vec![GangHistoryEntry {
+                id: 3,
+                gang: GangId(7),
+                kind: alc_social::GangHistoryKind::LeadershipChange,
+                at: SimTime::from_secs(86_400),
+                summary: "Iron Choir leadership changed".into(),
+                actors: vec![2],
+                causes: vec!["gang:7".into()],
+            }],
+            relations: vec![GangRelationSummary {
+                gang: 9,
+                affinity: 0.2,
+                hostility: 0.7,
+            }],
+        };
+
+        let rows = gang_detail_rows(&summary, &names);
+        let value = |key: &str| {
+            rows.iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| panic!("missing row {key}"))
+        };
+        assert_eq!(value("Leader"), "Rook");
+        assert_eq!(value("Rivalries"), "#9:0.72");
+        assert_eq!(value("Alliances"), "#11:0.66");
+        assert_eq!(value("Scores"), "#9 a0.20/h0.70");
+        assert!(value("Pressure").parse::<f32>().unwrap() > 0.4);
+        assert!(value("History").contains("leadership"));
+    }
 }

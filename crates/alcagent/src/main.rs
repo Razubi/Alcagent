@@ -103,6 +103,9 @@ impl SimDriver for EngineDriver {
     fn warden(&self) -> sumo::WardenSummary {
         self.0.warden()
     }
+    fn ai_runtime_snapshot(&self) -> sumo::AiRuntimeSnapshot {
+        self.0.ai_runtime_snapshot()
+    }
     fn economy(&self) -> sumo::EconomySummary {
         self.0.economy()
     }
@@ -340,11 +343,15 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn load_or_new(seed: u64, load: Option<&std::path::Path>) -> anyhow::Result<sumo::Sim> {
+    // Startup AI settings come from the additive `AiConfig` defaults. Runtime
+    // provider/cache/telemetry stay out of the v5 save format and are restored
+    // through the config-driven constructors on both fresh and loaded worlds.
+    let ai = alc_core::config::AiConfig::default();
     if let Some(dir) = load {
-        sumo::Sim::load(dir)
+        sumo::Sim::load_with_config(dir, &ai)
             .map_err(|e| anyhow::anyhow!("failed to load save from {}: {e}", dir.display()))
     } else {
-        Ok(sumo::Sim::new(seed))
+        Ok(sumo::Sim::new_with_config(seed, &ai))
     }
 }
 

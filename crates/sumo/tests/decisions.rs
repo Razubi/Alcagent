@@ -139,10 +139,15 @@ fn lead_gang_rejected_when_not_member() {
 fn request_medical_applied() {
     let mut sim = Sim::new(19);
     let id = sim.world().prisoners[0].id;
+    sim.world_mut().prisoners[0].needs.medical_need = 0.5;
     let before = sim.world().prisoners[0].needs.medical_need;
     let out = sim.deliver_decision(id, Decision::new(DecisionAction::RequestMedical));
     assert!(matches!(out.result, ValidationResult::Accepted(_)));
-    assert!(sim.world().prisoners[0].needs.medical_need > before);
+    assert!(
+        sim.world().prisoners[0].needs.medical_need < before,
+        "requesting care must relieve medical need, not create a runaway deficit (before={before}, after={})",
+        sim.world().prisoners[0].needs.medical_need
+    );
 }
 
 #[test]
