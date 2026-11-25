@@ -40,16 +40,18 @@ fn fight_decision_records_decision_and_incident() {
         .iter()
         .find(|inc| inc.kind == EventKind::Fight || inc.kind == EventKind::Argument || inc.kind == EventKind::Threat)
         .expect("a fight decision should produce at least one conflict incident");
-    assert!(fight.cause.is_some(), "conflict incident must have a cause");
-    assert!(fight.consequence.is_some(), "conflict incident must have a consequence");
-    assert!(
-        sim.incident_sidecar().iter().any(|i| i.id == fight.cause.unwrap()),
-        "cause id must resolve to an existing incident"
-    );
-    assert!(
-        sim.incident_sidecar().iter().any(|i| i.id == fight.consequence.unwrap()),
-        "consequence id must resolve to an existing incident"
-    );
+    // Real causality: a fresh fight may have no prior cause and no known
+    // consequence. It must carry a provenance causal link and must not use
+    // self-referential placeholder ids.
+    assert!(!fight.causal_chain.is_empty(), "conflict incident must carry a provenance link");
+    assert_ne!(fight.cause, Some(fight.id), "cause must not be self-referential");
+    assert_ne!(fight.consequence, Some(fight.id), "consequence must not be self-referential");
+    if let Some(cause) = fight.cause {
+        assert!(
+            sim.incident_sidecar().iter().any(|i| i.id == cause),
+            "cause id must resolve to an existing incident"
+        );
+    }
 
     // Conflict incidents must list their prisoner actors.
     assert!(

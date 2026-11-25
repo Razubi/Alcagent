@@ -6,15 +6,15 @@
 //! # Stability note
 //!
 //! This module deliberately uses a locally implemented FNV-1a hasher instead of
-//! [`std::collections::hash_map::DefaultHasher`], which is explicitly *not*
-//! portable across Rust versions or platforms. All integer writes are
+//! Rust's standard-library hasher, which is explicitly *not* portable across
+//! Rust versions or platforms. All integer writes are
 //! normalized to big-endian byte order and all map/collection iterations are
 //! performed in sorted (deterministic) key order, so identical logical states
 //! always produce identical digests.
 //!
 //! Because the digest values feed [`crate::Sim::trace_hash_v2`], switching to
 //! this stable hasher changes the concrete `u64` values those functions return
-//! compared to earlier builds that used `DefaultHasher`. This is intentional:
+//! compared to earlier builds that used the standard-library hasher. This is intentional:
 //! historical `trace_hash_v2` values are not part of the persistent save format
 //! and are only meaningful for comparing runs made with the same build.
 
