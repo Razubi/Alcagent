@@ -363,3 +363,48 @@ fn detect_roles_is_deterministic_across_calls() {
         assert_eq!(r1.get(id), r2.get(id), "roles must be deterministic for {id:?}");
     }
 }
+
+#[test]
+fn roles_gain_ally_and_vulnerable_classifications_after_interactions() {
+    let ids = vec![pid(1), pid(2), pid(3), pid(4), pid(5), pid(6)];
+    let mut graph = SocialGraph::default();
+
+    let baseline = detect_roles(&graph, &ids, &[]);
+    assert!(!baseline[&pid(1)].iter().any(|(r, _)| *r == SocialRole::Ally));
+    assert!(!baseline[&pid(4)].iter().any(|(r, _)| *r == SocialRole::Vulnerable));
+
+    // pid 1 repeatedly cooperates with two partners: an ally emerges from the
+    // interaction history rather than from a preset label.
+    for other in [pid(2), pid(3)] {
+        for _ in 0..8 {
+            graph.record(
+                pid(1),
+                other,
+                RelationshipDelta {
+                    friendship: 0.12,
+                    trust: 0.12,
+                    familiarity: 0.06,
+                    ..Default::default()
+                },
+            );
+        }
+    }
+
+    // pid 4 is fearful and surrounded by hostility without protective ties.
+    for other in [pid(1), pid(2), pid(3), pid(5), pid(6)] {
+        graph.record(
+            pid(4),
+            other,
+            RelationshipDelta {
+                fear: 0.9,
+                hostility: 0.8,
+                familiarity: 0.05,
+                ..Default::default()
+            },
+        );
+    }
+
+    let roles = detect_roles(&graph, &ids, &[]);
+    assert!(roles[&pid(1)].iter().any(|(r, _)| *r == SocialRole::Ally));
+    assert!(roles[&pid(4)].iter().any(|(r, _)| *r == SocialRole::Vulnerable));
+}

@@ -384,7 +384,9 @@ pub fn detect_roles(
             if r.bond_score() > 0.8 {
                 strong_ties += 1;
             }
-            protection_sum += r.protection;
+            // No direct protection edge exists; loyalty/dependency are the
+            // observable proxies for a protective tie in the dyad record.
+            protection_sum += (r.loyalty * 0.6 + r.dependency * 0.4).clamp(0.0, 1.0);
             // Allies are derived from repeated affiliative exchanges, not from
             // a hard-coded roster: trust + friendship must coexist with low hostility.
             if r.friendship >= 0.35 && r.trust >= 0.35 && r.hostility < 0.25 {
