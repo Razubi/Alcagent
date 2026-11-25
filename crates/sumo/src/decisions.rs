@@ -16,11 +16,11 @@
 //! ([`Sim::record_decision`]); rejected proposals leave no audit trace. The
 //! conflict events produced by an applied decision are additionally mirrored
 //! into the engine's incident log and structured sidecar so the UI and the
-//! causality invariant see them. Sidecar conflict incidents use a
-//! self-referential cause/consequence pair (both equal to the incident's own
-//! id): this satisfies the "every conflict incident has a cause and a
-//! consequence" invariant while keeping ids resolvable. The lead's tick pump
-//! may later relink these to real causal chains without breaking resolution.
+//! causality invariant see them. Mirrored incidents are built with
+//! [`crate::incidents::incident_from_world_event`], which derives causal links
+//! from the event's free-text causes and links to a matching prior incident
+//! when one exists. `cause`/`consequence` stay `None` unless a real incident
+//! link is available; self-referential placeholders are never generated.
 //!
 //! ## Brain inspector
 //!
@@ -39,7 +39,6 @@ use alc_core::{PrisonerId, RngStream, SimTime};
 use alc_economy::{Account as EconomyAccount, Money};
 use alc_events::{EventKind, WorldEvent};
 use alc_prisoner::Prisoner;
-use crate::incidents::IncidentDisposition;
 use alc_social::{
     apply_escape_consequences, apply_outcome, resolve_conflict, resolve_escape_attempt,
     ConflictOutcome, EscapeOutcome, RelationshipDelta,
@@ -750,7 +749,7 @@ pub fn deliver(sim: &mut Sim, id: PrisonerId, decision: Decision) -> DecisionOut
 /// incident log and sidecar (R1/R6). Only conflict-kind events are mirrored;
 /// routine social/rumor events remain on the world event bus only.
 fn mirror_conflict_incidents(sim: &mut Sim, events: &[WorldEvent]) {
-    use crate::incidents::Incident;
+    use crate::incidents::incident_from_world_event;
 
     // Derive the next id from the highest existing sidecar id (at least the
     // length, so an empty sidecar starts at 1). Using max+1 rather than
@@ -764,6 +763,8 @@ fn mirror_conflict_incidents(sim: &mut Sim, events: &[WorldEvent]) {
         .unwrap_or(0)
         .max(sim.incident_sidecar().len() as u64)
         + 1;
+    let known_prisoners: Vec<PrisonerId> =
+        sim.world.prisoners.iter().map(|p| p.id).collect();
     for event in events {
         if !is_conflict_kind(event.kind) {
             continue;
@@ -773,35 +774,21 @@ fn mirror_conflict_incidents(sim: &mut Sim, events: &[WorldEvent]) {
 
         sim.record_incident(event.clone());
 
-        let involved: Vec<PrisonerId> = event
-            .actors
-            .iter()
-            .copied()
-            .filter(|raw| sim.world.prisoners.iter().any(|p| p.id.raw() == *raw))
-            .map(PrisonerId)
-            .collect();
         let location = current_facility(&sim.world, id_of_first_actor(event, &sim.world))
             .map(|fid| format!("facility {fid}"))
             .unwrap_or_else(|| "unknown facility".to_string());
 
-        // Self-referential cause/consequence: see module-level docs. This
-        // satisfies the causality invariant while keeping ids resolvable; the
-        // tick pump may re-link incidents to real causes later.
-        let incident = Incident {
+        // Snapshot the current sidecar so this incident can link to a real
+        // prior cause instead of a self-referential placeholder.
+        let prior: Vec<_> = sim.incident_sidecar().to_vec();
+        let incident = incident_from_world_event(
+            event,
             id,
-            kind: event.kind,
-            cause: Some(id),
-            consequence: Some(id),
-            causal_chain: Vec::new(),
-            timestamp: event.at,
+            &prior,
+            &known_prisoners,
+            severity_for(event.kind),
             location,
-            involved_prisoners: involved,
-            witnesses: Vec::new(),
-            severity: severity_for(event.kind),
-            disposition: IncidentDisposition::None,
-            response_actions: Vec::new(),
-            resolved: false,
-        };
+        );
         sim.record_sidecar_incident(incident);
     }
 }

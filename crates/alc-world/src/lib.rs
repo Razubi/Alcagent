@@ -144,6 +144,39 @@ pub struct PostReleaseRecord {
     pub sentence_info: PostReleaseSentenceInfo,
     /// Deterministic basic-outcome seed for future reintegration modeling.
     pub outcome_seed: u64,
+    /// Post-release reintegration outcomes (recidivism tracking). Driven by
+    /// `outcome_seed` so reintegration is deterministic and reproducible.
+    #[serde(default)]
+    pub employment: bool,
+    #[serde(default)]
+    pub housing: bool,
+    #[serde(default)]
+    pub violation: bool,
+    #[serde(default)]
+    pub return_to_custody: bool,
+}
+
+/// World-side record of post-release reintegration outcomes (recidivism
+/// tracking). One entry per departed prisoner; persisted with serde defaults.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PostReleaseOutcomeRecord {
+    pub id: u64,
+    pub post_release_id: u64,
+    pub prisoner_id: u64,
+    pub name: String,
+    /// Simulation day (`World::days_simulated`) of departure.
+    pub day: u64,
+    /// Deterministic seed that drove the basic reintegration outcome.
+    #[serde(default)]
+    pub outcome_seed: u64,
+    #[serde(default)]
+    pub employment: bool,
+    #[serde(default)]
+    pub housing: bool,
+    #[serde(default)]
+    pub violation: bool,
+    #[serde(default)]
+    pub return_to_custody: bool,
 }
 
 /// Per-prisoner contraband inventory + flags (0.05 lifecycle; world-owned
@@ -305,6 +338,16 @@ pub struct World {
     #[serde(default)]
     pub resolved_contraband_at: std::collections::BTreeMap<u64, SimTime>,
 
+    /// World-authoritative contraband case store (Directive §7/§8/§17). Each
+    /// discovery creates a durable case record with holder, item, guard,
+    /// severity, disposition and disciplinary follow-up. Persisted via serde
+    /// default so older saves load with an empty store.
+    #[serde(default)]
+    pub contraband_cases: Vec<alc_social::contraband::ContrabandCaseRecord>,
+
+    /// Monotonically increasing id allocator for `contraband_cases`.
+    #[serde(default)]
+    pub next_contraband_case_id: u64,
     /// Explicit per-program rehabilitation enrollment/progress records.
     #[serde(default)]
     pub rehab_records: HashMap<PrisonerId, Vec<RehabProgramRecord>>,

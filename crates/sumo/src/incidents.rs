@@ -150,6 +150,29 @@ impl Default for Incident {
     }
 }
 
+impl CausalLink {
+    /// A causal link whose source is a free-text world event cause.
+    ///
+    /// `source_id` is the originating [`WorldEvent`] id; `is_incident` is
+    /// `false` because world events live on the engine log, not the sidecar.
+    pub fn world_event(source_id: u64, description: impl Into<String>) -> Self {
+        Self {
+            source_id,
+            is_incident: false,
+            description: description.into(),
+        }
+    }
+
+    /// A causal link whose source is a prior incident in the sidecar.
+    pub fn incident(source_id: IncidentId, description: impl Into<String>) -> Self {
+        Self {
+            source_id,
+            is_incident: true,
+            description: description.into(),
+        }
+    }
+}
+
 impl Incident {
     /// Create a new incident with the given kind and basic info.
     pub fn new(kind: EventKind, timestamp: SimTime, location: String, involved_prisoners: Vec<PrisonerId>) -> Self {
@@ -224,6 +247,121 @@ impl Incident {
         self.severity = s.clamp(0.0, 1.0);
         self
     }
+}
+
+/// Construct a sidecar [`Incident`] from a [`WorldEvent`] with *real* causal
+/// links, replacing the old self-referential cause/consequence placeholder.
+///
+/// Causality is derived from two honest sources:
+///
+/// 1. Every free-text entry in `event.causes` becomes a [`CausalLink`] whose
+///    source is the originating world event (`is_incident = false`).
+/// 2. If a *prior* incident in `prior_incidents` shares a participant with the
+///    event (or has the same kind) and occurred no later than the event, the
+///    most recent such incident is linked as `cause` and appended to the chain
+///    with `is_incident = true`. "Most recent" is timestamp descending, then
+///    id descending, so the choice is deterministic.
+///
+/// `consequence` is always `None`: a consequence can only be known once a
+/// *later* incident actually links back to this one, so guessing it here would
+/// reintroduce fake causality. Callers may set it later when a real successor
+/// is observed. The function also always records a provenance link to the
+/// originating event itself, so an incident with no free-text causes still has
+/// a non-empty, resolvable causal chain rather than an orphaned record.
+///
+/// Prisoner actors from `event.actors` that are present in `known_prisoners`
+/// populate both `involved_prisoners` and `witnesses`; non-prisoner actors
+/// (guards, staff) are filtered out.
+pub fn incident_from_world_event(
+    event: &WorldEvent,
+    id: IncidentId,
+    prior_incidents: &[Incident],
+    known_prisoners: &[PrisonerId],
+    severity: f32,
+    location: String,
+) -> Incident {
+    let involved: Vec<PrisonerId> = event
+        .actors
+        .iter()
+        .copied()
+        .map(PrisonerId)
+        .filter(|pid| known_prisoners.contains(pid))
+        .collect();
+
+    // Prisoner actors present at the scene are also witnesses. Keep the order
+    // of the event's actor list (deterministic) and drop duplicates defensively.
+    let mut witnesses: Vec<PrisonerId> = Vec::new();
+    for pid in &involved {
+        if !witnesses.contains(pid) {
+            witnesses.push(*pid);
+        }
+    }
+
+    let mut causal_chain: Vec<CausalLink> = Vec::new();
+    for cause_text in &event.causes {
+        let text = cause_text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        causal_chain.push(CausalLink::world_event(event.id, text.to_string()));
+    }
+
+    // Provenance: always link back to the originating world event so a
+    // no-cause incident is not an orphaned record. This is a real, resolvable
+    // link (the event exists on the engine incident log).
+    causal_chain.push(CausalLink::world_event(
+        event.id,
+        format!("originating event: {}", event.summary),
+    ));
+
+    let cause = most_recent_matching_prior(event, prior_incidents, known_prisoners).map(|prior| {
+        causal_chain.push(CausalLink::incident(
+            prior.id,
+            format!("preceding {:?} incident with shared context", prior.kind),
+        ));
+        prior.id
+    });
+
+    Incident {
+        id,
+        kind: event.kind,
+        cause,
+        consequence: None,
+        causal_chain,
+        timestamp: event.at,
+        location,
+        involved_prisoners: involved,
+        witnesses,
+        severity: severity.clamp(0.0, 1.0),
+        disposition: IncidentDisposition::None,
+        response_actions: Vec::new(),
+        resolved: false,
+    }
+}
+
+/// Most recent prior incident sharing a participant (or, failing that, the
+/// same event kind) with `event`. Ties break on higher incident id.
+fn most_recent_matching_prior<'a>(
+    event: &WorldEvent,
+    prior_incidents: &'a [Incident],
+    known_prisoners: &[PrisonerId],
+) -> Option<&'a Incident> {
+    let actors: Vec<PrisonerId> = event
+        .actors
+        .iter()
+        .copied()
+        .map(PrisonerId)
+        .filter(|pid| known_prisoners.contains(pid))
+        .collect();
+
+    prior_incidents
+        .iter()
+        .filter(|inc| inc.timestamp <= event.at && inc.id != event.id)
+        .filter(|inc| {
+            inc.involved_prisoners.iter().any(|pid| actors.contains(pid))
+                || inc.kind == event.kind
+        })
+        .max_by(|a, b| a.timestamp.cmp(&b.timestamp).then(a.id.cmp(&b.id)))
 }
 
 /// Returns incidents since a given simulation time.

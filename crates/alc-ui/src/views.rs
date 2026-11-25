@@ -1620,10 +1620,11 @@ fn render_map(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
 // ---------------------------------------------------------------------------
 
 fn render_incidents(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
-    let chunks = Layout::vertical([Constraint::Length(4), Constraint::Min(4), Constraint::Length(10)]).split(area);
+    let chunks = Layout::vertical([Constraint::Length(4), Constraint::Min(4), Constraint::Length(12)]).split(area);
     let mut records: Vec<_> = data.incident_records.iter().collect();
     records.reverse();
-    let idx = (ui.scroll as usize).min(records.len().saturating_sub(1));
+    let total = records.len();
+    let idx = if total == 0 { 0 } else { (ui.scroll as usize).min(total - 1) };
 
     // Severity / status counts.
     let critical = records.iter().filter(|r| r.severity >= 0.75).count();
@@ -1634,18 +1635,24 @@ fn render_incidents(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
 
     let names = name_map(&data.prisoners);
     let summary = vec![
-        kv("Incidents", format!("{} total · {} open · {} resolved", records.len(), open, resolved)),
+        kv("Incidents", format!("{} total · {} open · {} resolved", total, open, resolved)),
         kv("Severity", format!("critical {} · high {} · low {}", critical, high, low)),
         kv("Contraband (0.05)", format!("{} cases · {} inventory kinds", data.contraband_cases.len(), data.contraband_inventory.len())),
         if records.is_empty() {
             plain(format!("No structured incidents yet. Incident log has {} events.", data.incident_log.len()))
         } else {
-            plain(format!("Showing {} newest-first. Incident log (raw events): {}.", records.len(), data.incident_log.len()))
+            plain(format!("Showing {} newest-first (page {} of {}). Incident log (raw events): {}.", total, idx + 1, total, data.incident_log.len()))
         },
     ];
     frame.render_widget(Paragraph::new(summary).block(title_block(" Incident Summary & Filters ")), chunks[0]);
 
-    let items: Vec<ListItem<'static>> = records.iter().enumerate().map(|(i, r)| {
+    // Pagination window around the selected cursor.
+    let page_size = (chunks[1].height.saturating_sub(3) as usize).max(1);
+    let page_start = if total == 0 { 0 } else { (idx / page_size) * page_size };
+    let page_end = (page_start + page_size).min(total);
+
+    let items: Vec<ListItem<'static>> = records[page_start..page_end].iter().enumerate().map(|(j, r)| {
+        let i = page_start + j;
         let marker = if i == idx { "»" } else { " " };
         let style = if i == idx {
             Style::default().bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD)
@@ -1664,7 +1671,7 @@ fn render_incidents(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
         ])).style(style)
     }).collect();
     frame.render_widget(
-        List::new(items).block(title_block(format!(" Incident Reports — {} (newest first) ", records.len()))),
+        List::new(items).block(title_block(format!(" Incident Reports — {}..{} of {} (newest first) ", page_start + 1, page_end, total))),
         chunks[1],
     );
 
@@ -1674,19 +1681,37 @@ fn render_incidents(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
         } else {
             r.involved_prisoners.iter().map(|id| names.get(id).cloned().unwrap_or_else(|| format!("P{}", id))).collect::<Vec<_>>().join(", ")
         };
+        let witnesses = if r.involved_prisoners.is_empty() { "none".to_string() } else { "n/a".to_string() };
         let outcome = if r.resolved { "resolved" } else { "open / unresolved" };
-        vec![
+        let mut d = vec![
             kv("ID", r.id.to_string()),
             kv("Kind", r.kind.clone()),
             kv("At", r.at.to_string()),
             kv("Severity", format!("{:.0}% ({})", r.severity * 100.0, if r.severity >= 0.75 { "critical" } else if r.severity >= 0.4 { "high" } else { "low" })),
             kv("Disposition", r.disposition.clone()),
             kv("Location", if r.location.is_empty() { "unknown".into() } else { r.location.clone() }),
-            kv("Actors (prisoners)", actors),
-            kv("Cause chain", r.cause.map(|c| format!("incident #{}", c)).unwrap_or_else(|| "none".into())),
+            kv("Actors (prisoners)", actors.clone()),
+            kv("Witnesses", witnesses),
+            kv("Cause", r.cause.map(|c| format!("incident #{}", c)).unwrap_or_else(|| "none".into())),
             kv("Consequence", r.consequence.map(|c| format!("incident #{}", c)).unwrap_or_else(|| "none".into())),
             kv("Outcome", outcome.to_string()),
-        ]
+        ];
+        // Per-prisoner incident history: incidents where this prisoner is involved.
+        for pid in &r.involved_prisoners {
+            let pname = names.get(pid).cloned().unwrap_or_else(|| format!("P{}", pid));
+            let history: Vec<String> = records.iter()
+                .filter(|rr| rr.id != r.id && rr.involved_prisoners.contains(pid))
+                .take(5)
+                .map(|rr| format!("#{} {} sev {:.0}% {}", rr.id, truncate(&rr.kind, 12), rr.severity * 100.0, if rr.resolved { "RES" } else { "OPEN" }))
+                .collect();
+            d.push(plain(format!("--- History for {} (P{}) ---", pname, pid)));
+            if history.is_empty() {
+                d.push(plain("  no prior incidents"));
+            } else {
+                for h in history { d.push(plain(format!("  {h}"))); }
+            }
+        }
+        d
     } else {
         vec![plain("No incidents recorded.")]
     };

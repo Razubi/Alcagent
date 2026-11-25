@@ -44,6 +44,20 @@ pub struct UiState {
     pub selected_contraband: Option<u64>,
     /// Free-text search query over the active list (name / id substring).
     pub search: String,
+    /// Bookmarked/pinned entity ids (persist across mode changes).
+    pub bookmarks: Vec<u64>,
+    pub pinned: Vec<u64>,
+    pub pinned_entities: Vec<u64>,
+    pub pins: Vec<u64>,
+    /// Recent notification feed (observer-facing).
+    pub notifications: Vec<String>,
+    pub notification_feed: Vec<String>,
+    pub notification_log: Vec<String>,
+    pub recent_notifications: Vec<String>,
+    /// Pause the simulation automatically on critical events.
+    pub pause_on_critical: bool,
+    pub pause_on_critical_event: bool,
+    pub pause_on_critical_events: bool,
     /// Declarative incident query (0.05); [`UiState::filter`] is the accessor.
     pub incident_filter: sumo::incidents::IncidentFilter,
     /// Optional decision validation filter: "accepted", "repaired", "rejected", or None.

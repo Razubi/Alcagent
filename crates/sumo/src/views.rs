@@ -201,7 +201,24 @@ pub struct ConstructionSummary {
     pub cost: f32,
     /// Start day.
     pub started_day: u64,
+    /// Lifecycle status (0.05).
+    #[serde(default)]
+    pub status: alc_world::ConstructionStatus,
+    /// Terminal reason if cancelled/failed.
+    #[serde(default)]
+    pub terminal_reason: Option<String>,
+    /// Staffing prerequisite met.
+    #[serde(default = "default_true_sumo")]
+    pub staff_allocated: bool,
+    /// Materials/funding prerequisite met.
+    #[serde(default = "default_true_sumo")]
+    pub materials_ready: bool,
+    /// Facility prerequisites met.
+    #[serde(default = "default_true_sumo")]
+    pub prereqs_met: bool,
 }
+
+fn default_true_sumo() -> bool { true }
 
 /// Post-release outcome row for the observer UI (0.05).
 ///

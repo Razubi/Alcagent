@@ -2,32 +2,159 @@
 //!
 //! Computes a stable hash of critical simulation state that can be used to
 //! detect divergence, verify determinism, and provide richer trace fingerprinting.
+//!
+//! # Stability note
+//!
+//! This module deliberately uses a locally implemented FNV-1a hasher instead of
+//! [`std::collections::hash_map::DefaultHasher`], which is explicitly *not*
+//! portable across Rust versions or platforms. All integer writes are
+//! normalized to big-endian byte order and all map/collection iterations are
+//! performed in sorted (deterministic) key order, so identical logical states
+//! always produce identical digests.
+//!
+//! Because the digest values feed [`crate::Sim::trace_hash_v2`], switching to
+//! this stable hasher changes the concrete `u64` values those functions return
+//! compared to earlier builds that used `DefaultHasher`. This is intentional:
+//! historical `trace_hash_v2` values are not part of the persistent save format
+//! and are only meaningful for comparing runs made with the same build.
 
 use crate::{EngineState, PolicyState, ParoleLedger};
 use alc_agents::{Decision, DecisionAction};
 use std::hash::{Hash, Hasher};
 
+/// FNV-1a 64-bit offset basis.
+const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+/// FNV-1a 64-bit prime.
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+/// A deterministic, platform-independent FNV-1a hasher.
+///
+/// Integer writes are normalized to big-endian bytes before being mixed in,
+/// so the resulting digest does not depend on the host's endianness or on the
+/// (unspecified) `Hash` implementations of primitive types. `str` values are
+/// hashed as their raw UTF-8 bytes followed by the conventional `0xff`
+/// terminator emitted by `str::hash`, which is stable across toolchains.
+#[derive(Default)]
+struct StableHasher {
+    state: u64,
+}
+
+impl StableHasher {
+    fn new() -> Self {
+        Self { state: FNV_OFFSET_BASIS }
+    }
+
+    /// Mix a single byte into the running FNV-1a state.
+    #[inline]
+    fn write_byte(&mut self, byte: u8) {
+        self.state ^= u64::from(byte);
+        self.state = self.state.wrapping_mul(FNV_PRIME);
+    }
+
+    /// Mix a sequence of bytes into the running FNV-1a state.
+    #[inline]
+    fn write_bytes(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.write_byte(byte);
+        }
+    }
+
+    fn finish_u64(self) -> u64 {
+        self.state
+    }
+}
+
+impl Hasher for StableHasher {
+    fn finish(&self) -> u64 {
+        self.state
+    }
+
+    /// Raw byte writes (used by derived `Hash` for structs with `&[u8]` etc.).
+    /// We do not add a length prefix here because callers hash fixed-layout
+    /// values; variable-length strings are handled by `write_str` below.
+    fn write(&mut self, bytes: &[u8]) {
+        self.write_bytes(bytes);
+    }
+
+    // Normalize every integer write to big-endian bytes so the digest is
+    // independent of the machine's native byte order.
+
+    fn write_u8(&mut self, i: u8) {
+        self.write_byte(i);
+    }
+
+    fn write_u16(&mut self, i: u16) {
+        self.write_bytes(&i.to_be_bytes());
+    }
+
+    fn write_u32(&mut self, i: u32) {
+        self.write_bytes(&i.to_be_bytes());
+    }
+
+    fn write_u64(&mut self, i: u64) {
+        self.write_bytes(&i.to_be_bytes());
+    }
+
+    fn write_u128(&mut self, i: u128) {
+        self.write_bytes(&i.to_be_bytes());
+    }
+
+    fn write_usize(&mut self, i: usize) {
+        self.write_bytes(&i.to_be_bytes());
+    }
+
+    fn write_i8(&mut self, i: i8) {
+        self.write_byte(i as u8);
+    }
+
+    fn write_i16(&mut self, i: i16) {
+        self.write_bytes(&i.to_be_bytes());
+    }
+
+    fn write_i32(&mut self, i: i32) {
+        self.write_bytes(&i.to_be_bytes());
+    }
+
+    fn write_i64(&mut self, i: i64) {
+        self.write_bytes(&i.to_be_bytes());
+    }
+
+    fn write_i128(&mut self, i: i128) {
+        self.write_bytes(&i.to_be_bytes());
+    }
+
+    fn write_isize(&mut self, i: isize) {
+        self.write_bytes(&i.to_be_bytes());
+    }
+
+    fn write_str(&mut self, s: &str) {
+        // Match `str::hash`, which writes the UTF-8 bytes followed by 0xff.
+        self.write_bytes(s.as_bytes());
+        self.write_byte(0xff);
+    }
+}
+
 /// Compute a deterministic hash of the engine state for trace verification.
 pub fn compute_state_digest(engine_state: &EngineState) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    
+    let mut hasher = StableHasher::new();
+
     // Parole ledger state
     hash_parole_ledger(&engine_state.parole, &mut hasher);
-    
-    // Population history
+
+    // Population history (Vec, already deterministic order)
     for (time, pop) in &engine_state.population_history {
         time.secs.hash(&mut hasher);
         pop.hash(&mut hasher);
     }
-    
-    // Incidents (WorldEvent)
+
+    // Incidents (WorldEvent; Vec, already deterministic order)
     for inc in &engine_state.incidents {
         inc.kind.hash(&mut hasher);
         inc.at.secs.hash(&mut hasher);
         inc.summary.hash(&mut hasher);
     }
-    
-    // Incident sidecar
+
+    // Incident sidecar (Vec, already deterministic order)
     for inc in &engine_state.incident_sidecar {
         inc.id.hash(&mut hasher);
         inc.kind.hash(&mut hasher);
@@ -41,12 +168,12 @@ pub fn compute_state_digest(engine_state: &EngineState) -> u64 {
             pid.raw().hash(&mut hasher);
         }
     }
-    
+
     // Decision log - hash the Decision enum variants
     for dec in &engine_state.decision_log {
         hash_decision(dec, &mut hasher);
     }
-    
+
     // Post-release tracking (sorted by key for a reproducible digest)
     let mut post_release: Vec<_> = engine_state.post_release.iter().collect();
     post_release.sort_by_key(|(pid, _)| pid.raw());
@@ -54,13 +181,13 @@ pub fn compute_state_digest(engine_state: &EngineState) -> u64 {
         pid.raw().hash(&mut hasher);
         success.hash(&mut hasher);
     }
-    
+
     // Policy state
     hash_policy_state(&engine_state.policy_state, &mut hasher);
-    
+
     // Policy mode
     engine_state.policy_mode.hash(&mut hasher);
-    
+
     hasher.finish()
 }
 
@@ -141,20 +268,20 @@ fn hash_policy_state(policy_state: &PolicyState, hasher: &mut impl Hasher) {
 
 /// Compute a state digest for the world (prisoners, guards, facilities, etc.)
 pub fn compute_world_digest(world: &alc_world::World) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    
+    let mut hasher = StableHasher::new();
+
     // World time
     world.time.secs.hash(&mut hasher);
     world.days_simulated.hash(&mut hasher);
     world.seed.hash(&mut hasher);
-    
-    // Facilities
+
+    // Facilities (Vec, already deterministic order)
     for f in &world.facilities {
         f.id.0.hash(&mut hasher);
         f.kind.hash(&mut hasher);
         f.capacity.hash(&mut hasher);
     }
-    
+
     // Prisoners (sorted by ID for determinism)
     let mut prisoners: Vec<_> = world.prisoners.iter().collect();
     prisoners.sort_by_key(|p| p.id.0);
@@ -166,7 +293,7 @@ pub fn compute_world_digest(world: &alc_world::World) -> u64 {
         p.needs.sleep.to_bits().hash(&mut hasher);
         p.gang_affiliation.hash(&mut hasher);
     }
-    
+
     // Guards (sorted by ID for determinism)
     let mut guards: Vec<_> = world.guards.iter().collect();
     guards.sort_by_key(|g| g.id.0);
@@ -177,8 +304,8 @@ pub fn compute_world_digest(world: &alc_world::World) -> u64 {
         g.fatigue.to_bits().hash(&mut hasher);
         g.stress.to_bits().hash(&mut hasher);
     }
-    
-    // Gangs
+
+    // Gangs (Vec, already deterministic order)
     for g in &world.gangs {
         g.id.hash(&mut hasher);
         g.leader.hash(&mut hasher);
@@ -186,23 +313,23 @@ pub fn compute_world_digest(world: &alc_world::World) -> u64 {
             m.hash(&mut hasher);
         }
     }
-    
+
     // Policies
     world.policies.lockdown.hash(&mut hasher);
     world.policies.security_level.to_bits().hash(&mut hasher);
     world.policies.privileges_level.to_bits().hash(&mut hasher);
     world.policies.rehab_funding_multiplier.to_bits().hash(&mut hasher);
-    
+
     // Economy
     world.economy.cash.0.hash(&mut hasher);
-    
+
     // Events (recent only to avoid unbounded growth)
     for e in world.events.recent() {
         e.kind.hash(&mut hasher);
         e.at.secs.hash(&mut hasher);
         e.summary.hash(&mut hasher);
     }
-    
+
     // Social graph relationships. `SocialGraph::iter()` yields dyads in a
     // deterministic (sorted) key order; hash the key and every relationship
     // field so social divergence is reflected in the world digest.
@@ -223,7 +350,7 @@ pub fn compute_world_digest(world: &alc_world::World) -> u64 {
         rel.gratitude.to_bits().hash(&mut hasher);
         rel.familiarity.to_bits().hash(&mut hasher);
     }
-    
+
     // Prisoner locations
     let mut locs: Vec<_> = world.prisoner_location.iter().collect();
     locs.sort_by_key(|(k, _)| k.0);
@@ -231,15 +358,15 @@ pub fn compute_world_digest(world: &alc_world::World) -> u64 {
         pid.0.hash(&mut hasher);
         fid.0.hash(&mut hasher);
     }
-    
+
     // Guard locations
     let mut guard_locs: Vec<_> = world.guard_location.iter().collect();
     guard_locs.sort_by_key(|(k, _)| k.0);
     for (gid, fid) in guard_locs {
         gid.0.hash(&mut hasher);
-        fid.0.hash(&mut hasher)
+        fid.0.hash(&mut hasher);
     }
-    
+
     hasher.finish()
 }
 
@@ -247,10 +374,39 @@ pub fn compute_world_digest(world: &alc_world::World) -> u64 {
 pub fn compute_full_state_digest(sim: &crate::Sim) -> u64 {
     let engine_digest = compute_state_digest(&sim.engine_state);
     let world_digest = compute_world_digest(&sim.world);
-    
-    // Combine using FNV-1a
+
+    // Combine deterministically with FNV-1a multiplication.
     let mut h = engine_digest;
     h ^= world_digest;
-    h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    h = h.wrapping_mul(FNV_PRIME);
     h
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stable_hasher_matches_fnv1a_known_vector() {
+        // FNV-1a 64-bit of the empty byte string is the offset basis.
+        let h = StableHasher::new();
+        assert_eq!(h.finish_u64(), FNV_OFFSET_BASIS);
+
+        // FNV-1a 64-bit of "a" is 0xaf63dc4c8601ec8c.
+        let mut h = StableHasher::new();
+        h.write_byte(b'a');
+        assert_eq!(h.finish_u64(), 0xaf63_dc4c_8601_ec8c);
+    }
+
+    #[test]
+    fn stable_hasher_integer_writes_are_endian_independent() {
+        // The big-endian byte sequence for 0x0102_0304_0506_0708.
+        let mut a = StableHasher::new();
+        a.write_u64(0x0102_0304_0506_0708);
+
+        let mut b = StableHasher::new();
+        b.write_bytes(&0x0102_0304_0506_0708u64.to_be_bytes());
+
+        assert_eq!(a.finish(), b.finish());
+    }
 }
