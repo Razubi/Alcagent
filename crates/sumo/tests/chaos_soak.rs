@@ -214,7 +214,43 @@ fn save_load_after_year_continues_invariant_clean_and_deterministic() {
     let dir = std::env::temp_dir().join(format!("sumo-chaos-save-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
 
-    let mut original = run(0xA1C_0A_6E_17_0, 365);
+    // Spec 013: record throughput/volume from the same 365-day run the
+    // persistence regression already performs, so no extra soak is added.
+    let started = std::time::Instant::now();
+    let mut original = Sim::new(0xA1C_0A_6E_17_0);
+    original.set_speed(TimeSpeed::Extreme);
+    let ticks = original.run_until(original.world().time.add_days(365));
+    let elapsed = started.elapsed().as_secs_f64().max(f64::EPSILON);
+    let ticks_per_sec = ticks as f64 / elapsed;
+    let event_count = original.events().len();
+    eprintln!(
+        "PERF days={} ticks={ticks} ticks_per_sec={ticks_per_sec:.1} events={event_count} pop={}/{} cash_cents={}",
+        original.days_simulated(),
+        original.world().population(),
+        original.world().capacity(),
+        original.world().economy.cash.0,
+    );
+    assert!(ticks > 0, "365-day run advanced no ticks");
+    assert!(
+        ticks_per_sec.is_finite() && ticks_per_sec > 0.0,
+        "non-finite throughput: {ticks_per_sec}"
+    );
+
+    // Bounded histories are part of long-run stability (spec 013).
+    let max_logs = sumo::invariants::MAX_LOG_ENTRIES;
+    assert!(original.decision_audit_log().len() <= max_logs);
+    assert!(original.incidents().len() <= max_logs);
+    assert!(original.incident_sidecar().len() <= max_logs);
+    assert!(!original.world().warden.audit_log.is_empty());
+    assert!(original.world().warden.audit_log.len() <= max_logs);
+    assert!(
+        original
+            .world()
+            .guards
+            .iter()
+            .all(|g| g.history.len() <= 256)
+    );
+
     original.save(&dir).expect("save 365-day world");
     let mut loaded = Sim::load(&dir).expect("load 365-day world");
 
