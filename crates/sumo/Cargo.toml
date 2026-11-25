@@ -19,8 +19,6 @@ alc-persistence = { workspace = true }
 alc-testing = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }
-egui = "0.37.0"
-eframe = "0.37.0"
 
 [features]
 default = []

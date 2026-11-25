@@ -160,10 +160,8 @@ version = "0.1.0"
 dependencies = [
  "alc-core",
  "alc-prisoner",
- "alc-social",
  "serde",
  "serde_json",
- "thiserror 2.0.21",
  "tracing",
 ]
 
@@ -180,11 +178,7 @@ dependencies = [
 name = "alc-economy"
 version = "0.1.0"
 dependencies = [
- "alc-core",
  "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tracing",
 ]
 
 [[package]]
@@ -193,9 +187,6 @@ version = "0.1.0"
 dependencies = [
  "alc-core",
  "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tracing",
 ]
 
 [[package]]
@@ -204,9 +195,25 @@ version = "0.1.0"
 dependencies = [
  "alc-core",
  "serde",
+]
+
+[[package]]
+name = "alc-gui"
+version = "0.1.0"
+dependencies = [
+ "alc-core",
+ "alc-economy",
+ "alc-events",
+ "alc-guard",
+ "alc-prisoner",
+ "alc-social",
+ "alc-warden",
+ "alc-world",
+ "eframe",
+ "egui",
+ "serde",
  "serde_json",
- "thiserror 2.0.21",
- "tracing",
+ "sumo",
 ]
 
 [[package]]
@@ -222,7 +229,6 @@ dependencies = [
  "alc-social",
  "alc-warden",
  "alc-world",
- "anyhow",
  "bincode",
  "serde",
  "serde_json",
@@ -237,8 +243,6 @@ dependencies = [
  "alc-core",
  "serde",
  "serde_json",
- "thiserror 2.0.21",
- "tracing",
 ]
 
 [[package]]
@@ -249,9 +253,6 @@ dependencies = [
  "alc-guard",
  "alc-prisoner",
  "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tracing",
 ]
 
 [[package]]
@@ -300,7 +301,6 @@ dependencies = [
  "alc-agents",
  "alc-core",
  "alc-economy",
- "alc-events",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -319,7 +319,6 @@ dependencies = [
  "alc-prisoner",
  "alc-social",
  "alc-warden",
- "anyhow",
  "rand",
  "rand_pcg",
  "serde",
@@ -3728,8 +3727,6 @@ dependencies = [
  "alc-testing",
  "alc-warden",
  "alc-world",
- "eframe",
- "egui",
  "serde",
  "tracing",
 ]

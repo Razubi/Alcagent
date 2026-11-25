@@ -10,7 +10,7 @@
 //! [`alc_ui::views::truncate`].
 
 use crate::theme;
-use alc_core::{PrisonerId, SimTime};
+use alc_core::PrisonerId;
 use alc_events::{EventKind, WorldEvent};
 use alc_guard::{AuthorityLevel, Guard, GuardRank, PostType};
 use alc_prisoner::{
@@ -20,6 +20,12 @@ use alc_prisoner::{
 use alc_warden::WardenAction;
 use alc_world::{FacilityKind, World};
 use std::collections::{HashMap, VecDeque};
+use sumo::{
+    AgentObservation, BudgetSnapshot, ConstructionSummary, DecisionAuditRecord, EconomySummary,
+    GangSummary, GuardSummary, IncidentRecord, MapFrame, PawnPosition, PolicySummary,
+    PostReleaseSummary, PrisonerSummary, RehabOverview, RehabProgramInfo, ScheduleTimeline,
+    SocialEdge, Stats, WardenSummary,
+};
 
 // ---------------------------------------------------------------------------
 // Incident reports — typed buckets over the live event stream
@@ -142,7 +148,6 @@ pub enum PolicyChangeKind {
 }
 
 impl PolicyChangeKind {
-    #[must_use]
     pub const ALL: [PolicyChangeKind; 8] = [
         PolicyChangeKind::SecurityUp,
         PolicyChangeKind::SecurityDown,
@@ -343,7 +348,7 @@ pub fn schedule_policy(world: &World) -> SchedulePolicy {
 /// (wrapper around the engine's public `current_block`).
 #[must_use]
 pub fn current_schedule_block(
-    schedule: &[ResolvedBlock],
+    schedule: &alc_prisoner::ResolvedSchedule,
     minute_of_day: u16,
 ) -> Option<&ResolvedBlock> {
     current_block(schedule, minute_of_day)
@@ -399,7 +404,10 @@ pub fn stats_dashboard_rows(stats: &sumo::Stats) -> Vec<(&'static str, String)> 
 /// Number and cap `sumo::Sim::leader_board(n)` output: `(rank, name, reputation)`.
 #[must_use]
 pub fn leaderboard_table<'a>(lb: &'a [(String, f32)], n: usize) -> Vec<(u32, &'a str, f32)> {
-    lb.iter()
+    let mut sorted: Vec<&'a (String, f32)> = lb.iter().collect();
+    sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    sorted
+        .into_iter()
         .take(n)
         .enumerate()
         .map(|(i, (name, reputation))| (i as u32 + 1, name.as_str(), *reputation))
@@ -461,17 +469,249 @@ pub fn need_rows(needs: &Needs) -> Vec<(&'static str, f32)> {
 
 #[must_use]
 pub fn short_truncate(s: &str, max: usize) -> String {
-    alc_ui::views::truncate(s, max)
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    }
 }
 
 #[must_use]
 pub fn short_class(c: Classification) -> &'static str {
-    alc_ui::views::class_short(c)
+    match c {
+        Classification::Minimum => "MIN",
+        Classification::Low => "LOW",
+        Classification::Medium => "MED",
+        Classification::High => "HIGH",
+        Classification::Maximum => "MAX",
+    }
 }
 
 #[must_use]
 pub fn name_map(world: &World) -> HashMap<PrisonerId, String> {
-    alc_ui::views::name_map(world)
+    world.prisoners.iter().map(|p| (p.id, p.name.clone())).collect()
+}
+
+// ---------------------------------------------------------------------------
+// Point-in-time snapshot consumed by every observation view
+// ---------------------------------------------------------------------------
+
+/// Everything an observation view needs, captured once per engine revision.
+///
+/// The App caches this struct and only rebuilds it when a tick or a validated
+/// control changes the world, so panning/zooming the map or typing in a search
+/// box never re-clones the prison population.
+#[derive(Debug, Clone)]
+pub struct Snapshot {
+    pub speed: alc_core::TimeSpeed,
+    pub observation: sumo::Observation,
+    pub stats: Stats,
+    pub prisoners: Vec<PrisonerSummary>,
+    pub gangs: Vec<GangSummary>,
+    pub guards: Vec<GuardSummary>,
+    pub warden: WardenSummary,
+    pub economy: EconomySummary,
+    pub social_edges: Vec<SocialEdge>,
+    pub facilities: Vec<FacilityView>,
+    pub construction: Vec<ConstructionSummary>,
+    pub events: Vec<sumo::WorldEvent>,
+    pub incidents: Vec<IncidentRecord>,
+    pub decision_audit: Vec<DecisionAuditRecord>,
+    pub policy: PolicySummary,
+    pub budget: BudgetSnapshot,
+    pub rehab: RehabOverview,
+    pub rehab_catalog: Vec<RehabProgramInfo>,
+    pub rehab_rows: Vec<sumo::RehabEnrollmentSummary>,
+    pub contraband: Vec<sumo::ContrabandCaseSummary>,
+    pub post_release: Vec<PostReleaseSummary>,
+    pub map: MapFrame,
+    pub violations: Vec<String>,
+    pub parole_due: Vec<PrisonerId>,
+    /// Details for the currently selected prisoner, when one is selected.
+    pub selected_agent: Option<AgentObservation>,
+    pub selected_schedule: Option<ScheduleTimeline>,
+    pub selected_parole: Option<String>,
+}
+
+/// Capture a read-only snapshot. `selected_prisoner` enriches the snapshot
+/// with that agent's individual observation, schedule and parole status.
+#[must_use]
+pub fn capture(sim: &sumo::Sim, selected_prisoner: Option<PrisonerId>) -> Snapshot {
+    let world = sim.world();
+    let map = sim.map_frame();
+
+    let mut facilities: Vec<FacilityView> = world
+        .facilities
+        .iter()
+        .map(|f| FacilityView {
+            id: f.id.0,
+            kind: f.kind,
+            wing: f.wing,
+            capacity: f.capacity,
+            condition: f.condition,
+            staff_required: f.staff_required,
+            x: map.facility_positions.get(&f.id.0).map_or(100.0, |p| p.0),
+            y: map.facility_positions.get(&f.id.0).map_or(100.0, |p| p.1),
+            locked: map.locked_nodes.contains(&f.id.0),
+            prisoners: Vec::new(),
+            guards: Vec::new(),
+        })
+        .collect();
+    facilities.sort_by_key(|f| f.id);
+    for pawn in map.prisoners.iter().chain(map.guards.iter()) {
+        if let Some(facility) = facilities.iter_mut().find(|f| f.id == pawn.node_id) {
+            if pawn.is_prisoner {
+                facility.prisoners.push(pawn.id);
+            } else {
+                facility.guards.push(pawn.id);
+            }
+        }
+    }
+
+    let mut events: Vec<sumo::WorldEvent> = sim.events().recent().cloned().collect();
+    events.reverse();
+    events.truncate(300);
+    let selected_agent = selected_prisoner.and_then(|id| sim.agent_observation(id));
+    let selected_schedule = selected_prisoner.and_then(|id| sim.schedule_timeline(id));
+    let selected_parole = selected_prisoner
+        .and_then(|id| sim.parole_status(id))
+        .map(|status| format!("{status:?}"));
+
+    Snapshot {
+        speed: sim.speed(),
+        observation: sim.observation(),
+        stats: sim.stats_since(sumo::SimTime::EPOCH),
+        prisoners: sim.prisoners(),
+        gangs: sim.gangs(),
+        guards: sim.guards(),
+        warden: sim.warden(),
+        economy: sim.economy(),
+        social_edges: sim.social_edges(),
+        facilities,
+        construction: sim.construction_queue(),
+        events,
+        incidents: sim.incident_records(),
+        decision_audit: sim.decision_audit_log().to_vec(),
+        policy: sim.policy_summary(),
+        budget: sim.budget_snapshot(),
+        rehab: sim.rehab_overview(),
+        rehab_catalog: sim.rehab_program_catalog(),
+        rehab_rows: sim.rehab_summaries(),
+        contraband: sim.contraband_summaries(),
+        post_release: sim.post_release_records(),
+        map,
+        violations: sim.check_invariants(),
+        parole_due: sim.parole_due(),
+        selected_agent,
+        selected_schedule,
+        selected_parole,
+    }
+}
+
+/// One facility node on the map, enriched with occupancy and roster ids.
+#[derive(Debug, Clone)]
+pub struct FacilityView {
+    pub id: u64,
+    pub kind: FacilityKind,
+    pub wing: u32,
+    pub capacity: u32,
+    pub condition: f32,
+    pub staff_required: u32,
+    /// World-space X from the engine `MapFrame`.
+    pub x: f32,
+    /// World-space Y from the engine `MapFrame`.
+    pub y: f32,
+    pub locked: bool,
+    pub prisoners: Vec<u64>,
+    pub guards: Vec<u64>,
+}
+
+impl FacilityView {
+    /// Occupancy as a 0..1 fraction of capacity.
+    #[must_use]
+    pub fn utilisation(&self) -> f32 {
+        if self.capacity == 0 {
+            0.0
+        } else {
+            (self.prisoners.len() as f32 / self.capacity as f32).min(1.0)
+        }
+    }
+
+    /// Human-readable facility label for map nodes and rosters.
+    #[must_use]
+    pub fn label(&self) -> String {
+        format!("{} #{} (W{})", self.kind.display(), self.id, self.wing)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Map projection & pan/zoom math (pure, so it can be unit tested)
+// ---------------------------------------------------------------------------
+
+/// Project a world-space point into canvas-local screen coordinates.
+#[must_use]
+pub fn world_to_screen(world: (f32, f32), zoom: f32, pan: egui::Vec2) -> egui::Pos2 {
+    egui::pos2(world.0 * zoom + pan.x, world.1 * zoom + pan.y)
+}
+
+/// Inverse of [`world_to_screen`].
+#[must_use]
+pub fn screen_to_world(screen: egui::Pos2, zoom: f32, pan: egui::Vec2) -> (f32, f32) {
+    ((screen.x - pan.x) / zoom, (screen.y - pan.y) / zoom)
+}
+
+/// Zoom by `factor` while keeping the world point under `anchor` fixed.
+/// Returns the new `(zoom, pan)` pair.
+#[must_use]
+pub fn zoom_at(
+    anchor: egui::Pos2,
+    zoom: f32,
+    pan: egui::Vec2,
+    factor: f32,
+    min: f32,
+    max: f32,
+) -> (f32, egui::Vec2) {
+    let world = screen_to_world(anchor, zoom, pan);
+    let new_zoom = (zoom * factor).clamp(min, max);
+    let new_pan = egui::vec2(anchor.x - world.0 * new_zoom, anchor.y - world.1 * new_zoom);
+    (new_zoom, new_pan)
+}
+
+/// World-space position of a pawn, interpolating along its current nav edge.
+#[must_use]
+pub fn pawn_world_pos(pawn: &PawnPosition, positions: &HashMap<u64, (f32, f32)>) -> (f32, f32) {
+    if let (Some(progress), Some(target)) = (pawn.edge_progress, pawn.target_node) {
+        let start = positions.get(&pawn.node_id).copied().unwrap_or((100.0, 100.0));
+        let end = positions.get(&target).copied().unwrap_or(start);
+        let t = progress.clamp(0.0, 1.0);
+        (
+            start.0 + (end.0 - start.0) * t,
+            start.1 + (end.1 - start.1) * t,
+        )
+    } else {
+        positions.get(&pawn.node_id).copied().unwrap_or((100.0, 100.0))
+    }
+}
+
+/// Best-effort extraction of a facility/node id from an incident location.
+///
+/// Incident locations are free-form (e.g. `"facility 3"`), so this returns
+/// `None` rather than guessing when no id can be parsed.
+#[must_use]
+pub fn incident_node(location: &str) -> Option<u64> {
+    let lower = location.to_ascii_lowercase();
+    for marker in ["facility", "node", "wing", "#"] {
+        if let Some(idx) = lower.find(marker) {
+            let tail = &location[idx + marker.len()..];
+            let digits: String = tail.trim_start().chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(id) = digits.parse::<u64>() {
+                return Some(id);
+            }
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -481,7 +721,7 @@ pub fn name_map(world: &World) -> HashMap<PrisonerId, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alc_core::TimeSpeed;
+    use alc_core::{SimTime, TimeSpeed};
     use alc_world::Policies;
 
     fn sim(seed: u64) -> sumo::Sim {
@@ -501,7 +741,9 @@ mod tests {
             WorldEvent::new(6, SimTime::EPOCH, EventKind::EscapeSucceeded, "e"),
             WorldEvent::new(7, SimTime::EPOCH, EventKind::ContrabandFound, "c"),
             WorldEvent::new(8, SimTime::EPOCH, EventKind::StaffMisconduct, "m"),
-            WorldEvent::new(9, SimTime::EPOCH, EventKind::PolicyChange, "p"),
+            WorldEvent::new(9, SimTime::EPOCH, EventKind::Investigation, "i"),
+            WorldEvent::new(10, SimTime::EPOCH, EventKind::Rumor, "r"),
+            WorldEvent::new(11, SimTime::EPOCH, EventKind::FamilyCorrespondence, "fc"),
         ];
         let rows = incident_report_rows(&events);
         let count_of = |kind: IncidentKind| rows.iter().find(|r| r.kind == kind).map(|r| r.count);
@@ -517,7 +759,7 @@ mod tests {
         // Most frequent first: Fights (2) leads.
         assert_eq!(rows[0].kind, IncidentKind::Fight);
         assert_eq!(rows[0].count, 2);
-        assert!(rows.last().unwrap().kind == IncidentKind::Other);
+        assert_eq!(count_of(IncidentKind::Other), Some(2));
     }
 
     #[test]
@@ -534,12 +776,12 @@ mod tests {
         live_feed_append(&mut feed, &[], LIVE_FEED_CAP);
         assert_eq!(feed.len(), 2);
 
-        // Cap: append 2 then 1 with cap 3 — the oldest is evicted.
+        // Cap: append 2 then 1 with cap 2 — the oldest is evicted.
         let mut feed2 = VecDeque::new();
-        live_feed_append(&mut feed2, &events, 3);
+        live_feed_append(&mut feed2, &events, 2);
         let third = WorldEvent::new(3, SimTime::EPOCH, EventKind::Threat, "t");
-        live_feed_append(&mut feed2, std::slice::from_ref(&third), 3);
-        assert_eq!(feed2.len(), 3);
+        live_feed_append(&mut feed2, std::slice::from_ref(&third), 2);
+        assert_eq!(feed2.len(), 2);
         assert_eq!(feed2.front().map(|e| e.id), Some(2));
         assert_eq!(feed2.back().map(|e| e.id), Some(3));
     }
@@ -595,7 +837,7 @@ mod tests {
         let rows = daily_schedule_rows(world);
         assert_eq!(rows.len(), world.prisoners.len());
         assert!(!rows.is_empty());
-        let minute = world.time.minute_of_day();
+        let minute = world.time.minute_of_day() as u16;
         for row in &rows {
             assert!(!row.name.is_empty());
             assert!(!row.resolved.is_empty(), "empty schedule for {}", row.name);
@@ -686,5 +928,84 @@ mod tests {
         assert_eq!(short_class(Classification::Maximum), "MAX");
         assert_eq!(short_truncate("abcdef", 3), "ab…");
         assert_eq!(pct(0.5), "50.0%");
+    }
+
+    #[test]
+    fn map_projection_round_trips() {
+        let zoom = 1.35;
+        let pan = egui::vec2(42.0, -17.0);
+        let world = (123.5, 88.25);
+        let screen = world_to_screen(world, zoom, pan);
+        let back = screen_to_world(screen, zoom, pan);
+        assert!((back.0 - world.0).abs() < 1e-4);
+        assert!((back.1 - world.1).abs() < 1e-4);
+    }
+
+    #[test]
+    fn zoom_at_keeps_the_anchor_world_point_fixed() {
+        let anchor = egui::pos2(320.0, 240.0);
+        let zoom = 1.0;
+        let pan = egui::vec2(0.0, 0.0);
+        let before = screen_to_world(anchor, zoom, pan);
+        let (new_zoom, new_pan) = zoom_at(anchor, zoom, pan, 1.5, 0.25, 4.0);
+        let after = screen_to_world(anchor, new_zoom, new_pan);
+        assert!((new_zoom - 1.5).abs() < 1e-6);
+        assert!((after.0 - before.0).abs() < 1e-4);
+        assert!((after.1 - before.1).abs() < 1e-4);
+        // Clamping must still keep the anchor fixed.
+        let (clamped, _) = zoom_at(anchor, 0.3, pan, 0.1, 0.25, 4.0);
+        assert!((clamped - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn pawn_position_interpolates_along_a_nav_edge() {
+        let mut positions = HashMap::new();
+        positions.insert(1, (100.0, 100.0));
+        positions.insert(2, (300.0, 100.0));
+        let pawn = PawnPosition {
+            id: 9,
+            name: "P".into(),
+            is_prisoner: true,
+            node_id: 1,
+            edge_progress: Some(0.25),
+            target_node: Some(2),
+            activity: "walking".into(),
+            x: 100.0,
+            y: 100.0,
+            gang: None,
+            classification: None,
+            mood: None,
+            intention: None,
+            threat: None,
+            post: None,
+        };
+        assert_eq!(pawn_world_pos(&pawn, &positions), (150.0, 100.0));
+        let mut stationary = pawn.clone();
+        stationary.edge_progress = None;
+        stationary.target_node = None;
+        assert_eq!(pawn_world_pos(&stationary, &positions), (100.0, 100.0));
+    }
+
+    #[test]
+    fn incident_node_parses_known_location_formats() {
+        assert_eq!(incident_node("facility 3"), Some(3));
+        assert_eq!(incident_node("Node 12"), Some(12));
+        assert_eq!(incident_node("yard #7"), Some(7));
+        assert_eq!(incident_node("somewhere near the kitchen"), None);
+    }
+
+    #[test]
+    fn capture_builds_a_complete_read_only_snapshot() {
+        let s = sim(0x51DE);
+        let id = s.world().prisoners[0].id;
+        let snap = capture(&s, Some(id));
+        assert_eq!(snap.prisoners.len(), s.world().prisoners.len());
+        assert_eq!(snap.guards.len(), s.world().guards.len());
+        assert_eq!(snap.facilities.len(), s.world().facilities.len());
+        assert_eq!(snap.map.facility_positions.len(), snap.facilities.len());
+        assert!(snap.facilities.iter().all(|f| f.utilisation() <= 1.0));
+        assert!(snap.selected_agent.is_some());
+        assert!(snap.selected_schedule.is_some());
+        assert!(snap.violations.is_empty(), "engine invariants: {:?}", snap.violations);
     }
 }
