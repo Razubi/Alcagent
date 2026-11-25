@@ -63,4 +63,5 @@
 - Added `crates/sumo/tests/alcagent_006_controls.rs` (5/5) plus TUI/GUI control tests; made the pre-existing review-agent wall-clock budget machine-robust (generous 300s bound, stall detection preserved) because shared-host contention made the old 30s threshold fail even on clean HEAD.
 - Validation: `cargo build --workspace --all-targets` clean; every workspace suite observed green (chaos soak 5/5, review_agent 7/7, spec 006 smoke 5/5); GUI launched via game-development skill with the overview frame rendered and 0 errors.
 - Spec `dev/ralph/specs/006-policy-construction-parole.md`: Status set to `done`.
+- Commit: 60eedd1 (`feat(controls): validate and audit policy, construction and parole (spec 006)`).
 - Main session completed spec 007 (emergent events): deterministic condition-driven generators in alc-events, bounded world effects in alc-world::emergent, day-boundary hook, SUMO incident mirroring, and sumo/emergent_events integration tests (determinism, daily cap, incident visibility). Targeted suites passed; spec marked done.
