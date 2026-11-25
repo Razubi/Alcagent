@@ -6,7 +6,7 @@
 use alc_agents::{Decision, DecisionAction};
 use alc_core::{PrisonerId, SimTime};
 use alc_events::{EventKind, WorldEvent};
-use sumo::incidents::{Incident, IncidentDisposition};
+use sumo::incidents::{CausalLink, Incident, IncidentDisposition, Responder, ResponseAction, ResponseActionKind};
 use sumo::parole::ParoleStatus;
 use sumo::state_digest::compute_full_state_digest;
 use sumo::{PolicyMode, Sim};
@@ -34,14 +34,24 @@ fn sidecar_incident(pid: PrisonerId) -> Incident {
         kind: EventKind::Fight,
         cause: Some(3),
         consequence: Some(9),
-        causal_chain: Vec::new(),
+        causal_chain: vec![CausalLink {
+            source_id: 3,
+            is_incident: true,
+            description: "prior argument escalated".to_string(),
+        }],
         timestamp: SimTime::from_secs(1234),
         location: "Yard A".to_string(),
         involved_prisoners: vec![pid],
-        witnesses: Vec::new(),
+        witnesses: vec![pid],
         severity: 0.5,
-        disposition: IncidentDisposition::None,
-        response_actions: Vec::new(),
+        disposition: IncidentDisposition::Investigated,
+        response_actions: vec![ResponseAction {
+            action: ResponseActionKind::GuardIntervention,
+            responder: Responder::Guard(9),
+            at: SimTime::from_secs(1300),
+            description: "guards separated the prisoners".to_string(),
+            success: true,
+        }],
         resolved: true,
     }
 }
@@ -71,6 +81,10 @@ fn engine_state_roundtrip_preserves_all_subfields() {
 
     sim.set_post_release(PrisonerId(42), true);
     sim.set_post_release(PrisonerId(43), false);
+
+    // Contraband resolution timestamps were engine-only before the v4 fix.
+    sim.engine_state.resolved_contraband_cases.insert(77);
+    sim.engine_state.resolved_contraband_at.insert(77, SimTime::from_secs(3600));
 
     sim.policy_state_mut().lockdown = true;
     sim.policy_state_mut().security_level = 3;
@@ -106,6 +120,11 @@ fn engine_state_roundtrip_preserves_all_subfields() {
     assert_eq!(inc.kind, expected.kind);
     assert_eq!(inc.timestamp, expected.timestamp);
     assert_eq!(inc.involved_prisoners, expected.involved_prisoners);
+    // Structured fields that used to be engine-only (P1 persistence fix).
+    assert_eq!(inc.causal_chain, expected.causal_chain, "causal chain must round-trip");
+    assert_eq!(inc.witnesses, expected.witnesses, "witnesses must round-trip");
+    assert_eq!(inc.disposition, expected.disposition, "disposition must round-trip");
+    assert_eq!(inc.response_actions, expected.response_actions, "response actions must round-trip");
 
     // Decision log.
     assert_eq!(loaded.decision_log().len(), 2);
@@ -114,6 +133,10 @@ fn engine_state_roundtrip_preserves_all_subfields() {
     // Post-release.
     assert_eq!(loaded.post_release().get(&PrisonerId(42)), Some(&true));
     assert_eq!(loaded.post_release().get(&PrisonerId(43)), Some(&false));
+
+    // Contraband resolutions and their timestamps (v4 persistence fix).
+    assert!(loaded.resolved_contraband_cases().contains(&77));
+    assert_eq!(loaded.resolved_contraband_at().get(&77), Some(&SimTime::from_secs(3600)));
 
     // Policy + mode.
     assert!(loaded.policy_state().lockdown);

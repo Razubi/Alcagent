@@ -245,6 +245,71 @@ pub fn draw(frame: &mut Frame, data: &ViewData, ui: &UiState, status: &AppStatus
     }
 
     render_status(frame, chunks[2], data, ui, status);
+
+    if ui.show_help {
+        render_help_overlay(frame, frame.area());
+    }
+}
+
+fn render_help_overlay(frame: &mut Frame, area: Rect) {
+    let help_text = vec![
+        Line::from(Span::styled("=== KEYBINDINGS ===", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))),
+        Line::from(""),
+        Line::from(Span::styled("Navigation", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+        Line::from("  1-9,0,A     Switch views (1=Overview 2=Prisoner 3=Gang 4=Staff 5=Warden 6=Financial 7=Timeline 8=Network 9=Map 0=Incidents A=Decisions)"),
+        Line::from("  j/k,arrows  Scroll lists"),
+        Line::from("  q/Esc/Ctrl-C Quit"),
+        Line::from(""),
+        Line::from(Span::styled("Simulation", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+        Line::from("  SPACE       Pause/resume"),
+        Line::from("  +/-         Speed up/down"),
+        Line::from("  S           Save"),
+        Line::from("  Ctrl-L      Quick load"),
+        Line::from(""),
+        Line::from(Span::styled("Policy Controls", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+        Line::from("  N/E/K       Policy mode cycle"),
+        Line::from("  L/U/x       Lockdown"),
+        Line::from("  p           Policy mode"),
+        Line::from("  [/] ,/. ;/' Policy sliders"),
+        Line::from("  b           Toggle intake pause"),
+        Line::from(""),
+        Line::from(Span::styled("Rehab (Prisoner/Warden views)", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+        Line::from("  t/T         Cycle rehab program"),
+        Line::from("  r           Enroll in selected program"),
+        Line::from("  R           Drop from program"),
+        Line::from(""),
+        Line::from(Span::styled("Incidents (Incident view)", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+        Line::from("  f           Cycle contraband case"),
+        Line::from("  F           Resolve selected case"),
+        Line::from("  m/M         Cycle incident severity filter"),
+        Line::from("  o/O         Cycle incident resolved filter"),
+        Line::from(""),
+        Line::from(Span::styled("Decisions (Decision view)", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+        Line::from("  d/D         Cycle decision validation filter"),
+        Line::from(""),
+        Line::from(Span::styled("Press ? or h to close this help.", Style::default().fg(Color::DarkGray))),
+    ];
+    let block = Block::default()
+        .title(" Help ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    let paragraph = Paragraph::new(help_text).block(block).wrap(Wrap { trim: false });
+    let area = centered_rect(80, 80, area);
+    frame.render_widget(Clear, area);
+    frame.render_widget(paragraph, area);
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::vertical([
+        Constraint::Percentage((100 - percent_y) / 2),
+        Constraint::Percentage(percent_y),
+        Constraint::Percentage((100 - percent_y) / 2),
+    ]).split(r);
+    Layout::horizontal([
+        Constraint::Percentage((100 - percent_x) / 2),
+        Constraint::Percentage(percent_x),
+        Constraint::Percentage((100 - percent_x) / 2),
+    ]).split(popup_layout[1])[1]
 }
 
 fn render_tabbar(frame: &mut Frame, area: Rect, active: ViewMode) {

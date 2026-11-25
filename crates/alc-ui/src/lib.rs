@@ -48,6 +48,8 @@ pub struct UiState {
     pub incident_filter: sumo::incidents::IncidentFilter,
     /// Optional decision validation filter: "accepted", "repaired", "rejected", or None.
     pub decision_validation_filter: Option<String>,
+    /// Show the help overlay with all keybindings.
+    pub show_help: bool,
     pub scroll: u16,
 }
 
@@ -66,6 +68,7 @@ impl UiState {
             search: String::new(),
             incident_filter: sumo::incidents::IncidentFilter::all(),
             decision_validation_filter: None,
+            show_help: false,
             scroll: 0,
         }
     }

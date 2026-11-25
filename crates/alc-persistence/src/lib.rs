@@ -34,7 +34,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const SAVE_FORMAT_VERSION: u32 = 3; // 0.05: world construction queue + policy/intake additions
+pub const SAVE_FORMAT_VERSION: u32 = 4; // 0.05: structured incident fields + contraband resolution timestamps
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SaveHeader {
@@ -92,6 +92,10 @@ pub struct EngineState {
     /// Last autosave day (sim days). `#[serde(default)]` for older saves.
     #[serde(default)]
     pub last_autosave_day: Option<u64>,
+    /// Contraband case IDs resolved by observer/control with their sim times.
+    /// Engine-only state in older saves; persisted since format v4.
+    #[serde(default)]
+    pub resolved_contraband_at: BTreeMap<u64, SimTime>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -172,10 +176,54 @@ pub struct Incident {
     pub location: String,
     pub involved_prisoners: Vec<u64>,
     pub involved_guards: Vec<u64>,
+    /// Full causal chain leading to this incident (sumo::incidents::CausalLink).
+    #[serde(default)]
+    pub causal_chain: Vec<PersistedCausalLink>,
+    /// Witnesses to this incident (prisoner ids).
+    #[serde(default)]
+    pub witnesses: Vec<u64>,
+    /// Disposition after investigation/response.
+    #[serde(default)]
+    pub disposition: PersistedIncidentDisposition,
+    /// Response actions taken in reaction to this incident.
+    #[serde(default)]
+    pub response_actions: Vec<PersistedResponseAction>,
     /// Whether the incident has been resolved. Defaults to false for legacy
     /// saves.
     #[serde(default)]
     pub resolved: bool,
+}
+
+/// Persistence mirror of `sumo::incidents::CausalLink`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct PersistedCausalLink {
+    pub source_id: u64,
+    pub is_incident: bool,
+    pub description: String,
+}
+
+/// Persistence mirror of `sumo::incidents::IncidentDisposition`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum PersistedIncidentDisposition {
+    #[default]
+    None,
+    Investigated,
+    Disciplinary,
+    Medical,
+    Resolved,
+}
+
+/// Persistence mirror of `sumo::incidents::ResponseAction`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct PersistedResponseAction {
+    pub action: String,
+    pub responder: u64,
+    pub responder_kind: String,
+    pub at: SimTime,
+    pub description: String,
+    pub success: bool,
 }
 
 impl Default for Incident {
@@ -190,6 +238,10 @@ impl Default for Incident {
             location: String::new(),
             involved_prisoners: Vec::new(),
             involved_guards: Vec::new(),
+            causal_chain: Vec::new(),
+            witnesses: Vec::new(),
+            disposition: PersistedIncidentDisposition::None,
+            response_actions: Vec::new(),
             resolved: false,
         }
     }
@@ -573,6 +625,10 @@ mod tests {
             location: "Yard A".into(),
             involved_prisoners: vec![1, 2],
             involved_guards: vec![],
+            causal_chain: Vec::new(),
+            witnesses: Vec::new(),
+            disposition: PersistedIncidentDisposition::default(),
+            response_actions: Vec::new(),
             resolved: true,
         };
         let bytes = bincode::serialize(&inc).unwrap();
@@ -648,6 +704,10 @@ mod tests {
             location: "Yard".into(),
             involved_prisoners: vec![1, 2],
             involved_guards: vec![],
+            causal_chain: Vec::new(),
+            witnesses: Vec::new(),
+            disposition: PersistedIncidentDisposition::default(),
+            response_actions: Vec::new(),
             resolved: false,
         });
         state.post_release.insert(3, true);

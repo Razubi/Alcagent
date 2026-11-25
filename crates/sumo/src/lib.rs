@@ -286,11 +286,26 @@ impl EngineState {
                     severity: inc.severity,
                     cause: inc.cause,
                     consequence: inc.consequence,
+                    causal_chain: inc.causal_chain.iter().map(|link| alc_persistence::PersistedCausalLink {
+                        source_id: link.source_id,
+                        is_incident: link.is_incident,
+                        description: link.description.clone(),
+                    }).collect(),
                     timestamp: inc.timestamp,
                     location: inc.location.clone(),
-                    resolved: inc.resolved,
                     involved_prisoners: inc.involved_prisoners.iter().map(|p| p.raw()).collect(),
                     involved_guards: Vec::new(), // sumo's Incident doesn't track guards
+                    witnesses: inc.witnesses.iter().map(|p| p.raw()).collect(),
+                    disposition: incident_disposition_to_persist(inc.disposition),
+                    response_actions: inc.response_actions.iter().map(|a| alc_persistence::PersistedResponseAction {
+                        action: format!("{:?}", a.action),
+                        responder: match a.responder { incidents::Responder::Guard(id) => id, _ => 0 },
+                        responder_kind: responder_kind(&a.responder).to_string(),
+                        at: a.at,
+                        description: a.description.clone(),
+                        success: a.success,
+                    }).collect(),
+                    resolved: inc.resolved,
                 }
             }).collect(),
             decision_log: self.decision_log.clone(),
@@ -307,6 +322,7 @@ impl EngineState {
                 outcome: r.outcome,
             }).collect(),
             resolved_contraband_cases: self.resolved_contraband_cases.iter().copied().collect(),
+            resolved_contraband_at: self.resolved_contraband_at.clone(),
             post_release: self.post_release.iter().map(|(k, v)| (k.raw(), *v)).collect(),
             autosave_interval_days: self.autosave.as_ref().map(|a| a.interval_days),
             last_autosave_day: self.autosave.as_ref().map(|a| a.last_save_day()),
@@ -342,14 +358,24 @@ impl EngineState {
                     kind: inc.kind,
                     cause: inc.cause,
                     consequence: inc.consequence,
-                    causal_chain: Vec::new(),
+                    causal_chain: inc.causal_chain.into_iter().map(|link| incidents::CausalLink {
+                        source_id: link.source_id,
+                        is_incident: link.is_incident,
+                        description: link.description,
+                    }).collect(),
                     timestamp: inc.timestamp,
                     location: inc.location,
                     involved_prisoners: inc.involved_prisoners.into_iter().map(PrisonerId).collect(),
-                    witnesses: Vec::new(),
+                    witnesses: inc.witnesses.into_iter().map(PrisonerId).collect(),
                     severity: inc.severity,
-                    disposition: incidents::IncidentDisposition::None,
-                    response_actions: Vec::new(),
+                    disposition: incident_disposition_from_persist(inc.disposition),
+                    response_actions: inc.response_actions.into_iter().map(|a| incidents::ResponseAction {
+                        action: response_action_kind_from_persist(&a.action),
+                        responder: responder_from_persist(&a),
+                        at: a.at,
+                        description: a.description,
+                        success: a.success,
+                    }).collect(),
                     resolved: inc.resolved,
                 }
             }).collect(),
@@ -367,7 +393,7 @@ impl EngineState {
                 outcome: r.outcome,
             }).collect(),
             resolved_contraband_cases: persist.resolved_contraband_cases.into_iter().collect(),
-            resolved_contraband_at: std::collections::BTreeMap::new(), // engine-only, not persisted
+            resolved_contraband_at: persist.resolved_contraband_at.clone(),
             post_release: persist.post_release.into_iter().map(|(k, v)| (PrisonerId(k), v)).collect(),
             policy_state: PolicyState {
                 policy: policy_from_persist(persist.policy_state.policy),
@@ -377,6 +403,72 @@ impl EngineState {
             },
             policy_mode: policy_mode_from_persist(persist.policy_mode),
         }
+    }
+}
+
+/// Helper to convert an incident disposition to its persistence mirror.
+fn incident_disposition_to_persist(d: incidents::IncidentDisposition) -> alc_persistence::PersistedIncidentDisposition {
+    match d {
+        incidents::IncidentDisposition::None => alc_persistence::PersistedIncidentDisposition::None,
+        incidents::IncidentDisposition::Investigated => alc_persistence::PersistedIncidentDisposition::Investigated,
+        incidents::IncidentDisposition::Disciplinary => alc_persistence::PersistedIncidentDisposition::Disciplinary,
+        incidents::IncidentDisposition::Medical => alc_persistence::PersistedIncidentDisposition::Medical,
+        incidents::IncidentDisposition::Resolved => alc_persistence::PersistedIncidentDisposition::Resolved,
+    }
+}
+
+/// Helper to convert a persisted incident disposition back to the engine type.
+fn incident_disposition_from_persist(d: alc_persistence::PersistedIncidentDisposition) -> incidents::IncidentDisposition {
+    match d {
+        alc_persistence::PersistedIncidentDisposition::None => incidents::IncidentDisposition::None,
+        alc_persistence::PersistedIncidentDisposition::Investigated => incidents::IncidentDisposition::Investigated,
+        alc_persistence::PersistedIncidentDisposition::Disciplinary => incidents::IncidentDisposition::Disciplinary,
+        alc_persistence::PersistedIncidentDisposition::Medical => incidents::IncidentDisposition::Medical,
+        alc_persistence::PersistedIncidentDisposition::Resolved => incidents::IncidentDisposition::Resolved,
+    }
+}
+
+/// Stable label for a responder kind used in the persistence mirror.
+fn responder_kind(r: &incidents::Responder) -> &'static str {
+    match r {
+        incidents::Responder::Guard(_) => "Guard",
+        incidents::Responder::Warden => "Warden",
+        incidents::Responder::System => "System",
+        incidents::Responder::MedicalStaff => "MedicalStaff",
+        incidents::Responder::AdminStaff => "AdminStaff",
+    }
+}
+
+/// Parse a persisted response-action kind back to the engine enum, falling back
+/// to a safe default for unknown strings from future versions.
+fn response_action_kind_from_persist(s: &str) -> incidents::ResponseActionKind {
+    use incidents::ResponseActionKind::*;
+    match s {
+        "GuardIntervention" => GuardIntervention,
+        "MedicalResponse" => MedicalResponse,
+        "DisciplinaryHearing" => DisciplinaryHearing,
+        "Segregation" => Segregation,
+        "PrivilegeRevocation" => PrivilegeRevocation,
+        "InvestigationOpened" => InvestigationOpened,
+        "Lockdown" => Lockdown,
+        "Transfer" => Transfer,
+        "CounselingReferral" => CounselingReferral,
+        "ContrabandSearch" => ContrabandSearch,
+        "VerbalWarning" => VerbalWarning,
+        "WrittenWarning" => WrittenWarning,
+        _ => VerbalWarning,
+    }
+}
+
+/// Parse a persisted responder back to the engine enum.
+fn responder_from_persist(p: &alc_persistence::PersistedResponseAction) -> incidents::Responder {
+    match p.responder_kind.as_str() {
+        "Guard" => incidents::Responder::Guard(p.responder),
+        "Warden" => incidents::Responder::Warden,
+        "System" => incidents::Responder::System,
+        "MedicalStaff" => incidents::Responder::MedicalStaff,
+        "AdminStaff" => incidents::Responder::AdminStaff,
+        _ => incidents::Responder::System,
     }
 }
 

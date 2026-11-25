@@ -599,6 +599,9 @@ impl App {
                 self.driver.set_intake_paused(next);
                 self.notify(format!("Intake {}", if next { "paused" } else { "resumed" }));
             }
+            KeyCode::Char('?') => {
+                self.ui.show_help = !self.ui.show_help;
+            }
             KeyCode::Char(c @ '1'..='9') => {
                 if let Some(mode) = views::mode_from_index((c as u8 - b'1') as usize) {
                     self.ui.mode = mode;
