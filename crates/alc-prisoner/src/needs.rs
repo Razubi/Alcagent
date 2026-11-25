@@ -316,22 +316,26 @@ impl Needs {
             1.0 + (1.0 - stability_trait) * 0.5,
             0.30,
         );
+        // Every field below is stepped with its *own* tag so activity,
+        // environment and relief effects actually reach that need (previously
+        // they inherited Companionship/Safety, so lockdown, staffing, work and
+        // visitor effects were silently dropped for these fields).
         step(
-            NeedTag::Companionship,
+            NeedTag::Freedom,
             &mut self.freedom,
             0.010,
             1.0 + ambition * 0.5,
             0.10,
         );
         step(
-            NeedTag::Companionship,
+            NeedTag::Autonomy,
             &mut self.autonomy,
             0.008,
             1.0 + ambition * 0.5,
             0.15,
         );
         step(
-            NeedTag::Companionship,
+            NeedTag::Purpose,
             &mut self.purpose,
             0.012,
             (1.0 - discipline * 0.3).max(0.2),
@@ -344,22 +348,16 @@ impl Needs {
             (1.0 + intelligence * 0.5 - discipline * 0.5).max(0.2),
             0.40,
         );
+        step(NeedTag::Stability, &mut self.stability, 0.006, 1.0, 0.20);
         step(
-            NeedTag::Companionship,
-            &mut self.stability,
-            0.006,
-            1.0,
-            0.20,
-        );
-        step(
-            NeedTag::Companionship,
+            NeedTag::Privacy,
             &mut self.privacy,
             0.010,
             1.0 + (1.0 - sociability) * 0.5,
             0.25,
         );
         step(
-            NeedTag::Companionship,
+            NeedTag::Belonging,
             &mut self.belonging,
             0.010,
             1.0 + sociability * 0.5,
@@ -368,42 +366,42 @@ impl Needs {
 
         // -- Social ---------------------------------------------------------
         step(
-            NeedTag::Companionship,
+            NeedTag::Friendship,
             &mut self.friendship,
             0.010,
             1.0 + sociability * 0.5,
             0.30,
         );
         step(
-            NeedTag::Companionship,
+            NeedTag::FamilyContact,
             &mut self.family_contact,
             0.012,
             1.0,
             0.35,
         );
         step(
-            NeedTag::Safety,
+            NeedTag::GroupAcceptance,
             &mut self.group_acceptance,
             0.008,
             1.0 + sociability * 0.3,
             0.30,
         );
         step(
-            NeedTag::Companionship,
+            NeedTag::Status,
             &mut self.status,
             0.008,
             1.0 + ambition,
             0.25,
         );
         step(
-            NeedTag::Safety,
+            NeedTag::Protection,
             &mut self.protection,
             0.008,
             1.0 + (1.0 - stability_trait),
             0.30,
         );
         step(
-            NeedTag::Companionship,
+            NeedTag::Recognition,
             &mut self.recognition,
             0.010,
             1.0 + ambition,
@@ -1077,6 +1075,107 @@ mod tests {
         assert!(a.bathroom < b.bathroom);
         // Heat genuinely raises temperature pressure (environment term now lands).
         assert!(b.temperature_comfort > c.temperature_comfort);
+    }
+
+    /// Field backing each drift tag that previously inherited the wrong tag.
+    fn field_for(n: &Needs, tag: NeedTag) -> f32 {
+        match tag {
+            NeedTag::Freedom => n.freedom,
+            NeedTag::Autonomy => n.autonomy,
+            NeedTag::Purpose => n.purpose,
+            NeedTag::Stability => n.stability,
+            NeedTag::Privacy => n.privacy,
+            NeedTag::Belonging => n.belonging,
+            NeedTag::Friendship => n.friendship,
+            NeedTag::FamilyContact => n.family_contact,
+            NeedTag::GroupAcceptance => n.group_acceptance,
+            NeedTag::Status => n.status,
+            NeedTag::Protection => n.protection,
+            NeedTag::Recognition => n.recognition,
+            NeedTag::Stimulation => n.stimulation,
+            _ => panic!("unexpected tag in field_for"),
+        }
+    }
+
+    #[test]
+    fn drift_routes_environment_and_relief_through_each_own_tag() {
+        let mut baseline = Needs::new();
+        baseline.drift_with(60, &NeedDriftContext::default());
+
+        // Lockdown must reach Freedom/Autonomy/Privacy (and Stimulation), not
+        // just the Companionship/Safety fields that used to receive the tag.
+        let mut locked = Needs::new();
+        locked.drift_with(
+            60,
+            &NeedDriftContext {
+                lockdown: true,
+                ..NeedDriftContext::default()
+            },
+        );
+        for tag in [
+            NeedTag::Freedom,
+            NeedTag::Autonomy,
+            NeedTag::Privacy,
+            NeedTag::Stimulation,
+        ] {
+            assert!(
+                field_for(&locked, tag) > field_for(&baseline, tag),
+                "lockdown must raise {tag:?} through its own tag"
+            );
+        }
+        assert!(
+            (locked.companionship - baseline.companionship).abs() < f32::EPSILON,
+            "unrelated Companionship must not move on lockdown"
+        );
+
+        // Low staff coverage must raise Protection as well as Safety.
+        let mut understaffed = Needs::new();
+        understaffed.drift_with(
+            60,
+            &NeedDriftContext {
+                staff_coverage: 0.0,
+                ..NeedDriftContext::default()
+            },
+        );
+        assert!(understaffed.safety > baseline.safety);
+        assert!(
+            understaffed.protection > baseline.protection,
+            "low staffing must raise Protection through NeedTag::Protection"
+        );
+
+        // Relief for a specific tag now reduces that field and nothing else.
+        for tag in [
+            NeedTag::Freedom,
+            NeedTag::Autonomy,
+            NeedTag::Purpose,
+            NeedTag::Stability,
+            NeedTag::Privacy,
+            NeedTag::Belonging,
+            NeedTag::Friendship,
+            NeedTag::FamilyContact,
+            NeedTag::GroupAcceptance,
+            NeedTag::Status,
+            NeedTag::Protection,
+            NeedTag::Recognition,
+        ] {
+            let relief = [tag];
+            let mut relieved = Needs::new();
+            relieved.drift_with(
+                60,
+                &NeedDriftContext {
+                    relief: &relief,
+                    ..NeedDriftContext::default()
+                },
+            );
+            assert!(
+                field_for(&relieved, tag) < field_for(&baseline, tag),
+                "{tag:?} relief must lower its own field"
+            );
+            assert!(
+                (relieved.safety - baseline.safety).abs() < f32::EPSILON,
+                "{tag:?} relief must not move Safety"
+            );
+        }
     }
 
     #[test]

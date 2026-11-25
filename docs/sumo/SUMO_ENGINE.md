@@ -137,9 +137,9 @@ mode which runs both, applies only the baseline and logs divergence for A/B eval
 
 The `gui` feature currently compiles a stub (`SumoApp` unit struct, `launch_gui()` returning
 `Ok(())`); egui/eframe dependencies were removed from the standalone manifest. The planned GUI
-is an editor/inspector over the public API — see [`SUMO_ENGINE_ROADMAP.md`](SUMO_ENGINE_ROADMAP.md)
-and the deep research report in the parent repo. The shipped observer today is the parent's
-`alc-ui` ratatui TUI.
+is an editor/inspector over the public API — see [`SUMO_ROADMAP.md`](SUMO_ROADMAP.md)
+and the deep research report in this docs tree. The shipped observer today is the parent's
+`alc-ui` ratatui TUI alongside the buildable `alc-gui` egui observer.
 
 ---
 
@@ -179,6 +179,6 @@ editor. These are the subject of the deep research report; nothing is implemente
 |---|---|
 | [`SUMO_API.md`](SUMO_API.md) | Exact API reference with examples and gotchas |
 | [`SUMO_ENGINE.md`](SUMO_ENGINE.md) | This document: product and system design |
-| [`Design/Engine/`](Design/Engine/) | Engine design rationale |
-| [`Systems/`](Systems/) | Event contract, guard loop, warden cycle, determinism, etc. |
+| [`../alcagent/Design/Core/`](../alcagent/Design/Core/) | Game/domain design rationale |
+| [`../alcagent/Systems/`](../alcagent/Systems/) | Event contract, guard loop, warden cycle, determinism, etc. |
 | [`agents.md`](../../agents.md) | Master development directive |

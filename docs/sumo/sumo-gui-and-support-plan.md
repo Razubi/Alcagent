@@ -1,5 +1,10 @@
 # sumo GUI & Long-Term Support Plan
 
+> **Historical planning snapshot:** the `sumo` `gui` feature is still a stub, while the shipped
+> observers are `alc-ui` (ratatui) and the buildable `alc-gui` (egui). This annex is retained as
+> forward-looking intent; current status is in
+> [`../alcagent/Project/PROJECT.md`](../alcagent/Project/PROJECT.md).
+
 **Status:** planning input for the v0.5 world/gameplay plan · **Date:** 2026-11-24
 **Owner's directive:** sumo must keep evolving to support future needs and capabilities while
 Alcagent grows in gameplay/features. Specifically: **address sumo's GUI concerns**.

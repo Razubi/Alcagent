@@ -57,6 +57,25 @@ impl RenderCtx<'_> {
     }
 }
 
+/// Search widget shared by views that filter the global observer query.
+///
+/// Rendering the field before returning the lowercased query avoids the
+/// one-frame lag that happens when the query is captured before `TextEdit`
+/// mutates `ctx.state.search`.
+pub fn search_field(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>, hint: &str) -> String {
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::TextEdit::singleline(&mut ctx.state.search)
+                .desired_width(180.0)
+                .hint_text(hint),
+        );
+        if !ctx.state.search.is_empty() && ui.small_button("Clear").clicked() {
+            ctx.state.search.clear();
+        }
+    });
+    ctx.state.search.to_lowercase()
+}
+
 /// A titled, lightly framed group. Keeps all views visually consistent.
 pub fn section(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
     ui.vertical(|ui| {
@@ -138,7 +157,6 @@ pub fn toolbar(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                 ctx.emit(Command::OneDay);
             }
             ui.separator();
-            ui.label("Save/Load:");
             ui.add(
                 egui::TextEdit::singleline(&mut ctx.state.save_input)
                     .desired_width(170.0)
@@ -147,8 +165,14 @@ pub fn toolbar(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
             if ui.button("Save").clicked() {
                 ctx.emit(Command::Save(ctx.state.save_input.clone()));
             }
+            ui.label("Load:");
+            ui.add(
+                egui::TextEdit::singleline(&mut ctx.state.load_input)
+                    .desired_width(170.0)
+                    .hint_text("load directory"),
+            );
             if ui.button("Load").clicked() {
-                ctx.emit(Command::Load(ctx.state.save_input.clone()));
+                ctx.emit(Command::Load(ctx.state.load_input.clone()));
             }
             ui.separator();
             ui.label("Autosave days:");

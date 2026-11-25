@@ -57,7 +57,7 @@ pub enum ViewMode {
 
 /// Construction projects offered by the observer's build controls (mirrors
 /// `alc_ui::CONSTRUCTION_KINDS`).
-pub const CONSTRUCTION_KINDS: [alc_world::FacilityKind; 7] = [
+pub const CONSTRUCTION_KINDS: [alc_world::FacilityKind; 12] = [
     alc_world::FacilityKind::CellBlock,
     alc_world::FacilityKind::Dormitory,
     alc_world::FacilityKind::Medical,
@@ -65,6 +65,13 @@ pub const CONSTRUCTION_KINDS: [alc_world::FacilityKind; 7] = [
     alc_world::FacilityKind::Isolation,
     alc_world::FacilityKind::Visitor,
     alc_world::FacilityKind::Workshop,
+    // Keep the original order stable; append the remaining facility kinds so
+    // existing observer selections/cycle expectations do not shift.
+    alc_world::FacilityKind::Kitchen,
+    alc_world::FacilityKind::Recreation,
+    alc_world::FacilityKind::Admin,
+    alc_world::FacilityKind::Staff,
+    alc_world::FacilityKind::Yard,
 ];
 
 pub use app::{App, launch};

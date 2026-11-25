@@ -33,8 +33,17 @@ cargo run -- run 365
 cargo run -- --help
 ```
 
-Running `cargo run -- run N` writes a save to `saves/default` by default. See
-[`docs/ALCAGENT.md`](docs/ALCAGENT.md) for the complete CLI/TUI reference.
+`--speed` accepts 1–4000 TUI ticks/second (default 60); values outside that range are rejected.
+Headless `run` ignores `--speed` and advances at extreme speed. Running `cargo run -- run N` writes
+a save to `saves/default` by default. See [`docs/alcagent/ALCAGENT.md`](docs/alcagent/ALCAGENT.md)
+for the complete CLI/TUI reference.
+
+Observer essentials: `1`–`9`/`0`/`A` switch views, `Space` pauses, `+`/`-` changes speed,
+arrows/`hjkl` move the cursor, `/` searches (`Ctrl-W` clears), `?` opens modal help (`Esc`/`?`
+closes), `S` saves, `Ctrl-L` loads, `Ctrl-R` resolves a critical incident, `q`/`Q`/`Esc`/`Ctrl-C`
+quit (`Esc` closes help/search first), `p`/`N`/`E`/`K` change policy mode/band, `b`/`B` toggles
+intake, `L`/`U` lock/unlock outside Warden, Warden `c`/`C`/`u`/`U`/`v`/`x`/`X`/`>` manage
+construction, and Prisoner `H`/`G`/`J`/`Y` drive parole hearings/grants/denials/releases.
 
 ---
 
@@ -46,7 +55,7 @@ Running `cargo run -- run N` writes a save to `saves/default` by default. See
   reproduces the same institution.
 - **Embed** the engine as the Rust crate `sumo` and drive it through a validated API —
   propose agent decisions, inspect read-only observations and map frames, manage
-  policy/parole/rehab, save/load and check invariants. See [`docs/SUMO_API.md`](docs/SUMO_API.md).
+  policy/parole/rehab, save/load and check invariants. See [`docs/sumo/SUMO_API.md`](docs/sumo/SUMO_API.md).
 - **Extend** the simulation through clearly separated crates (needs, social, economy,
   warden, guards, AI orchestration, persistence, UI).
 
@@ -57,7 +66,7 @@ Running `cargo run -- run N` writes a save to `saves/default` by default. See
 ```
 .
 ├── agents.md                  Master development directive
-├── Cargo.toml / Cargo.lock    Rust workspace (edition 2024, 14 member crates)
+├── Cargo.toml / Cargo.lock    Rust workspace (edition 2024, 15 member crates)
 ├── CHANGELOG.md               Version history
 ├── crates/
 │   ├── alc-core               Time, RNG, IDs, capabilities, config
@@ -74,22 +83,20 @@ Running `cargo run -- run N` writes a save to `saves/default` by default. See
 │   ├── alc-testing            Invariants and soak helpers
 │   ├── sumo                   THE ENGINE: public API over the alc-* stack
 │   ├── alcagent               Binary: run / observe / docs
-│   └── alc-gui                (experimental, NOT a workspace member, non-buildable)
-├── docs/                      User-facing docs (this file's directory)
-│   ├── SUMO_API.md            Complete sumo engine API guide
-│   ├── ALCAGENT.md            CLI + TUI user guide
-│   └── README.md              Documentation index
-└── docs/             Internal design, systems, reports, AI handoffs
-    └── README.md              Internal documentation index
+│   └── alc-gui                egui observer (buildable workspace member)
+├── docs/                      In-repo documentation (canonical)
+│   ├── README.md              Documentation index
+│   ├── sumo/                  Engine product/API/roadmap docs
+│   └── alcagent/              Gameplay, systems, project and communication docs
 ```
 
 `sumo` is the supported integration surface. Application code should go through `sumo::Sim`
 rather than mutating `alc_world::World` directly; agents propose decisions and the engine
 validates and applies them.
 
-The engine and its `alc-*` dependencies are also published as a standalone repository at
-`../sumo` (`docs/SUMO_API.md` is shared between both). This repository additionally owns the
-`alcagent` CLI, the `alc-ui` TUI and the `alc-gui` experiment.
+The `sumo` engine and its `alc-*` dependencies may also exist as an out-of-tree snapshot at
+`../sumo`, but the docs under this repository's `docs/` are canonical and are not synced with that
+snapshot. This repository owns the `alcagent` CLI, the `alc-ui` TUI and the `alc-gui` observer.
 
 ---
 
@@ -97,15 +104,17 @@ The engine and its `alc-*` dependencies are also published as a standalone repos
 
 | Audience | Document |
 |---|---|
-| New player / operator | [Gameplay & systems](docs/ALCAGENT_GAMEPLAY.md), [CLI & TUI reference](docs/ALCAGENT.md), [quick start](#quick-start) |
-| Rust developer embedding the engine | [sumo engine design](docs/SUMO_ENGINE.md), [sumo API guide](docs/SUMO_API.md) |
+| New player / operator | [Gameplay & systems](docs/alcagent/ALCAGENT_GAMEPLAY.md), [CLI & TUI reference](docs/alcagent/ALCAGENT.md), [quick start](#quick-start) |
+| Rust developer embedding the engine | [sumo engine design](docs/sumo/SUMO_ENGINE.md), [sumo API guide](docs/sumo/SUMO_API.md) |
 | Contributor | [CONTRIBUTING.md](CONTRIBUTING.md) |
-| Architect / reviewer | [Docs index](docs/README.md), [sumo engine research](docs/Reports/sumo-engine-research.md), [internal docs](docs/README.md), [project status](docs/Project/PROJECT.md) |
+| Architect / reviewer | [Docs index](docs/README.md), [engine research](docs/sumo/sumo-engine-research.md), [project status](docs/alcagent/Project/PROJECT.md) |
 | Directive | [agents.md](agents.md) — the full autonomous-development specification |
 
-Detailed system contracts (event taxonomy, guard loop, warden cycle, parole, rehab,
-determinism) live under [`docs/Systems/`](docs/Systems/), and design
-intent under [`docs/Design/`](docs/Design/).
+Detailed system contracts (guard loop, warden cycle, parole, rehab, capabilities) live under
+[`docs/alcagent/Systems/`](docs/alcagent/Systems/), design intent under
+[`docs/alcagent/Design/Core/`](docs/alcagent/Design/Core/), and the event taxonomy is published in
+[`docs/sumo/SUMO_API.md`](docs/sumo/SUMO_API.md) with source of truth
+`crates/alc-events/src/lib.rs`.
 
 ---
 
@@ -119,18 +128,17 @@ accrues finances, progresses sentences, resolves escapes and parole, runs warden
 and admits new prisoners subject to capacity and policy. Everything observable is published on a
 bounded event bus with structured causes; read-only snapshots (`Observation`, `MapFrame`,
 `Stats`, summary types) feed the UI. Worlds are saved as versioned bincode with a JSON debug
-sidecar; seeded RNG streams make replays reproducible. See the
-[internal status document](docs/Project/PROJECT.md) for the implemented scope and
-known gaps.
+sidecar (currently format v5); seeded RNG streams make replays reproducible. See the
+[project status document](docs/alcagent/Project/PROJECT.md) for the implemented scope.
 
 ---
 
-## Roadmap / known gaps
+## Deferred / future work (beyond 0.05)
 
-Active work continues on Wave 4/5 features (navigation graph, council/shadow behavior,
-structured incident chains, full knowledge store, rehab/contraband lifecycle wiring, GUI).
-See [version milestones](docs/Project/version-milestones.md) and the
-[Wave 4 status note](docs/Communication/Note's/wave4-implementation-status.md).
+The 0.05 release landed council/shadow policy modes, structured incident chains, the full
+rehab/contraband lifecycle and both spatial frontends. Deferred depth includes a real navigation
+graph, a full `KnowledgeStore`, provider-backed narrative adapters and further GUI fidelity.
+See [version milestones](docs/alcagent/Project/version-milestones.md) for the next planned scope.
 
 ## License
 

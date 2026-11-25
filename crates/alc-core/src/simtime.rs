@@ -20,16 +20,18 @@ impl SimTime {
     }
     pub fn from_days(days: u64) -> Self {
         Self {
-            secs: days * 86_400,
+            secs: days.saturating_mul(86_400),
         }
     }
     pub fn from_hours(hours: u64) -> Self {
         Self {
-            secs: hours * 3_600,
+            secs: hours.saturating_mul(3_600),
         }
     }
     pub fn from_mins(mins: u64) -> Self {
-        Self { secs: mins * 60 }
+        Self {
+            secs: mins.saturating_mul(60),
+        }
     }
 
     pub fn as_secs(self) -> u64 {
@@ -57,17 +59,17 @@ impl SimTime {
 
     pub fn add_secs(self, secs: u64) -> Self {
         Self {
-            secs: self.secs + secs,
+            secs: self.secs.saturating_add(secs),
         }
     }
     pub fn add_mins(self, mins: u64) -> Self {
-        self.add_secs(mins * 60)
+        self.add_secs(mins.saturating_mul(60))
     }
     pub fn add_hours(self, hours: u64) -> Self {
-        self.add_secs(hours * 3_600)
+        self.add_secs(hours.saturating_mul(3_600))
     }
     pub fn add_days(self, days: u64) -> Self {
-        self.add_secs(days * 86_400)
+        self.add_secs(days.saturating_mul(86_400))
     }
 }
 
@@ -89,4 +91,21 @@ pub enum TimeSpeed {
     FastForward,
     Extreme,
     EventDriven,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extreme_conversions_and_additions_saturate() {
+        assert_eq!(SimTime::from_days(u64::MAX).as_secs(), u64::MAX);
+        assert_eq!(SimTime::from_hours(u64::MAX).as_secs(), u64::MAX);
+        assert_eq!(SimTime::from_mins(u64::MAX).as_secs(), u64::MAX);
+        assert_eq!(SimTime::EPOCH.add_secs(u64::MAX).as_secs(), u64::MAX);
+        assert_eq!(SimTime::EPOCH.add_mins(u64::MAX).as_secs(), u64::MAX);
+        assert_eq!(SimTime::EPOCH.add_hours(u64::MAX).as_secs(), u64::MAX);
+        assert_eq!(SimTime::EPOCH.add_days(u64::MAX).as_secs(), u64::MAX);
+        assert_eq!(SimTime::from_secs(u64::MAX).add_days(1).as_secs(), u64::MAX);
+    }
 }

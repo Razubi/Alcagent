@@ -20,9 +20,13 @@ editing each other's code or scattering context across chat sessions.
 4. **Resolve by moving to `resolved/`** (create it when needed) rather than deleting history.
 5. Paths inside notes are repository-root relative.
 
-## Current open items
+## Handoff archive (historical)
 
-- `Sumo-AI-Team/NEXT-UPDATE-SUPPORT.md` — engine support required by the Wave 4 update (R1–R7 remain open).
-- `Note's/wave4-support-needed.md` — cross-team needs, including work that does **not** belong to `sumo`.
+No handoff in this folder is currently active. These notes are retained for provenance; current
+status is in [`../Project/PROJECT.md`](../Project/PROJECT.md) and
+[`../Project/design-status.md`](../Project/design-status.md).
+
+- `Sumo-AI-Team/NEXT-UPDATE-SUPPORT.md` — historical Wave 4 engine support request (R1–R7 landed).
+- `Note's/wave4-support-needed.md` — historical cross-team needs, including work that did **not** belong to `sumo`.
 - `Note's/persistence-lib-rs-changes-needed.md` — **resolved** (2026-11-23): persistence converter edits applied; retained as historical record of the persistence API change.
-- `Note's/wave4-implementation-status.md` — Wave 4 R1–R7 landed; Wave 5 items (council/shadow behavior, real nav graph, UI map switch, driver unification, applier signature) remain open.
+- `Note's/wave4-implementation-status.md` — historical Wave 4 R1–R7 status; council/shadow behavior and the UI map switch subsequently landed. Remaining depth is tracked as post-0.05 work.

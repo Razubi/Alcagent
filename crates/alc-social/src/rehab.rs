@@ -35,6 +35,23 @@ impl RehabProgram {
     }
 }
 
+/// Key used in `skills` to record that a program was permanently completed.
+///
+/// A separate namespace (not [`RehabProgram::key`]) keeps the world's active
+/// enrollment checks from mistaking a finished course for a live one, while
+/// still surviving the world's per-tick skill-map write-back. Without this,
+/// completion removes the progress key and the very next tick re-enrolls the
+/// prisoner, grants another hope/purpose lift and leaves a zombie active record.
+fn completion_key(program: RehabProgram) -> String {
+    format!("completed:{}", program.key())
+}
+
+/// Whether this program has already been completed (and is therefore blocked
+/// from a new enrollment and from further progress updates).
+pub fn has_completed_program(prisoner: &RehabPrisonerState, program: RehabProgram) -> bool {
+    prisoner.skills.contains_key(&completion_key(program))
+}
+
 /// Outcome of applying rehabilitation progress over a time step.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum RehabOutcome {
@@ -106,6 +123,11 @@ pub fn enroll_in_program(prisoner: &mut RehabPrisonerState, program: RehabProgra
     if prisoner.disciplinary_status {
         return false;
     }
+    // Completed programs are terminal: no re-enrollment, so no repeated hope
+    // bumps and no zombie active records in the world's rehab record list.
+    if has_completed_program(prisoner, program) {
+        return false;
+    }
     let key = program.key().to_string();
     if prisoner.skills.contains_key(&key) {
         return true;
@@ -138,6 +160,12 @@ pub fn apply_program_progress(
     dt: u64,
 ) -> RehabOutcome {
     let key = program.key().to_string();
+    if has_completed_program(prisoner, program) {
+        // Terminal completion: drop any stale active key so no caller treats
+        // this as an enrollment, and report no enrollment (no hope bump).
+        prisoner.skills.remove(&key);
+        return RehabOutcome::NoEnrollment;
+    }
     if !prisoner.skills.contains_key(&key) {
         return RehabOutcome::NoEnrollment;
     }
@@ -210,6 +238,10 @@ pub fn apply_program_progress(
     if new_progress >= 1.0 {
         prisoner.reputation = (prisoner.reputation + 0.05).min(1.0);
         prisoner.skills.remove(&key);
+        // Persist a terminal marker so later ticks cannot re-enroll this
+        // program (which would repeat the immediate hope/purpose lift and
+        // create zombie active records in the world's record list).
+        prisoner.skills.insert(completion_key(program), 1.0);
         return RehabOutcome::Completed;
     }
 
@@ -219,6 +251,53 @@ pub fn apply_program_progress(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completed_program_cannot_re_enroll_or_repeat_hope_bump() {
+        let mut p = RehabPrisonerState::default();
+        assert!(enroll_in_program(&mut p, RehabProgram::AngerManagement));
+        // Push the enrolled key to the brink so one tick completes it.
+        p.skills
+            .insert(RehabProgram::AngerManagement.key().into(), 0.999);
+        assert_eq!(
+            apply_program_progress(&mut p, RehabProgram::AngerManagement, 60),
+            RehabOutcome::Completed
+        );
+
+        let hope_after_completion = p.hope;
+        let reputation_after_completion = p.reputation;
+        assert!(has_completed_program(&p, RehabProgram::AngerManagement));
+        assert!(!p.skills.contains_key(RehabProgram::AngerManagement.key()));
+
+        // Re-enrollment is blocked: no new hope lift, no capacity use, no new record.
+        assert!(!enroll_in_program(&mut p, RehabProgram::AngerManagement));
+        assert_eq!(p.hope, hope_after_completion);
+        assert_eq!(
+            apply_program_progress(&mut p, RehabProgram::AngerManagement, 60),
+            RehabOutcome::NoEnrollment
+        );
+        assert_eq!(p.hope, hope_after_completion);
+        assert_eq!(p.reputation, reputation_after_completion);
+        assert!(!p.skills.contains_key(RehabProgram::AngerManagement.key()));
+
+        // A different program remains available.
+        assert!(enroll_in_program(&mut p, RehabProgram::Counseling));
+    }
+
+    #[test]
+    fn completion_marker_clears_a_stale_active_key() {
+        let mut p = RehabPrisonerState::default();
+        // Legacy/crossed wiring left both keys behind; the terminal marker wins.
+        p.skills.insert(RehabProgram::Education.key().into(), 0.5);
+        p.skills
+            .insert(completion_key(RehabProgram::Education), 1.0);
+        assert_eq!(
+            apply_program_progress(&mut p, RehabProgram::Education, 60),
+            RehabOutcome::NoEnrollment
+        );
+        assert!(!p.skills.contains_key(RehabProgram::Education.key()));
+        assert!(has_completed_program(&p, RehabProgram::Education));
+    }
 
     #[test]
     fn enroll_and_progress_rehab_program() {

@@ -1,5 +1,10 @@
 # v0.5 World Expansion Plan — A Living Town Around the Prison
 
+> **Historical planning snapshot:** this vision is not implemented. References below to save
+> format v3, 47 `EventKind` variants and a non-buildable GUI reflect the 2026-11-24 baseline;
+> current code uses save format v5, 51 event kinds and a buildable `alc-gui` observer. Current
+> status is in [`../alcagent/Project/PROJECT.md`](../alcagent/Project/PROJECT.md).
+
 **Status:** deep research & design plan · **Date:** 2026-11-24 · **Target:** v0.5 (polish, not to be
 fully implemented now) · **No code changed.**
 

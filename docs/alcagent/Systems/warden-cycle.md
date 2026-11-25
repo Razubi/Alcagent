@@ -40,7 +40,7 @@ applies the deterministic baseline and emits the strategy alternative as an A/B 
 
 ## WardenAction
 
-- `Expand { building: String }` — engine maps `"medical" | "education" | "isolation" | "visitor" | "workshop" | "recreation" | "dormitory"` → corresponding `FacilityKind` (else `CellBlock`); queues construction with the catalog capacity; charges cost and staffing requirements on completion.
+- `Expand { building: String }` — engine maps `"medical" | "education" | "isolation" | "visitor" | "workshop" | "recreation" | "dormitory"` → corresponding `FacilityKind` (else `CellBlock`); queues construction with a catalog-derived capacity, charges the construction cost when queued, records staffing/material/prerequisite flags, and activates the facility on completion.
 - `HireGuards { count }` / `FireGuards { count }` — create/remove at most 16 guards per action; hiring charges a `$2,000 × count` recruitment cost to `Account::Salaries` and records a ledger note; emits `PolicyChange`.
 - `PromoteStaff { guard: u64 }` — rank bump: Officer→Sergeant→Lieutenant→Captain→Captain; no event.
 - `ChangePolicy { policy, value: f64 }` — `"privileges"` → `policies.privileges_level` (clamped 0..1); `"security"` → `policies.security_level` (0..1); `"rehab_funding"` → `policies.rehab_funding_multiplier` (0.2..3.0); `"lockdown"` → `policies.lockdown` with the 14-day expiry clock reset; emits `PolicyChange`.

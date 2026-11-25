@@ -417,12 +417,14 @@ impl WardenStrategySnapshot {
             .sum()
     }
 
-    /// Highest-severity report id, used for targeted disturbance responses.
+    /// Highest-severity credible report id, used for targeted disturbance
+    /// responses. Uses the same predicate as [`Self::report_pressure`] so a
+    /// report counted as pressure is always actionable.
     #[must_use]
     pub fn priority_report(&self) -> Option<u64> {
         self.reports
             .iter()
-            .filter(|r| r.requests_assistance || r.severity >= 3)
+            .filter(|r| r.severity >= 2 && (r.requests_assistance || r.credibility >= 0.25))
             .max_by_key(|r| (r.severity, r.credibility >= 0.25))
             .map(|r| r.id)
     }
@@ -1422,6 +1424,44 @@ mod tests {
             WardenAction::RespondToDisturbance { event_id: 42 }
         );
         assert!(decision.rationale.contains("Report pressure"));
+    }
+
+    #[test]
+    fn credible_severity_two_reports_count_as_pressure_and_targets() {
+        let mut snapshot = healthy_snapshot();
+        snapshot.reports = vec![WardenReportSignal {
+            id: 17,
+            at: SimTime::EPOCH,
+            summary: "serious disturbance".into(),
+            severity: 2,
+            credibility: 0.6,
+            requests_assistance: false,
+        }];
+        assert_eq!(snapshot.report_pressure(), 2);
+        assert_eq!(snapshot.priority_report(), Some(17));
+
+        let mut three = snapshot.clone();
+        three.reports = vec![
+            snapshot.reports[0].clone(),
+            WardenReportSignal {
+                id: 18,
+                ..snapshot.reports[0].clone()
+            },
+            WardenReportSignal {
+                id: 19,
+                ..snapshot.reports[0].clone()
+            },
+        ];
+        let decision = decide_strategy(&three, &balanced_traits(), &mut RngStream::new(5, 0));
+        // Equal keys keep the last maximum (`max_by_key` semantics); what
+        // matters is that the target is one of the three pressure reports.
+        let targeted = matches!(
+            &decision.action,
+            WardenAction::RespondToDisturbance {
+                event_id: 17 | 18 | 19,
+            }
+        );
+        assert!(targeted, "unexpected action: {:?}", decision.action);
     }
 
     #[test]

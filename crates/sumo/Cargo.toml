@@ -22,7 +22,6 @@ tracing = { workspace = true }
 
 [features]
 default = []
-gui = []
 
 [lints]
 workspace = true

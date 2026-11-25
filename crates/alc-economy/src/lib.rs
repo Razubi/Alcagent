@@ -14,16 +14,16 @@ pub struct Money(pub i64);
 impl Money {
     pub const ZERO: Money = Money(0);
     pub fn from_major(major: i64) -> Self {
-        Money(major * 100)
+        Money(major.saturating_mul(100))
     }
     pub fn as_major(self) -> f64 {
         self.0 as f64 / 100.0
     }
     pub fn add(self, o: Money) -> Self {
-        Money(self.0 + o.0)
+        Money(self.0.saturating_add(o.0))
     }
     pub fn sub(self, o: Money) -> Self {
-        Money(self.0 - o.0)
+        Money(self.0.saturating_sub(o.0))
     }
     pub fn mul(self, f: f64) -> Self {
         Money((self.0 as f64 * f) as i64)
@@ -284,7 +284,8 @@ impl Economy {
         let base = self.funding_per_prisoner_per_day.mul(population as f64);
         let penalty = if population > self.crowding_threshold {
             let extra = population - self.crowding_threshold;
-            base.mul(1.0 - self.crowding_penalty_per_extra * extra as f64)
+            let factor = (1.0 - self.crowding_penalty_per_extra * extra as f64).clamp(0.0, 1.0);
+            base.mul(factor)
         } else {
             base
         };
@@ -441,7 +442,7 @@ impl Economy {
                 });
             }
         }
-        lines.sort_by(|a, b| b.amount.0.cmp(&a.amount.0));
+        lines.sort_by_key(|line| std::cmp::Reverse(line.amount.0));
         lines
     }
 
@@ -468,7 +469,7 @@ impl Economy {
                 });
             }
         }
-        lines.sort_by(|a, b| b.amount.0.cmp(&a.amount.0));
+        lines.sort_by_key(|line| std::cmp::Reverse(line.amount.0));
         lines
     }
 
@@ -490,7 +491,7 @@ impl Economy {
     /// 30-day trailing average of daily income (minor units), zero when there
     /// is no income history.
     pub fn trailing_daily_income_avg(&self) -> i64 {
-        let as_of = self.ledger.last().map(|e| e.at_secs).unwrap_or(0);
+        let as_of = self.ledger.last().map_or(0, |e| e.at_secs);
         self.trailing_daily_income_avg_at(as_of)
     }
 
@@ -679,7 +680,7 @@ impl Economy {
     pub fn health(&self) -> f64 {
         let avg_daily = self.trailing_daily_expense_avg().max(1) as f64;
         let month_of_expenses = avg_daily * 30.0;
-        (self.cash.0 as f64 / month_of_expenses).min(1.0).max(0.0)
+        (self.cash.0 as f64 / month_of_expenses).clamp(0.0, 1.0)
     }
 }
 
@@ -712,6 +713,16 @@ mod tests {
         assert_eq!(avg, 5_000_000 / 3);
         e.cash = Money(avg * 30);
         assert!((e.health() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn crowding_penalty_never_produces_negative_income() {
+        let mut e = Economy::default();
+        let start_cash = e.cash.0;
+        let credited = e.accrue_daily_funding(0, 200);
+        assert_eq!(credited, e.base_daily_grant);
+        assert_eq!(e.ledger.last().map(|entry| entry.amount.0), Some(0));
+        assert_eq!(e.cash.0, start_cash + e.base_daily_grant.0);
     }
 
     #[test]

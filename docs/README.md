@@ -21,6 +21,10 @@ docs/
 
 ## sumo (engine)
 
+For current API/behavior, use [`sumo/SUMO_API.md`](sumo/SUMO_API.md) and
+[`alcagent/Project/PROJECT.md`](alcagent/Project/PROJECT.md). Research and roadmap docs below are
+dated planning snapshots; historical notes are retained but not treated as active status.
+
 | Document | Purpose |
 |---|---|
 | [`sumo/SUMO_ENGINE.md`](sumo/SUMO_ENGINE.md) | Engine product & system design |
@@ -31,7 +35,8 @@ docs/
 | [`sumo/sumo-gui-and-support-plan.md`](sumo/sumo-gui-and-support-plan.md) | sumo GUI shell & long-term support annex |
 
 Engine design/reference copies also exist under `alcagent/Design/` and `alcagent/Reports/` in
-this repository. All engine documentation is authored and maintained under `docs/sumo/`.
+this repository. The docs under this repository's `docs/` are canonical; they are not synced with
+any out-of-tree `../sumo` snapshot.
 
 ## Alcagent (game)
 

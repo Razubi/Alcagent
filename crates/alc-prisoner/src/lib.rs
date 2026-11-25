@@ -587,7 +587,14 @@ impl Prisoner {
     }
 
     pub fn is_eligible_for_parole(&self) -> bool {
-        let frac = self.sentence_served_days as f32 / self.sentence_days.max(1) as f32;
+        // A zero-length sentence has no parole phase — it is a sentence-complete
+        // / time-served case for the world to release, never a parole candidate.
+        // Guarding explicitly also avoids `max(1)` reporting 0/1 == 0.0 served
+        // and silently granting eligibility at zero served days.
+        if self.sentence_days == 0 {
+            return false;
+        }
+        let frac = self.sentence_served_days as f32 / self.sentence_days as f32;
         frac >= 0.6 && !self.schedule.disciplinary_status
     }
 
@@ -916,6 +923,26 @@ mod tests {
         assert!(p.escape_motivation().is_finite());
         assert!(p.sentence_remaining_days() <= p.sentence_days);
         assert!(!p.is_eligible_for_parole());
+    }
+
+    #[test]
+    fn zero_length_sentence_is_never_parole_eligible() {
+        let mut p = Prisoner::default();
+        p.sentence_days = 0;
+        p.sentence_served_days = 0;
+        p.schedule.disciplinary_status = false;
+        assert!(!p.is_eligible_for_parole());
+
+        // Even if served days drift above zero, a time-served case is not parole.
+        p.sentence_served_days = 500;
+        assert!(!p.is_eligible_for_parole());
+
+        // A normal sentence still follows the 60% rule.
+        p.sentence_days = 100;
+        p.sentence_served_days = 59;
+        assert!(!p.is_eligible_for_parole());
+        p.sentence_served_days = 60;
+        assert!(p.is_eligible_for_parole());
     }
 
     #[test]

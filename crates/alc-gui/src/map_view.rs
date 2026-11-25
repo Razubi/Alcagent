@@ -9,6 +9,17 @@ use crate::{data, panels, theme};
 use eframe::egui::{self, Align2, Color32, FontId, Rect, Stroke, StrokeKind, Vec2};
 use std::collections::HashMap;
 
+/// Maximum number of names drawn in a facility roster. The rest are summarised
+/// so a crowded cell block cannot grow the inspector without bound.
+const MAX_ROSTER_ROWS: usize = 24;
+
+fn roster_row_counts(prisoners: usize, guards: usize, cap: usize) -> (usize, usize, usize) {
+    let shown_prisoners = prisoners.min(cap);
+    let shown_guards = guards.min(cap.saturating_sub(shown_prisoners));
+    let hidden = prisoners + guards - shown_prisoners - shown_guards;
+    (shown_prisoners, shown_guards, hidden)
+}
+
 /// Camera and interaction state for the prison map.
 #[derive(Debug, Clone)]
 pub struct MapViewState {
@@ -194,7 +205,7 @@ fn draw_canvas(painter: &egui::Painter, rect: Rect, snap: &data::Snapshot, state
     painter.rect_filled(rect, 4.0, theme::MAP_BG);
     let positions = &snap.map.facility_positions;
 
-    // Navigation edges and movement hints (drawn beneath the nodes).
+    // Engine-provided navigation edges (drawn beneath the nodes).
     if state.show_edges {
         for edge in &snap.map.edges {
             let Some(&from) = positions.get(&edge.from) else {
@@ -215,20 +226,10 @@ fn draw_canvas(painter: &egui::Painter, rect: Rect, snap: &data::Snapshot, state
                 Stroke::new(1.5, colour),
             );
         }
-        for pawn in snap.map.prisoners.iter().chain(snap.map.guards.iter()) {
-            if let (Some(_progress), Some(target)) = (pawn.edge_progress, pawn.target_node) {
-                let Some(&from) = positions.get(&pawn.node_id) else {
-                    continue;
-                };
-                let Some(&to) = positions.get(&target) else {
-                    continue;
-                };
-                painter.line_segment(
-                    [local(from, state, rect), local(to, state, rect)],
-                    Stroke::new(3.0, Color32::from_rgba_unmultiplied(255, 255, 255, 45)),
-                );
-            }
-        }
+        // Only engine-provided nav edges are drawn. Pawn interpolation is
+        // reflected in the pawn position itself; drawing a full synthetic
+        // line to a target node fabricated a movement hint that does not
+        // correspond to any live path state.
     }
 
     // Incident overlays: one badge per facility that has a recorded incident.
@@ -380,7 +381,7 @@ fn draw_inspector(
             egui::RichText::new(format!("{:.2}x", state.zoom)).color(theme::MUTED),
         ));
     });
-    ui.checkbox(&mut state.show_edges, "Nav edges / movement");
+    ui.checkbox(&mut state.show_edges, "Nav edges (schematic)");
     ui.checkbox(&mut state.show_incidents, "Incident overlays");
     ui.checkbox(&mut state.show_labels, "Labels");
 
@@ -459,35 +460,52 @@ fn draw_inspector(
         theme::kv(ui, "Staff required", f.staff_required.to_string());
         theme::kv(ui, "Locked", if f.locked { "YES" } else { "no" });
         panels::section(ui, "Cell / wing roster", |ui| {
-            for id in &f.prisoners {
-                let name = snap
-                    .prisoners
-                    .iter()
-                    .find(|p| p.id.raw() == *id)
-                    .map_or_else(|| format!("prisoner #{id}"), |p| p.name.clone());
-                ui.add(egui::Label::new(
-                    egui::RichText::new(format!("● {name}"))
-                        .color(theme::PRISONER)
-                        .small(),
-                ));
-            }
-            for id in &f.guards {
-                let name = snap
-                    .guards
-                    .iter()
-                    .find(|g| g.id == *id)
-                    .map_or_else(|| format!("guard #{id}"), |g| g.name.clone());
-                ui.add(egui::Label::new(
-                    egui::RichText::new(format!("◆ {name}"))
-                        .color(theme::GUARD)
-                        .small(),
-                ));
-            }
-            if f.prisoners.is_empty() && f.guards.is_empty() {
-                ui.add(egui::Label::new(
-                    egui::RichText::new("No pawns at this node").color(theme::MUTED),
-                ));
-            }
+            let (shown_prisoners, shown_guards, hidden) =
+                roster_row_counts(f.prisoners.len(), f.guards.len(), MAX_ROSTER_ROWS);
+            egui::ScrollArea::vertical()
+                .id_salt("facility_roster")
+                .max_height(180.0)
+                .show(ui, |ui| {
+                    for id in f.prisoners.iter().take(shown_prisoners) {
+                        let name = snap
+                            .prisoners
+                            .iter()
+                            .find(|p| p.id.raw() == *id)
+                            .map_or_else(|| format!("prisoner #{id}"), |p| p.name.clone());
+                        ui.add(egui::Label::new(
+                            egui::RichText::new(format!("● {name}"))
+                                .color(theme::PRISONER)
+                                .small(),
+                        ));
+                    }
+                    for id in f.guards.iter().take(shown_guards) {
+                        let name = snap
+                            .guards
+                            .iter()
+                            .find(|g| g.id == *id)
+                            .map_or_else(|| format!("guard #{id}"), |g| g.name.clone());
+                        ui.add(egui::Label::new(
+                            egui::RichText::new(format!("◆ {name}"))
+                                .color(theme::GUARD)
+                                .small(),
+                        ));
+                    }
+                    if hidden > 0 {
+                        ui.add(egui::Label::new(
+                            egui::RichText::new(format!(
+                                "+{hidden} more ({} total at this node)",
+                                f.prisoners.len() + f.guards.len()
+                            ))
+                            .color(theme::MUTED)
+                            .small(),
+                        ));
+                    }
+                    if f.prisoners.is_empty() && f.guards.is_empty() {
+                        ui.add(egui::Label::new(
+                            egui::RichText::new("No pawns at this node").color(theme::MUTED),
+                        ));
+                    }
+                });
         });
     } else {
         ui.add(egui::Label::new(
@@ -517,6 +535,11 @@ fn draw_inspector(
             ));
             ui.label("Locked");
         });
+        ui.add(egui::Label::new(
+            egui::RichText::new("Straight nav lines are schematic links between engine nodes.")
+                .color(theme::MUTED)
+                .small(),
+        ));
     });
 
     if state.show_incidents {
@@ -539,5 +562,19 @@ fn draw_inspector(
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rosters_are_capped_and_hidden_rows_counted() {
+        assert_eq!(roster_row_counts(4, 3, 5), (4, 1, 2));
+        assert_eq!(roster_row_counts(0, 0, MAX_ROSTER_ROWS), (0, 0, 0));
+        let (p, g, hidden) = roster_row_counts(100, 5, MAX_ROSTER_ROWS);
+        assert_eq!(p + g, MAX_ROSTER_ROWS);
+        assert_eq!(hidden, 105 - MAX_ROSTER_ROWS);
     }
 }

@@ -277,19 +277,36 @@ pub fn contraband_discovery(
     best.map(|(_, f)| f)
 }
 
+/// Deterministic, collision-resistant id for a directly-built case record.
+///
+/// The world's live path allocates ids from its own monotonic counter and does
+/// not use this helper. For callers that build a record from a discovery alone,
+/// mixing every identifying field avoids the old XOR aliasing where two
+/// distinct discoveries (guard A / holder B vs guard B / holder A) got the
+/// same id. `DefaultHasher::new()` uses fixed keys, so the result is stable
+/// across runs and saves.
+fn case_id_for(discovered_at: SimTime, guard: GuardId, found: &ContrabandFound) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    discovered_at.secs.hash(&mut hasher);
+    guard.0.hash(&mut hasher);
+    found.holder.0.hash(&mut hasher);
+    found.item.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// Create a contraband case record from a `ContrabandFound` discovery.
 pub fn contraband_case_record(
     discovered_at: SimTime,
     guard: GuardId,
     found: &ContrabandFound,
 ) -> ContrabandCaseRecord {
-    let _case_id = found.guard.0; // Use guard ID as base for case ID
     let summary = format!(
         "Guard {} found {:?} on prisoner {}",
         guard.0, found.item, found.holder.0
     );
     ContrabandCaseRecord {
-        case_id: found.guard.0 ^ found.holder.0, // deterministic XOR-based ID
+        case_id: case_id_for(discovered_at, guard, found),
         discovered_at,
         discovering_guard: guard,
         holder: found.holder,
@@ -366,6 +383,49 @@ pub struct ContrabandCaseRecord {
 mod tests {
     use super::*;
     use alc_core::{GuardId, PrisonerId, RngStream};
+
+    #[test]
+    fn case_ids_are_deterministic_and_do_not_alias_on_swapped_ids() {
+        let at = SimTime::from_secs(12_345);
+        let a = ContrabandFound {
+            guard: GuardId(1),
+            holder: PrisonerId(2),
+            item: ContrabandItem::Phones,
+            severity: 0.55,
+        };
+        let swapped = ContrabandFound {
+            guard: GuardId(2),
+            holder: PrisonerId(1),
+            item: ContrabandItem::Phones,
+            severity: 0.55,
+        };
+
+        let first = contraband_case_record(at, GuardId(1), &a);
+        let again = contraband_case_record(at, GuardId(1), &a);
+        assert_eq!(
+            first.case_id, again.case_id,
+            "case id must be deterministic"
+        );
+
+        let other = contraband_case_record(at, GuardId(2), &swapped);
+        assert_ne!(
+            first.case_id, other.case_id,
+            "XOR would alias swapped guard/holder ids"
+        );
+
+        let later = contraband_case_record(SimTime::from_secs(12_346), GuardId(1), &a);
+        assert_ne!(
+            first.case_id, later.case_id,
+            "distinct discovery times must not collide"
+        );
+
+        let other_item = ContrabandFound {
+            item: ContrabandItem::Drugs,
+            ..a.clone()
+        };
+        let item_case = contraband_case_record(at, GuardId(1), &other_item);
+        assert_ne!(first.case_id, item_case.case_id);
+    }
 
     #[test]
     fn contraband_market_and_discovery_can_produce_results() {

@@ -353,32 +353,34 @@ pub struct RehabOverview {
     pub programs: Vec<RehabProgramRollup>,
 }
 
-/// Contraband case derived from the event record (0.05).
+/// Contraband case from the world-owned durable case store (0.05).
 ///
-/// TODO(world-state): no persisted contraband case/inventory store exists yet;
-/// remove the event-derived reconstruction once `alc-world` owns one.
+/// Case ids, discovery data, item, severity and summary come from
+/// `World::contraband_cases`; resolution comes from `World::resolved_contraband_at`
+/// with the engine mirror retained for save-format compatibility. Rows are
+/// never derived by parsing free-text events on read; standalone legacy events
+/// are ingested into the store once by the engine.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ContrabandCaseSummary {
-    /// Case id (the originating world event id).
+    /// World-assigned case id.
     pub case_id: u64,
     /// Simulation time of the case.
     pub at: SimTime,
-    /// Item label when detectable (`Weapons`, `Drugs`, `Tools`, `Phones`,
-    /// `Money`), otherwise `None`.
+    /// Item label (`Weapons`, `Drugs`, `Tools`, `Phones`, `Money`).
     pub item: Option<String>,
-    /// Prisoner holding the contraband, when reported.
+    /// Prisoner holding the contraband.
     pub holder: Option<PrisonerId>,
-    /// Guard who discovered it, when reported.
+    /// Guard who discovered it.
     pub guard: Option<u64>,
-    /// Severity 0..1 (derived from item class, default 0.5).
+    /// Severity 0..1 recorded on the case.
     pub severity: f32,
-    /// Original event summary.
+    /// Case summary recorded by the world.
     pub summary: String,
-    /// Original causal notes.
+    /// Structured causal notes derived from the case record.
     pub causes: Vec<String>,
-    /// Resolved by observer/control (engine-state; persisted only when store exists).
+    /// Resolved in the world store (or its engine mirror).
     pub resolved: bool,
-    /// Engine-only resolution timestamp; not persisted across save/load.
+    /// Resolution timestamp from the world store or engine mirror.
     #[serde(default)]
     pub resolved_at: Option<SimTime>,
 }
@@ -601,38 +603,3 @@ pub(crate) fn parse_plan_flag(fragments: &[String]) -> Option<bool> {
     }
     None
 }
-
-/// Detect a contraband item label inside a free-form event summary.
-pub(crate) fn detect_contraband_item(summary: &str) -> Option<String> {
-    const ITEMS: [&str; 5] = ["Weapons", "Drugs", "Tools", "Phones", "Money"];
-    ITEMS
-        .iter()
-        .find(|label| summary.contains(*label))
-        .map(|label| (*label).to_string())
-}
-
-/// Severity by contraband item label (matches `alc-social::contraband`).
-pub(crate) fn contraband_severity_for_label(label: &str) -> f32 {
-    match label {
-        "Weapons" => 0.95,
-        "Drugs" => 0.75,
-        "Tools" => 0.7,
-        "Phones" => 0.55,
-        "Money" => 0.35,
-        _ => 0.5,
-    }
-}
-
-/// Parse a guard id out of a `discovery by guard N` style cause.
-pub(crate) fn parse_guard_cause(cause: &str) -> Option<u64> {
-    let lower = cause.to_lowercase();
-    let idx = lower.find("guard")? + "guard".len();
-    let digits: String = cause[idx..]
-        .trim_start()
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
-    digits.parse::<u64>().ok()
-}
-
-// Same modules as above, but conditionally compiled.

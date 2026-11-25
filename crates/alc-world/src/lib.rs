@@ -29,11 +29,12 @@ use alc_prisoner::{
     ScheduleTemplate, current_block, generate_intake, resolve_schedule,
 };
 use alc_social::{
-    ConflictOutcome, ContrabandItem, DisputeAction, EscapeOutcome, Gang, GangHistoryKind,
-    GangPoliticsProfile, GroupDirective, PrisonerGangProfile, Relationship, RelationshipDelta,
-    SocialGraph, apply_escape_consequences, apply_outcome, detect_internal_disputes,
-    gang_event_cause, gang_pressure, gang_relation_scores, leadership_challenger, maybe_form_gang,
-    resolve_conflict, resolve_escape_attempt, split_candidates,
+    ConflictOutcome, ContrabandItem, DisputeAction, EscapeConsequences, EscapeOutcome, Gang,
+    GangHistoryKind, GangPoliticsProfile, GroupDirective, PrisonerGangProfile, Relationship,
+    RelationshipDelta, SocialGraph, apply_escape_consequences, apply_outcome,
+    detect_internal_disputes, gang_event_cause, gang_pressure, gang_relation_scores,
+    leadership_challenger, maybe_form_gang, resolve_conflict, resolve_escape_attempt,
+    split_candidates,
 };
 use alc_warden::{DecisionSource, Warden, WardenAction};
 use serde::{Deserialize, Serialize};
@@ -273,6 +274,17 @@ pub struct RehabProgramRecord {
 }
 
 impl RehabProgramRecord {
+    /// Bounded 0..1 progress signal used by post-release outcome modeling.
+    /// Attendance is accumulated in `u64` with saturation so a large number of
+    /// records (or a legacy value of `u32::MAX`) can never overflow.
+    fn progress_signal(records: &[RehabProgramRecord]) -> f32 {
+        let done = records.iter().filter(|r| r.completed).count() as f32;
+        let attended = records.iter().fold(0_u64, |sum, r| {
+            sum.saturating_add(u64::from(r.attendance_days))
+        });
+        (done * 0.6 + (attended.min(180) as f32 / 180.0) * 0.4).clamp(0.0, 1.0)
+    }
+
     fn new(program: alc_social::RehabProgram, day: u64) -> Self {
         Self {
             program,
@@ -550,7 +562,11 @@ impl World {
     /// Register a prisoner with the AI scheduler using deterministic phase.
     pub fn register_ai_agent(&mut self, id: PrisonerId, role: Role) {
         let interval_secs = match role {
-            Role::Warden => self.ai_config().decision_interval_mins.saturating_mul(60) * 4,
+            Role::Warden => self
+                .ai_config()
+                .decision_interval_mins
+                .saturating_mul(60)
+                .saturating_mul(4),
             Role::Guard => self.ai_config().decision_interval_mins.saturating_mul(60) / 2,
             Role::Prisoner | Role::Unknown => {
                 self.ai_config().decision_interval_mins.saturating_mul(60)
@@ -609,6 +625,17 @@ impl World {
 
     pub fn population(&self) -> u32 {
         self.prisoners.len() as u32
+    }
+
+    /// Emit an event and append a durable copy carrying the assigned id.
+    /// Observers dedupe the durable log and bounded bus by event id, so a
+    /// placeholder id would silently collapse unrelated historical events.
+    fn emit_history_event(&mut self, event: WorldEvent) -> u64 {
+        let id = self.events.emit(event.clone());
+        let mut event = event;
+        event.id = id;
+        self.history.push(event);
+        id
     }
 
     // -----------------------------------------------------------------------
@@ -749,9 +776,7 @@ impl World {
         for cause in causes {
             event = event.with_cause(cause.clone());
         }
-        let event_id = self.events.emit(event.clone());
-        event.id = event_id;
-        self.history.push(event);
+        self.emit_history_event(event);
         id
     }
 
@@ -1982,6 +2007,69 @@ impl World {
         })
     }
 
+    /// Apply the institutional aftermath of an escape attempt. Both the daily
+    /// deterministic path and the decision-driven path call this helper so
+    /// security audits, lockdowns, investigations, causal notes and prisoner
+    /// discipline are identical for every outcome.
+    fn apply_escape_consequences_step(
+        &mut self,
+        consequences: &EscapeConsequences,
+        id: PrisonerId,
+        event: &mut WorldEvent,
+        rng: &mut RngStream,
+    ) {
+        let sec_old = self.policies.security_level;
+        self.policies.security_level =
+            (self.policies.security_level + consequences.security_level_delta).clamp(0.0, 1.0);
+        self.audit_policy_change("security_level", sec_old, self.policies.security_level);
+
+        if consequences.lockdown_recommended
+            && rng.chance(consequences.policy_pressure as f64 * 0.35)
+        {
+            if !self.policies.lockdown {
+                self.lockdown_since_day = self.days_simulated;
+                self.audit_policy_change("lockdown", 0.0, 1.0);
+            }
+            self.policies.lockdown = true;
+        }
+
+        if consequences.investigation_opened {
+            let investigation = Self::decision_event(
+                self.time,
+                EventKind::Investigation,
+                format!(
+                    "Investigation opened after escape attempt by prisoner {} (scope {:.2})",
+                    id.raw(),
+                    consequences.investigation_scope.clamp(0.0, 1.0)
+                ),
+                vec![id.raw()],
+            )
+            .with_cause(format!("escape outcome {:?}", consequences.outcome));
+            let investigation_id = self.emit_history_event(investigation);
+            event.causes.push(format!(
+                "investigation {investigation_id} opened (scope {:.2})",
+                consequences.investigation_scope.clamp(0.0, 1.0)
+            ));
+        }
+
+        for note in &consequences.notes {
+            event.causes.push(note.clone());
+        }
+
+        // A prevented attempt must still register as a disciplinary incident,
+        // but without a permanent privilege/parole bar (Directive §16).
+        if let Some(p) = self.prisoners.iter_mut().find(|p| p.id == id) {
+            p.needs.impulse(
+                NeedTag::Respect,
+                consequences.prisoner_discipline_severity * 0.2,
+            );
+            p.needs.impulse(
+                NeedTag::Safety,
+                consequences.prisoner_discipline_severity * 0.1,
+            );
+        }
+    }
+
     fn escape_events(&mut self, id: PrisonerId) -> Vec<WorldEvent> {
         let Some(prisoner) = self.prisoners.iter().find(|p| p.id == id).cloned() else {
             return Vec::new();
@@ -2000,43 +2088,34 @@ impl World {
             EscapeOutcome::AttemptPrevented => EventKind::EscapePrevented,
             _ => EventKind::EscapeAttempt,
         };
-
-        if outcome == EscapeOutcome::SuccessfulEscape {
-            let outcome_event = self.record_escape_post_release(&prisoner);
-            self.purge_gang_members(&[id]);
-            self.prisoners.retain(|p| p.id != id);
-            self.prune_departed_agent_state(&[id]);
-            let live: std::collections::HashSet<PrisonerId> =
-                self.prisoners.iter().map(|p| p.id).collect();
-            self.social.retain(&live);
-            self.policies.security_level =
-                (self.policies.security_level + consequences.security_level_delta).clamp(0.0, 1.0);
-            if consequences.lockdown_recommended {
-                self.policies.lockdown = true;
-            }
-            // Emit the outcome event as well as the lifecycle release event so
-            // the engine can reconcile its post-release ledger without reading
-            // world internals.
-            return vec![
-                Self::decision_event(
-                    self.time,
-                    EventKind::EscapeSucceeded,
-                    format!("escape attempt outcome: {outcome:?}"),
-                    vec![id.raw()],
-                ),
-                outcome_event,
-            ];
-        }
-
-        vec![Self::decision_event(
+        let mut event = Self::decision_event(
             self.time,
             kind,
             format!("escape attempt outcome: {outcome:?}"),
             vec![id.raw()],
-        )]
+        );
+        self.apply_escape_consequences_step(&consequences, id, &mut event, &mut rng);
+
+        if outcome == EscapeOutcome::SuccessfulEscape {
+            self.record_escape_post_release(&prisoner);
+            self.purge_gang_members(&[id]);
+            self.prisoners.retain(|p| p.id != id);
+            self.prune_departed_agent_state(&[id]);
+            // `prune_departed_agent_state` skips the O(edges) social retain for
+            // cheap routine releases; an escape must not leave stale dyads
+            // observable before the next daily sweep.
+            let live: std::collections::HashSet<PrisonerId> =
+                self.prisoners.iter().map(|p| p.id).collect();
+            self.social.retain(&live);
+        }
+
+        // The lifecycle Release event is already emitted with an authoritative
+        // id by `record_escape_post_release`; returning the outcome event keeps
+        // the engine's post-release ledger reconciliation intact.
+        vec![event]
     }
 
-    fn record_escape_post_release(&mut self, prisoner: &Prisoner) -> WorldEvent {
+    fn record_escape_post_release(&mut self, prisoner: &Prisoner) {
         let outcome_seed = RngStream::new(
             self.seed,
             prisoner.id.raw() ^ (self.days_simulated << 12) ^ 0x0E5C_A9E1,
@@ -2045,11 +2124,7 @@ impl World {
         let rehab_progress = self
             .rehab_records
             .get(&prisoner.id)
-            .map(|records| {
-                let done = records.iter().filter(|r| r.completed).count() as f32;
-                let attended: u32 = records.iter().map(|r| r.attendance_days).sum();
-                (done * 0.6 + (attended.min(180) as f32 / 180.0) * 0.4).clamp(0.0, 1.0)
-            })
+            .map(|records| RehabProgramRecord::progress_signal(records))
             .unwrap_or(0.0);
         let (employment, housing, violation, return_to_custody) = Self::post_release_outcomes(
             outcome_seed,
@@ -2102,8 +2177,7 @@ impl World {
             vec![prisoner.id.raw()],
         )
         .with_cause("lifecycle: post-release record");
-        self.history.push(event.clone());
-        event
+        self.emit_history_event(event);
     }
 
     fn post_release_outcomes(
@@ -3286,21 +3360,6 @@ impl World {
             let consequences =
                 apply_escape_consequences(outcome, self.policies.security_level, &[id]);
 
-            // Persistent institutional consequences (Directive §16).
-            let sec_old = self.policies.security_level;
-            self.policies.security_level =
-                (self.policies.security_level + consequences.security_level_delta).clamp(0.0, 1.0);
-            self.audit_policy_change("security_level", sec_old, self.policies.security_level);
-            if consequences.lockdown_recommended
-                && rng.chance(consequences.policy_pressure as f64 * 0.35)
-            {
-                if !self.policies.lockdown {
-                    self.lockdown_since_day = self.days_simulated;
-                    self.audit_policy_change("lockdown", 0.0, 1.0);
-                }
-                self.policies.lockdown = true;
-            }
-
             let kind = match outcome {
                 EscapeOutcome::SuccessfulEscape => EventKind::EscapeSucceeded,
                 EscapeOutcome::PartialBreachContained => EventKind::EscapePrevented,
@@ -3310,28 +3369,11 @@ impl World {
             let mut ev = WorldEvent::new(0, self.time, kind, summary)
                 .with_actor(id.raw())
                 .with_cause(format!("escape motivation {motivation:.2}; determination {determination:.2}; security {:.2}", self.policies.security_level));
-            for note in &consequences.notes {
-                ev = ev.with_cause(note.clone());
-            }
+            self.apply_escape_consequences_step(&consequences, id, &mut ev, &mut rng);
             self.events.emit(ev);
 
             if outcome == EscapeOutcome::SuccessfulEscape {
                 escaped.push(id);
-            }
-
-            // Psychological aftermath. Consequences are applied through need
-            // pressure, security policy and the event record rather than a
-            // permanent privilege flag: a prevented attempt must not silently
-            // bar an otherwise reforming prisoner from parole forever.
-            if let Some(p) = self.prisoners.iter_mut().find(|p| p.id == id) {
-                p.needs.impulse(
-                    NeedTag::Respect,
-                    consequences.prisoner_discipline_severity * 0.2,
-                );
-                p.needs.impulse(
-                    NeedTag::Safety,
-                    consequences.prisoner_discipline_severity * 0.1,
-                );
             }
         }
 
@@ -3486,11 +3528,7 @@ impl World {
         let rehab_progress = self
             .rehab_records
             .get(&pid)
-            .map(|records| {
-                let done = records.iter().filter(|r| r.completed).count() as f32;
-                let attended: u32 = records.iter().map(|r| r.attendance_days).sum();
-                (done * 0.6 + (attended.min(180) as f32 / 180.0) * 0.4).clamp(0.0, 1.0)
-            })
+            .map(|records| RehabProgramRecord::progress_signal(records))
             .unwrap_or(0.0);
         let (employment, housing, violation, return_to_custody) =
             Self::derive_post_release_outcomes(
@@ -3541,8 +3579,7 @@ impl World {
         )
         .with_actor(pid.raw())
         .with_cause("lifecycle: post-release record");
-        self.history.push(ev.clone());
-        self.events.emit(ev);
+        self.emit_history_event(ev);
     }
 
     /// Deterministic medical-neglect death pathway (0.05 lifecycle).
@@ -3575,8 +3612,7 @@ impl World {
             )
             .with_actor(pid.raw())
             .with_cause("condition.health < 0.02 while medical_need high; unmonitored death");
-            self.history.push(ev.clone());
-            self.events.emit(ev);
+            self.emit_history_event(ev);
             self.record_post_release(pid, "death");
         }
         if !dead.is_empty() {
@@ -3617,9 +3653,9 @@ impl World {
             ),
         )
         .with_actor(id.raw());
-        self.history.push(ev.clone());
-        self.events.emit(ev);
+        self.emit_history_event(ev);
         self.record_post_release(id, "transfer");
+        self.purge_gang_members(&[id]);
         self.last_transfer_day = self.days_simulated;
         self.prisoners.retain(|p| p.id != id);
         self.prune_agent_state();
@@ -3712,11 +3748,49 @@ impl World {
         self.social.retain(&live_set);
     }
 
+    /// Seed permanent completion markers from persisted rehab records.
+    ///
+    /// Legacy saves may contain a completed `RehabProgramRecord` without the
+    /// `completed:<program key>` skill marker now used to block re-enrollment.
+    /// Deriving the marker from durable records keeps those saves from gaining
+    /// repeated hope/purpose bumps and zombie active records. Mixed
+    /// active/completed duplicates are closed here as well: otherwise the
+    /// completion marker would strip the active skill key while the stale
+    /// record kept consuming capacity and blocked every later enrollment.
+    fn reconcile_rehab_completion_markers(&mut self) {
+        let markers: Vec<(PrisonerId, String, String)> = self
+            .rehab_records
+            .iter()
+            .flat_map(|(pid, records)| {
+                records.iter().filter(|r| r.completed).map(move |r| {
+                    let program_key = r.program.key().to_string();
+                    (*pid, format!("completed:{program_key}"), program_key)
+                })
+            })
+            .collect();
+        for (pid, marker, program_key) in markers {
+            if let Some(records) = self.rehab_records.get_mut(&pid) {
+                for record in records
+                    .iter_mut()
+                    .filter(|r| r.program.key() == program_key && r.is_active())
+                {
+                    record.dropped = true;
+                    record.failure_reason = Some(RehabFailureReason::ProgramCompleted);
+                }
+            }
+            if let Some(p) = self.prisoners.iter_mut().find(|p| p.id == pid) {
+                p.skills.insert(marker, 1.0);
+                p.skills.remove(&program_key);
+            }
+        }
+    }
+
     fn rehab_step(&mut self) {
         use alc_social::rehab::{
             RehabOutcome, RehabPrisonerState, RehabProgram, apply_program_progress,
-            enroll_in_program,
+            enroll_in_program, has_completed_program,
         };
+        self.reconcile_rehab_completion_markers();
         let programs = [
             RehabProgram::Education,
             RehabProgram::Vocational,
@@ -3875,12 +3949,14 @@ impl World {
                         .push(RehabProgramRecord::new(program, day));
                 }
 
-                let terminal = self
+                // Legacy saves can carry duplicate records for one program.
+                // Progress belongs to the newest *active* record, never to an
+                // older completed/dropped entry that happens to come first.
+                let has_active_record = self
                     .rehab_records
                     .get(&pid)
-                    .and_then(|recs| recs.iter().find(|r| r.program == program))
-                    .map(|r| r.completed || r.dropped);
-                if terminal == Some(true) {
+                    .is_some_and(|recs| recs.iter().any(|r| r.program == program && r.is_active()));
+                if !has_active_record {
                     state.skills.remove(program.key());
                     continue;
                 }
@@ -3889,6 +3965,7 @@ impl World {
                     RehabOutcome::Progress(delta) if delta > 0.0 => {
                         if let Some(rec) = self.rehab_records.get_mut(&pid).and_then(|recs| {
                             recs.iter_mut()
+                                .rev()
                                 .find(|r| r.program == program && r.is_active())
                         }) {
                             rec.progress_days += 1;
@@ -3914,6 +3991,7 @@ impl World {
                     RehabOutcome::Progress(_) => {
                         if let Some(rec) = self.rehab_records.get_mut(&pid).and_then(|recs| {
                             recs.iter_mut()
+                                .rev()
                                 .find(|r| r.program == program && r.is_active())
                         }) {
                             let idle_days = day
@@ -3934,7 +4012,9 @@ impl World {
                     }
                     RehabOutcome::Completed => {
                         if let Some(rec) = self.rehab_records.get_mut(&pid).and_then(|recs| {
-                            recs.iter_mut().find(|r| r.program == program && !r.dropped)
+                            recs.iter_mut()
+                                .rev()
+                                .find(|r| r.program == program && r.is_active())
                         }) {
                             rec.completed = true;
                             rec.failure_reason = Some(RehabFailureReason::ProgramCompleted);
@@ -3964,7 +4044,8 @@ impl World {
                         };
                         if let Some(rec) = self.rehab_records.get_mut(&pid).and_then(|recs| {
                             recs.iter_mut()
-                                .find(|r| r.program == program && !r.completed && !r.dropped)
+                                .rev()
+                                .find(|r| r.program == program && r.is_active())
                         }) {
                             rec.dropped = true;
                             rec.failure_reason = Some(reason);
@@ -3972,7 +4053,25 @@ impl World {
                         self.events
                             .emit_rehab_failure(self.time, pid.raw(), program.key(), reason);
                     }
-                    RehabOutcome::NoEnrollment => {}
+                    RehabOutcome::NoEnrollment => {
+                        // A completion marker or a legacy skill-only record can
+                        // leave an active record with no live enrollment. Close
+                        // it so it cannot consume capacity forever.
+                        let reason = if has_completed_program(&state, program) {
+                            RehabFailureReason::ProgramCompleted
+                        } else {
+                            RehabFailureReason::DroppedOut
+                        };
+                        if let Some(recs) = self.rehab_records.get_mut(&pid) {
+                            for rec in recs
+                                .iter_mut()
+                                .filter(|r| r.program == program && r.is_active())
+                            {
+                                rec.dropped = true;
+                                rec.failure_reason = Some(reason);
+                            }
+                        }
+                    }
                 }
             }
 
@@ -4139,8 +4238,7 @@ impl World {
                 found.guard.raw(), found.item, holder.raw(), inv_count, found.item, found.severity))
             .with_actor(holder.raw())
             .with_cause(format!("discovery by guard {}", found.guard.raw()));
-        self.history.push(found_ev.clone());
-        self.events.emit(found_ev);
+        self.emit_history_event(found_ev);
 
         let conf_ev = WorldEvent::new(
             0,
@@ -4155,8 +4253,7 @@ impl World {
         )
         .with_actor(holder.raw())
         .with_cause("confiscation following discovery");
-        self.history.push(conf_ev.clone());
-        self.events.emit(conf_ev);
+        self.emit_history_event(conf_ev);
     }
 
     fn contraband_state_entry(&mut self, id: PrisonerId) -> &mut PrisonerContrabandState {
@@ -4272,8 +4369,7 @@ impl World {
             .with_cause(format!(
                 "prerequisites, staffing and materials validated for project {id}"
             ));
-            self.history.push(ev.clone());
-            self.events.emit(ev);
+            self.emit_history_event(ev);
         }
         for (id, reason, kind) in cancelled {
             let ev = WorldEvent::new(
@@ -4288,8 +4384,7 @@ impl World {
                 ),
             )
             .with_cause(reason.clone());
-            self.history.push(ev.clone());
-            self.events.emit(ev);
+            self.emit_history_event(ev);
         }
         for (id, reason, kind) in failed {
             let ev = WorldEvent::new(
@@ -4304,8 +4399,7 @@ impl World {
                 ),
             )
             .with_cause(reason.clone());
-            self.history.push(ev.clone());
-            self.events.emit(ev);
+            self.emit_history_event(ev);
         }
         for proj in completed {
             let id = self.add_facility(proj.kind, proj.wing, proj.capacity);
@@ -4323,8 +4417,7 @@ impl World {
                 "project {} completed after {} days",
                 proj.id, proj.total_days
             ));
-            self.history.push(ev.clone());
-            self.events.emit(ev);
+            self.emit_history_event(ev);
         }
 
         // Keep terminal projects for auditability; prune only very old terminal entries to avoid unbounded growth.
@@ -4421,8 +4514,7 @@ impl World {
                 ),
             )
             .with_cause(reason);
-            self.history.push(ev.clone());
-            self.events.emit(ev);
+            self.emit_history_event(ev);
             return true;
         }
         false
@@ -4461,8 +4553,7 @@ impl World {
                 ),
             )
             .with_cause(reason);
-            self.history.push(ev.clone());
-            self.events.emit(ev);
+            self.emit_history_event(ev);
             return true;
         }
         false
@@ -4500,8 +4591,7 @@ impl World {
                 ),
             )
             .with_cause(reason);
-            self.history.push(ev.clone());
-            self.events.emit(ev);
+            self.emit_history_event(ev);
             return true;
         }
         false
@@ -4545,8 +4635,7 @@ impl World {
                 format!("Construction approved: {} (project {})", kind.display(), id),
             )
             .with_cause("observer advance approved the queued request".to_string());
-            self.history.push(ev.clone());
-            self.events.emit(ev);
+            self.emit_history_event(ev);
         }
         if let Some(proj) = completed_proj {
             let id = self.add_facility(proj.kind, proj.wing, proj.capacity);
@@ -4564,8 +4653,7 @@ impl World {
                 "project {} completed after {} days",
                 proj.id, proj.total_days
             ));
-            self.history.push(ev.clone());
-            self.events.emit(ev);
+            self.emit_history_event(ev);
         }
         self.construction_queue.iter().any(|p| p.id == project_id)
     }
@@ -4588,8 +4676,7 @@ impl World {
             format!("Policy changed: {key}: {old:.2} -> {new:.2}"),
         )
         .with_cause("warden/policy mutation audit");
-        self.history.push(ev.clone());
-        self.events.emit(ev);
+        self.emit_history_event(ev);
     }
 
     /// Apply a warden action inside the authoritative world state. All engine
@@ -5203,5 +5290,160 @@ mod tests {
         w.audit_policy_change("security_level", 0.5, 0.7);
         assert!(w.events.recent().any(|e| e.kind == EventKind::PolicyChange));
         assert!(w.history.iter().any(|e| e.kind == EventKind::PolicyChange));
+    }
+
+    #[test]
+    fn durable_history_events_carry_bus_ids() {
+        let mut w = running(30, TimeSpeed::Paused);
+        w.audit_policy_change("security_level", 0.5, 0.7);
+        assert!(w.history.iter().all(|e| e.id > 0));
+        let event = w.history.last().expect("durable history event");
+        assert!(
+            w.events.recent().any(|e| e.id == event.id),
+            "durable id {} missing from bus",
+            event.id
+        );
+    }
+
+    #[test]
+    fn transfer_out_purges_gang_roster() {
+        let mut w = running(31, TimeSpeed::Paused);
+        let id = w
+            .prisoners
+            .iter()
+            .min_by_key(|p| p.id.0)
+            .map(|p| p.id)
+            .expect("prisoner");
+        assert!(w.create_gang(GangId(1), "Transfer Gang", id));
+        assert!(w.gangs.iter().any(|g| g.members.contains(&id)));
+        for f in &mut w.facilities {
+            f.capacity = 2;
+        }
+        w.days_simulated = 10;
+        w.last_transfer_day = 0;
+        w.resolve_transfers_step();
+        assert!(w.prisoners.iter().all(|p| p.id != id));
+        assert!(w.gangs.iter().all(|g| !g.members.contains(&id)));
+        assert!(w.prisoners.iter().all(|p| p.gang_affiliation != Some(1)));
+    }
+
+    #[test]
+    fn escape_consequence_helper_audits_security_and_investigation() {
+        let mut w = running(32, TimeSpeed::Paused);
+        let id = w.prisoners[0].id;
+        let consequences = EscapeConsequences {
+            outcome: EscapeOutcome::DiscoveredDuring,
+            security_level_delta: 0.2,
+            investigation_opened: true,
+            investigation_scope: 0.8,
+            lockdown_recommended: true,
+            policy_pressure: 1.0,
+            prisoner_discipline_severity: 0.7,
+            notes: vec!["test note".into()],
+            ..Default::default()
+        };
+        let mut event =
+            WorldEvent::new(0, w.time, EventKind::EscapeAttempt, "escape").with_actor(id.raw());
+        let mut rng = RngStream::new(3, 3);
+        w.apply_escape_consequences_step(&consequences, id, &mut event, &mut rng);
+        assert!((w.policies.security_level - 0.8).abs() < 1e-6);
+        assert!(event.causes.iter().any(|c| c == "test note"));
+        assert!(event.causes.iter().any(|c| c.contains("investigation")));
+        assert!(
+            w.events
+                .recent()
+                .any(|e| e.kind == EventKind::Investigation)
+        );
+        assert!(
+            w.history
+                .iter()
+                .any(|e| e.kind == EventKind::Investigation && e.id > 0)
+        );
+    }
+
+    fn rehab_record(
+        program: alc_social::RehabProgram,
+        completed: bool,
+        attendance_days: u32,
+    ) -> RehabProgramRecord {
+        RehabProgramRecord {
+            program,
+            enrolled_day: 0,
+            progress_days: 1,
+            progress_sum: 1.0,
+            completed,
+            dropped: false,
+            attendance_days,
+            last_attended_day: Some(1),
+            failure_reason: None,
+        }
+    }
+
+    #[test]
+    fn legacy_rehab_completion_records_seed_markers_and_close_stale_active_duplicates() {
+        let mut w = running(33, TimeSpeed::Paused);
+        let id = w.prisoners[0].id;
+        let program = alc_social::RehabProgram::Education;
+        let marker = format!("completed:{}", program.key());
+        w.rehab_records.insert(
+            id,
+            vec![
+                rehab_record(program, true, 30),
+                rehab_record(program, false, 2),
+            ],
+        );
+        w.prisoners[0].skills.insert(program.key().to_string(), 0.2);
+        // Motivation cannot re-enroll anything; this test isolates the marker.
+        w.prisoners[0].condition.hope = 0.0;
+        w.policies.rehab_funding_multiplier = 0.0;
+        w.rehab_step();
+        assert_eq!(w.prisoners[0].skills.get(&marker), Some(&1.0));
+        assert!(!w.prisoners[0].skills.contains_key(program.key()));
+        let records = &w.rehab_records[&id];
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].attendance_days, 30);
+        assert!(records[0].completed);
+        assert!(records[1].dropped, "mixed active duplicate must be closed");
+        assert_eq!(
+            records[1].failure_reason,
+            Some(RehabFailureReason::ProgramCompleted)
+        );
+        assert_eq!(
+            records.iter().filter(|r| r.is_active()).count(),
+            0,
+            "completion must not strand capacity-consuming active records"
+        );
+    }
+
+    #[test]
+    fn rehab_progress_updates_newest_active_duplicate_record() {
+        let mut w = running(34, TimeSpeed::Paused);
+        let id = w.prisoners[0].id;
+        let program = alc_social::RehabProgram::Education;
+        w.rehab_records.insert(
+            id,
+            vec![
+                rehab_record(program, false, 2),
+                rehab_record(program, false, 2),
+            ],
+        );
+        w.prisoners[0].skills.insert(program.key().to_string(), 0.2);
+        w.prisoners[0].condition.hope = 0.0;
+        w.policies.rehab_funding_multiplier = 2.0;
+        w.rehab_step();
+        let records = &w.rehab_records[&id];
+        assert_eq!(records[0].attendance_days, 2);
+        assert!(
+            records[1].attendance_days > 2,
+            "newest active record must receive progress"
+        );
+    }
+
+    #[test]
+    fn rehab_progress_signal_saturates_large_attendance() {
+        let mut record = rehab_record(alc_social::RehabProgram::Education, false, u32::MAX);
+        record.completed = true;
+        let signal = RehabProgramRecord::progress_signal(&[record]);
+        assert!((0.0..=1.0).contains(&signal));
     }
 }

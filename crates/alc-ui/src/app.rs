@@ -7,7 +7,7 @@
 //!
 //! The binary crate (`alcagent`) adapts `sumo::Sim` to [`SimDriver`] locally.
 
-use crate::views::{self, AppStatus};
+use crate::views::{self, AppStatus, OVERVIEW_EVENT_LIMIT};
 use crate::{CONSTRUCTION_KINDS, UiState, ViewMode};
 use alc_core::TimeSpeed;
 use anyhow::Result;
@@ -40,6 +40,19 @@ pub trait SimDriver {
     fn stats_since(&self, at: SimTime) -> Stats;
     /// Get events since a point in time.
     fn events_since(&self, at: SimTime) -> Vec<sumo::WorldEvent>;
+    /// Most recent `n` events in chronological order for capped previews.
+    ///
+    /// The default caps `events_since` so existing drivers keep working;
+    /// drivers with direct `EventBus` access should override with
+    /// `EventBus::last(n)` to avoid cloning the whole bounded bus.
+    fn recent_events(&self, n: usize) -> Vec<sumo::WorldEvent> {
+        let mut events = self.events_since(SimTime::EPOCH);
+        if events.len() > n {
+            let drain = events.len() - n;
+            events.drain(..drain);
+        }
+        events
+    }
     /// Get all prisoners for the prisoner view.
     fn prisoners(&self) -> Vec<sumo::PrisonerSummary>;
     /// Get all gangs for the gang view.
@@ -576,8 +589,13 @@ impl App {
             facilities: self.driver.facilities(),
             construction_queue: self.driver.construction_queue(),
             events: self.visible_events(),
+            recent_events: self.driver.recent_events(OVERVIEW_EVENT_LIMIT),
             incident_log: self.driver.incident_log(),
+            // Lists stay filtered; detail panels use the unfiltered sources
+            // below so names/causal links do not disappear under a query.
             incident_records: self.visible_incidents(),
+            all_prisoners: self.driver.prisoners(),
+            all_incident_records: self.driver.incident_records(),
             decision_audit: self.visible_decisions(),
             policy: self.driver.policy_summary(),
             post_release_records: self.driver.post_release_records(),
@@ -611,14 +629,28 @@ impl App {
         }
     }
 
-    fn render(&self, frame: &mut Frame) {
-        let status = AppStatus {
+    /// Status-bar context, including the *global* open-critical count. This
+    /// must not come from the filtered incident list, or a query can hide the
+    /// critical warning from the observer.
+    fn app_status(&self) -> AppStatus {
+        let open_critical = self
+            .driver
+            .incident_records()
+            .into_iter()
+            .filter(|r| !r.resolved && r.severity >= 0.75)
+            .count();
+        AppStatus {
             paused: self.paused,
             ticks_per_second: self.ticks_per_second,
             status_msg: self.status_msg.clone(),
             save_dir: self.save_dir.display().to_string(),
             autosave_days: self.autosave_days,
-        };
+            open_critical,
+        }
+    }
+
+    fn render(&self, frame: &mut Frame) {
+        let status = self.app_status();
         let data = self.build_view_data();
         views::draw(frame, &data, &self.ui, &status);
     }
@@ -735,6 +767,23 @@ impl App {
 
     fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
         let ctrl = modifiers.contains(KeyModifiers::CONTROL);
+        // Help is modal: it consumes every key so no control below can quit or
+        // change the simulation while the overlay is open.
+        if self.ui.show_help {
+            match code {
+                KeyCode::Esc | KeyCode::Char('?') => {
+                    self.ui.show_help = false;
+                }
+                KeyCode::Up | KeyCode::Char('k' | 'h') => {
+                    self.ui.help_scroll = self.ui.help_scroll.saturating_sub(1);
+                }
+                KeyCode::Down | KeyCode::Char('j' | 'l') => {
+                    self.ui.help_scroll = self.ui.help_scroll.saturating_add(1);
+                }
+                _ => {}
+            }
+            return;
+        }
         if self.ui.search_active {
             match code {
                 KeyCode::Esc | KeyCode::Enter => {
@@ -751,6 +800,10 @@ impl App {
                 KeyCode::Char('l') | KeyCode::Char('L') if ctrl => {
                     let _ = self.quick_load();
                 }
+                KeyCode::Char('r') | KeyCode::Char('R') if ctrl => {
+                    // Resolve/acknowledge without leaving search input mode.
+                    self.resolve_critical_incident();
+                }
                 // Clear the query while keeping the search input open.
                 KeyCode::Char('w') | KeyCode::Char('W') if ctrl => {
                     self.ui.search.clear();
@@ -765,20 +818,7 @@ impl App {
             }
             return;
         }
-        if self.ui.show_help {
-            match code {
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.ui.help_scroll = self.ui.help_scroll.saturating_sub(1);
-                    return;
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.ui.help_scroll = self.ui.help_scroll.saturating_add(1);
-                    return;
-                }
-                _ => {}
-            }
-        }
-        if modifiers.contains(KeyModifiers::CONTROL) {
+        if ctrl {
             if code == KeyCode::Char('c') || code == KeyCode::Char('C') {
                 self.should_quit = true;
             } else if code == KeyCode::Char('l') || code == KeyCode::Char('L') {
@@ -791,6 +831,94 @@ impl App {
                 self.resolve_critical_incident();
             }
             return;
+        }
+
+        // View-specific controls run before global lockdown shortcuts so
+        // Warden's `U` selects a project instead of lifting lockdown.
+        if matches!(self.ui.mode, ViewMode::Warden) {
+            match code {
+                KeyCode::Char('c') => {
+                    self.ui.construction_kind_index =
+                        (self.ui.construction_kind_index + 1) % CONSTRUCTION_KINDS.len();
+                    self.notify(format!(
+                        "Construction kind: {:?}",
+                        CONSTRUCTION_KINDS[self.ui.construction_kind_index]
+                    ));
+                    return;
+                }
+                KeyCode::Char('C') => {
+                    let kind = CONSTRUCTION_KINDS
+                        [self.ui.construction_kind_index % CONSTRUCTION_KINDS.len()];
+                    let capacity = match kind {
+                        alc_world::FacilityKind::CellBlock | alc_world::FacilityKind::Dormitory => {
+                            40
+                        }
+                        _ => 10,
+                    };
+                    let id = self.driver.enqueue_construction(kind, 1, capacity);
+                    self.notify(format!(
+                        "Queued {} project #{id} (wing 1, cap {capacity})",
+                        kind.display()
+                    ));
+                    self.ui.selected_construction = Some(id);
+                    return;
+                }
+                KeyCode::Char('u') => {
+                    self.cycle_construction(1);
+                    return;
+                }
+                KeyCode::Char('U') => {
+                    self.cycle_construction(-1);
+                    return;
+                }
+                KeyCode::Char('x') | KeyCode::Char('X') => {
+                    if let Some(id) = self.ui.selected_construction {
+                        let reason = if matches!(code, KeyCode::Char('X')) {
+                            "observer-marked failure"
+                        } else {
+                            "observer cancellation"
+                        };
+                        let ok = if matches!(code, KeyCode::Char('X')) {
+                            self.driver.fail_construction(id, reason)
+                        } else {
+                            self.driver.cancel_construction(id, reason)
+                        };
+                        self.notify(format!(
+                            "Project #{id} {} {}",
+                            reason,
+                            if ok { "recorded" } else { "unavailable" }
+                        ));
+                    } else {
+                        self.notify("No construction project selected");
+                    }
+                    return;
+                }
+                KeyCode::Char('>') => {
+                    if let Some(id) = self.ui.selected_construction {
+                        let ok = self.driver.advance_construction(id, 1);
+                        self.notify(format!(
+                            "Advanced project #{id} by 1 day: {}",
+                            if ok { "ok" } else { "unavailable" }
+                        ));
+                    } else {
+                        self.notify("No construction project selected");
+                    }
+                    return;
+                }
+                KeyCode::Char('v') => {
+                    if let Some(id) = self.ui.selected_construction {
+                        let ok = self.driver.approve_construction(id, "observer approval");
+                        self.notify(format!(
+                            "Project #{id} approval: {}",
+                            if ok { "recorded" } else { "unavailable" }
+                        ));
+                    } else {
+                        self.notify("No construction project selected");
+                    }
+                    return;
+                }
+                _ => {}
+            }
         }
 
         match code {
@@ -820,7 +948,7 @@ impl App {
                 self.driver.set_lockdown(true);
                 self.notify("Lockdown enabled");
             }
-            KeyCode::Char('U') => {
+            KeyCode::Char('U') if !matches!(self.ui.mode, ViewMode::Warden) => {
                 self.driver.set_lockdown(false);
                 self.notify("Lockdown lifted");
             }
@@ -937,71 +1065,6 @@ impl App {
                     }
                 ));
             }
-            KeyCode::Char('c') if matches!(self.ui.mode, ViewMode::Warden) => {
-                self.ui.construction_kind_index =
-                    (self.ui.construction_kind_index + 1) % CONSTRUCTION_KINDS.len();
-                self.notify(format!(
-                    "Construction kind: {:?}",
-                    CONSTRUCTION_KINDS[self.ui.construction_kind_index]
-                ));
-            }
-            KeyCode::Char('C') if matches!(self.ui.mode, ViewMode::Warden) => {
-                let kind =
-                    CONSTRUCTION_KINDS[self.ui.construction_kind_index % CONSTRUCTION_KINDS.len()];
-                let capacity = match kind {
-                    alc_world::FacilityKind::CellBlock | alc_world::FacilityKind::Dormitory => 40,
-                    _ => 10,
-                };
-                let id = self.driver.enqueue_construction(kind, 1, capacity);
-                self.notify(format!(
-                    "Queued {} project #{id} (wing 1, cap {capacity})",
-                    kind.display()
-                ));
-                self.ui.selected_construction = Some(id);
-            }
-            KeyCode::Char('x') | KeyCode::Char('X') if matches!(self.ui.mode, ViewMode::Warden) => {
-                if let Some(id) = self.ui.selected_construction {
-                    let reason = if matches!(code, KeyCode::Char('X')) {
-                        "observer-marked failure"
-                    } else {
-                        "observer cancellation"
-                    };
-                    let ok = if matches!(code, KeyCode::Char('X')) {
-                        self.driver.fail_construction(id, reason)
-                    } else {
-                        self.driver.cancel_construction(id, reason)
-                    };
-                    self.notify(format!(
-                        "Project #{id} {} {}",
-                        reason,
-                        if ok { "recorded" } else { "unavailable" }
-                    ));
-                } else {
-                    self.notify("No construction project selected");
-                }
-            }
-            KeyCode::Char('>') if matches!(self.ui.mode, ViewMode::Warden) => {
-                if let Some(id) = self.ui.selected_construction {
-                    let ok = self.driver.advance_construction(id, 1);
-                    self.notify(format!(
-                        "Advanced project #{id} by 1 day: {}",
-                        if ok { "ok" } else { "unavailable" }
-                    ));
-                } else {
-                    self.notify("No construction project selected");
-                }
-            }
-            KeyCode::Char('v') if matches!(self.ui.mode, ViewMode::Warden) => {
-                if let Some(id) = self.ui.selected_construction {
-                    let ok = self.driver.approve_construction(id, "observer approval");
-                    self.notify(format!(
-                        "Project #{id} approval: {}",
-                        if ok { "recorded" } else { "unavailable" }
-                    ));
-                } else {
-                    self.notify("No construction project selected");
-                }
-            }
             KeyCode::Char('H' | 'G' | 'J' | 'Y') if matches!(self.ui.mode, ViewMode::Prisoner) => {
                 if let Some(id) = self.ui.selected_prisoner {
                     let (verb, ok) = match code {
@@ -1025,12 +1088,6 @@ impl App {
                 } else {
                     self.notify("Select a prisoner for parole controls");
                 }
-            }
-            KeyCode::Char('u') if matches!(self.ui.mode, ViewMode::Warden) => {
-                self.cycle_construction(1);
-            }
-            KeyCode::Char('O') if matches!(self.ui.mode, ViewMode::Warden) => {
-                self.cycle_construction(-1);
             }
             KeyCode::Char(c @ '1'..='9') => {
                 if let Some(mode) = views::mode_from_index((c as u8 - b'1') as usize) {
@@ -1376,6 +1433,11 @@ mod tests {
         fn events_since(&self, at: sumo::SimTime) -> Vec<sumo::WorldEvent> {
             self.sim.events_since(at)
         }
+        fn recent_events(&self, n: usize) -> Vec<sumo::WorldEvent> {
+            let mut events = self.sim.events().last_reversed(n);
+            events.reverse();
+            events
+        }
         fn prisoners(&self) -> Vec<sumo::PrisonerSummary> {
             self.sim.prisoners()
         }
@@ -1401,7 +1463,7 @@ mod tests {
             self.sim.facilities()
         }
         fn construction_queue(&self) -> Vec<sumo::ConstructionSummary> {
-            self.sim.construction_queue()
+            self.construction_queue.clone()
         }
         fn speed(&self) -> TimeSpeed {
             self.sim.speed()
@@ -2129,16 +2191,117 @@ mod tests {
     }
 
     #[test]
-    fn uppercase_u_and_o_cycle_construction_selection() {
+    fn warden_uppercase_u_cycles_projects_before_global_lockdown() {
         let mut app = app();
+        // Outside Warden view, U still lifts lockdown.
+        app.handle_key(KeyCode::Char('L'), KeyModifiers::NONE);
+        assert!(app.driver().policy_summary().lockdown);
+        app.handle_key(KeyCode::Char('U'), KeyModifiers::NONE);
+        assert!(!app.driver().policy_summary().lockdown);
+
         app.handle_key(KeyCode::Char('5'), KeyModifiers::NONE);
-        // Queue one project via the validated enqueue control.
+        app.handle_key(KeyCode::Char('L'), KeyModifiers::NONE);
         app.handle_key(KeyCode::Char('C'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('C'), KeyModifiers::NONE);
+        assert_eq!(app.ui().selected_construction, Some(2));
+        // U is the Warden's backward project cycle, not the global unlock.
+        app.handle_key(KeyCode::Char('U'), KeyModifiers::NONE);
         assert_eq!(app.ui().selected_construction, Some(1));
-        // Cycle around a single-project queue stays put.
+        assert!(app.driver().policy_summary().lockdown);
         app.handle_key(KeyCode::Char('u'), KeyModifiers::NONE);
-        assert_eq!(app.ui().selected_construction, Some(1));
-        app.handle_key(KeyCode::Char('O'), KeyModifiers::NONE);
-        assert_eq!(app.ui().selected_construction, Some(1));
+        assert_eq!(app.ui().selected_construction, Some(2));
+    }
+
+    #[test]
+    fn help_overlay_consumes_keys_and_closes_on_esc_or_question() {
+        let mut app = app();
+        app.ui_mut().show_help = true;
+        app.handle_key(KeyCode::Char('q'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char(' '), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(app.ui().show_help);
+        assert!(!app.should_quit, "help must swallow the quit key");
+        assert!(!app.is_paused(), "help must swallow pause");
+        assert!(
+            app.status_message().is_none(),
+            "help must swallow Ctrl-C/Ctrl-L controls"
+        );
+
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('l'), KeyModifiers::NONE);
+        assert_eq!(app.ui().help_scroll, 2);
+        app.handle_key(KeyCode::Char('h'), KeyModifiers::NONE);
+        assert_eq!(app.ui().help_scroll, 1);
+        app.handle_key(KeyCode::Char('?'), KeyModifiers::NONE);
+        assert!(!app.ui().show_help);
+
+        app.handle_key(KeyCode::Char('?'), KeyModifiers::NONE);
+        assert!(app.ui().show_help);
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(!app.ui().show_help);
+    }
+
+    #[test]
+    fn ctrl_r_resolves_while_search_stays_active() {
+        let mut app = app();
+        mock(&mut app).incidents = vec![critical_record(11, 0.95, false)];
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        app.ui_mut().search = "critical".to_string();
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert!(app.ui().search_active);
+        assert_eq!(app.ui().search, "critical");
+        assert_eq!(mock(&mut app).resolved_incidents, vec![11]);
+    }
+
+    #[test]
+    fn search_filter_does_not_hide_global_critical_count() {
+        let mut app = app();
+        mock(&mut app).incidents = vec![critical_record(9, 0.9, false)];
+        app.ui_mut()
+            .set_filter(sumo::incidents::IncidentFilter::all().with_min_severity(0.99));
+        assert!(app.visible_incidents().is_empty());
+        let status = app.app_status();
+        assert_eq!(status.open_critical, 1);
+        assert_eq!(
+            app.driver()
+                .incident_records()
+                .into_iter()
+                .filter(|r| !r.resolved && r.severity >= 0.75)
+                .count(),
+            status.open_critical
+        );
+    }
+
+    #[test]
+    fn view_data_keeps_unfiltered_detail_sources() {
+        let mut app = app();
+        mock(&mut app).incidents = vec![critical_record(7, 0.9, false)];
+        app.ui_mut().set_query("zzzz-no-match-zzzz");
+        let data = app.build_view_data();
+        assert!(data.prisoners.is_empty());
+        assert!(!data.all_prisoners.is_empty());
+        assert!(data.incident_records.is_empty());
+        assert_eq!(data.all_incident_records.len(), 1);
+    }
+
+    #[test]
+    fn recent_events_preview_uses_the_bounded_tail() {
+        let mut app = app();
+        for i in 0..5u64 {
+            mock(&mut app)
+                .sim
+                .world
+                .events
+                .emit(alc_events::WorldEvent::new(
+                    0,
+                    sumo::SimTime::from_secs(i),
+                    alc_events::EventKind::Rumor,
+                    format!("event-{i}"),
+                ));
+        }
+        let events = app.driver().recent_events(2);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].summary, "event-3");
+        assert_eq!(events[1].summary, "event-4");
     }
 }

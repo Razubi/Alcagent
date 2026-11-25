@@ -33,11 +33,19 @@ pub struct ParoleSubject {
 
 impl ParoleSubject {
     pub fn served_fraction(&self) -> f32 {
-        self.sentence_served_days as f32 / self.sentence_days.max(1) as f32
+        // A zero-length sentence has no meaningful served fraction. Returning
+        // 0.0 (instead of `served / sentence.max(1)`, which is 0/1 == 0.0 only
+        // while served is zero) keeps time-served cases off the parole track.
+        if self.sentence_days == 0 {
+            return 0.0;
+        }
+        self.sentence_served_days as f32 / self.sentence_days as f32
     }
 
     pub fn is_eligible(&self) -> bool {
-        self.served_fraction() >= 0.6 && !self.disciplinary_status
+        // Explicit sentence-length guard: zero-length sentences are released as
+        // sentence-complete / time-served, never paroled.
+        self.sentence_days > 0 && self.served_fraction() >= 0.6 && !self.disciplinary_status
     }
 }
 
@@ -130,6 +138,14 @@ impl ParoleBoard {
         let rehab = rehab.clamp(0.0, 1.0);
         let risk = risk.clamp(0.0, 1.0);
 
+        // A zero-length sentence has no parole phase. Reject explicitly rather
+        // than deferring for a review that could never make it eligible.
+        if prisoner.sentence_days == 0 {
+            return ParoleDecision::Deny {
+                reason: "zero-length sentence is not parole-eligible".into(),
+            };
+        }
+
         let served_frac = prisoner.served_fraction();
         let base_eligible = prisoner.is_eligible();
 
@@ -199,6 +215,31 @@ impl ParoleBoard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zero_length_sentence_is_not_parole_eligible() {
+        let p = ParoleSubject {
+            sentence_days: 0,
+            sentence_served_days: 0,
+            disciplinary_status: false,
+            aggression: 0.1,
+        };
+        assert_eq!(p.served_fraction(), 0.0);
+        assert!(!p.is_eligible());
+        // Even with a (nonsensical) positive served count, no parole track.
+        let bogus = ParoleSubject {
+            sentence_served_days: 500,
+            ..p.clone()
+        };
+        assert_eq!(bogus.served_fraction(), 0.0);
+        assert!(!bogus.is_eligible());
+
+        // The board denies rather than defers — waiting cannot create eligibility.
+        assert!(matches!(
+            ParoleBoard::review(&p, 1.0, 1.0, 0.0),
+            ParoleDecision::Deny { .. }
+        ));
+    }
 
     #[test]
     fn parole_board_can_grant_deny_and_defer() {

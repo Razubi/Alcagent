@@ -1,5 +1,9 @@
 # NOTE: Wave 4 support needed across teams
 
+> **Historical handoff (retained; not active):** the listed Wave 4 work landed in 0.05. Current
+> status is in [`../../Project/design-status.md`](../../Project/design-status.md); only the deeper
+> items below (real nav graph, full knowledge store, provider adapters) remain post-0.05 work.
+
 **From:** Lead
 **To:** Cognition, World/Space, UI, Social/Economy, QA workers, and the Sumo AI team
 **Date:** 2026-11-20

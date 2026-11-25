@@ -1,5 +1,10 @@
 # Sumo Beta 0.05 — Update List (Deep-Planning Draft)
 
+> **Historical planning snapshot:** the 0.05 items in this draft have landed, including the
+> buildable `alc-gui` observer and both spatial frontends. Current status is in
+> [`../../Project/PROJECT.md`](../../Project/PROJECT.md); API details are in
+> [`../../../sumo/SUMO_API.md`](../../../sumo/SUMO_API.md).
+
 - **Target version:** `sumo` **0.5.0-beta.1** (semver prerelease of `0.5.0`; iteration path `0.5.0-beta.2` → … → `0.5.0`)
 - **Release theme:** "The Living Institution"
 - **Sole focus:** the `sumo` engine crate plus its immediate observation surface (`alc-gui`), and the minimal engine fixes required to ship it.

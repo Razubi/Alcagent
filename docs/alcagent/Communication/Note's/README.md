@@ -18,6 +18,6 @@ them by subject: `wave4-support-needed.md`, `gang-roster-cleanup.md`, `why-rehab
 
 | Note | From | Subject |
 |---|---|---|
-| `wave4-support-needed.md` | Lead | Cross-team support needed for the next update (not just `sumo`) |
-| `persistence-lib-rs-changes-needed.md` | Persistence & Determinism engineer | Open handoff: persistence struct changes require `sumo/src/lib.rs` converter edits (blocks build) |
-| `wave4-implementation-status.md` | Integration / Drivers & Docs engineer | Wave 4 R1–R7 status and Wave 5 open items |
+| `wave4-support-needed.md` | Lead | Historical cross-team Wave 4 request (not just `sumo`) |
+| `persistence-lib-rs-changes-needed.md` | Persistence & Determinism engineer | Resolved: persistence struct changes required `sumo/src/lib.rs` converter edits |
+| `wave4-implementation-status.md` | Integration / Drivers & Docs engineer | Historical Wave 4 R1–R7 status; later work is tracked in `../Project/design-status.md` |

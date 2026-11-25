@@ -1,15 +1,21 @@
-# Capabilities (`../Systems/capabilities.md`)
+# Capabilities and Lifecycle Integration
 
 Design note for the W3 backlog item: capabilities, contraband and rehabilitation
-engine integration. New public API documented fully in [`engine-api.md`](engine-api.md).
+engine integration. Current public API is documented in [`SUMO_API.md`](../../sumo/SUMO_API.md).
 
-**Status (beta-0.05, verified 2026-11-25):** `alc-core::capability` (catalog + delta table) and
-`alc-social::{contraband, rehab}` are implemented, tested and wired into the authoritative world:
-`World::contraband_step` / `World::rehab_step` run at the day boundary, `World::rehab_records`
-tracks enrollment, and `sumo` mirrors resolution state, enforces bounds and hashes it into the
-state digest. The older names in the contract sketch below (`contraband_hidden`, `programs`,
-`set_rehab_program`) are historical targets — the wired equivalents are the world-side steps
-and `RehabProgram` records above.
+## Current wiring (beta-0.05, verified 2026-11-25)
+
+`alc-core::capability` (catalog + delta table) and `alc-social::{contraband, rehab}` are
+implemented, tested and wired into the authoritative world: `World::contraband_step` /
+`World::rehab_step` run at the day boundary, `World::rehab_records` tracks enrollment, and `sumo`
+mirrors resolution state, enforces bounds and hashes it into the state digest. The historical
+contract sketch below is retained for original intent; the wired equivalents are the world-side
+steps and `RehabProgram` records described there.
+
+## Historical contract sketch (W3)
+
+Older names in this section (`contraband_hidden`, `programs`, `set_rehab_program`, `rehab_tick`)
+are historical targets, not the current public API.
 
 ## Capability system (`alc_core`)
 

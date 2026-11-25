@@ -231,6 +231,21 @@ impl EventBus {
         out
     }
 
+    /// The most recent `n` events in chronological order.
+    ///
+    /// Clones only the requested tail instead of materialising the whole
+    /// bounded history, which matters for observer snapshots on long runs.
+    pub fn last(&self, n: usize) -> Vec<WorldEvent> {
+        let mut out: Vec<WorldEvent> = self.history.iter().rev().take(n).cloned().collect();
+        out.reverse();
+        out
+    }
+
+    /// The most recent `n` events, newest first (ready for display).
+    pub fn last_reversed(&self, n: usize) -> Vec<WorldEvent> {
+        self.history.iter().rev().take(n).cloned().collect()
+    }
+
     pub fn since(&self, at: SimTime) -> impl Iterator<Item = &WorldEvent> {
         self.history.iter().filter(move |e| e.at >= at)
     }
@@ -368,6 +383,33 @@ mod tests {
         let _ = EventKind::RehabilitationProgress;
         let _ = EventKind::RehabilitationFailure;
         let _ = EventKind::PostRelease;
+    }
+
+    #[test]
+    fn last_returns_only_the_requested_tail_in_both_orders() {
+        let mut bus = EventBus::new(16);
+        for i in 0..8 {
+            bus.emit(WorldEvent::new(
+                1,
+                SimTime { secs: i },
+                EventKind::Admission,
+                format!("event {i}"),
+            ));
+        }
+        let chronological = bus.last(3);
+        assert_eq!(
+            chronological.iter().map(|e| e.id).collect::<Vec<_>>(),
+            vec![6, 7, 8]
+        );
+        assert_eq!(
+            bus.last_reversed(3)
+                .iter()
+                .map(|e| e.id)
+                .collect::<Vec<_>>(),
+            vec![8, 7, 6]
+        );
+        assert!(bus.last(0).is_empty());
+        assert_eq!(bus.last(100).len(), 8);
     }
 
     #[test]

@@ -7,23 +7,23 @@ Master Directive lives in `AGENTS.md` (mirror of the original `agents.md` direct
 
 ## Status (version 0.05 — release candidate, all specs complete)
 
-The simulation is playable and the workspace **builds**. Wave 4 added intentions, a council of
-drives, memory-driven choices, a navigation graph, real-time pawn positions, structured conflicts
-and an engine-level map surface. The final 0.05 wave added gang politics, AI orchestration/batching,
-long-run soak acceptance and release documentation; all 14 Ralph specs in `dev/ralph/specs` are `done`.
+The simulation is playable and the workspace **builds**. The 0.05 release added intentions, a
+council of drives, memory-driven choices, a navigation-graph-shaped map surface with real-time
+pawn positions, structured conflicts, gang politics, AI orchestration/batching, long-run soak
+acceptance and release documentation; all 14 Ralph specs in `dev/ralph/specs` are `done`.
 
 **0.05 status (R0):** the major UI/GUI overhaul and real game map are implemented — the TUI and
 the egui GUI (`alc-gui`, a buildable workspace member) both render a spatial map with cell/wing
 occupancy, prisoner/guard pawn positions, movement/path hints and incident overlays from
 `sumo::MapFrame`. See `dev/ralph/specs/002-map-gui-acceptance.md`.
 
-**Verified 2026-11-25:**
+**Verified at the 0.05 release (2026-11-25):**
 - `cargo fmt --all -- --check`, `cargo build --workspace --all-targets` and
-  `cargo test --workspace` — **green**. 439 passed, 0 failed, 1 ignored (the
-  10k-entry `logs_over_limit_are_detected` stress test), with no build warnings.
-  Includes the 365-day and 730-day 3-seed chaos soaks, save/load determinism,
-  Wave 4 suites (`engine_state_roundtrip`, `invariants_negative`, `log_wiring`,
-  `map_frame`, `integration_wave4`), gang politics and AI orchestration suites.
+  `cargo test --workspace` — **green**, with no build warnings. The full suite includes the
+  10k-entry `logs_over_limit_are_detected` stress test, the 365-day and 730-day 3-seed chaos
+  soaks, save/load determinism, engine integration suites (`engine_state_roundtrip`,
+  `invariants_negative`, `log_wiring`, `map_frame`, `integration_wave4`), gang politics and AI
+  orchestration suites.
 - Earlier baselines: 184 passed after Wave 4, 136 passed before Wave 4.
 
 ## Quick start
@@ -49,15 +49,19 @@ cargo run -- --help           # CLI + TUI keybindings
 |---|---|
 | Current status/design cross-reference | `../Project/design-status.md` |
 | Version history and milestones | `../Project/version-milestones.md` |
-| Engine API | `../Systems/engine-api.md` |
+| Engine API | `../../sumo/SUMO_API.md` |
 | Guard/warden/parole/rehab contracts | `../Systems/` |
 | Design intent | `../Design/` |
-| Wave 4 engine support requests | `../Communication/Sumo-AI-Team/NEXT-UPDATE-SUPPORT.md` |
-| Cross-team Wave 4 note | `../Communication/Note's/wave4-support-needed.md` |
-| Wave 4 implementation status (driver/integration pass) | `../Communication/Note's/wave4-implementation-status.md` |
+| Historical Wave 4 engine support requests | `../Communication/Sumo-AI-Team/NEXT-UPDATE-SUPPORT.md` |
+| Historical cross-team Wave 4 note | `../Communication/Note's/wave4-support-needed.md` |
+| Historical Wave 4 implementation status (driver/integration pass) | `../Communication/Note's/wave4-implementation-status.md` |
 | Audit and soak reports | `../Reports/` |
 
-## Wave 4 driver / integration pass (added by Integration & Docs engineer)
+## Wave 4 driver / integration pass (historical; retained for context)
+
+> This section records the earlier Wave 4 handoff. R1–R7 and council/shadow behavior landed, and
+> later 0.05 specs reconciled policy/action application; do not read the Wave 5 suggestions below
+> as current open work.
 
 `sumo/src/drivers.rs` hardening:
 - `apply_warden_action` now emits events for previously silent actions

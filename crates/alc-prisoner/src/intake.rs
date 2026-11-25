@@ -125,10 +125,21 @@ pub fn generate_intake(seed: u64, id: PrisonerId) -> Prisoner {
 }
 
 /// Generate a cohort of consecutive ids with independent derived streams.
+///
+/// IDs are handed out with `checked_add` so a cohort starting near `u64::MAX`
+/// stops cleanly instead of wrapping (panic in debug, duplicate IDs in release).
+/// Every generated prisoner therefore has a distinct id.
 pub fn generate_intake_cohort(seed: u64, first_id: u64, count: u32) -> Vec<Prisoner> {
-    (0..count)
-        .map(|i| generate_intake(seed, PrisonerId(first_id + i as u64)))
-        .collect()
+    let mut cohort = Vec::with_capacity(count as usize);
+    let mut next = Some(first_id);
+    for _ in 0..count {
+        let Some(id) = next else {
+            break;
+        };
+        next = id.checked_add(1);
+        cohort.push(generate_intake(seed, PrisonerId(id)));
+    }
+    cohort
 }
 
 /// Internal generator that takes an explicit stream (used by the batch helper
@@ -521,6 +532,25 @@ mod tests {
         assert!(!a.goals.is_empty());
         assert!(!a.skills.is_empty());
         assert!(a.condition.hope >= 0.0 && a.condition.hope <= 1.0);
+    }
+
+    #[test]
+    fn intake_cohort_ids_are_unique_and_never_wrap() {
+        let cohort = generate_intake_cohort(7, 10, 4);
+        let ids: Vec<u64> = cohort.iter().map(|p| p.id.raw()).collect();
+        assert_eq!(ids, vec![10, 11, 12, 13]);
+
+        // Starting at the top of the id space must truncate, not wrap or panic.
+        let tail = generate_intake_cohort(7, u64::MAX - 1, 5);
+        let tail_ids: Vec<u64> = tail.iter().map(|p| p.id.raw()).collect();
+        assert_eq!(tail_ids, vec![u64::MAX - 1, u64::MAX]);
+
+        let mut all: Vec<u64> = ids;
+        all.extend(tail_ids);
+        let mut sorted = all.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), all.len(), "cohort ids must be unique");
     }
 
     #[test]

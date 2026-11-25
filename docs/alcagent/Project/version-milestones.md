@@ -5,16 +5,15 @@
 ## Current version
 
 - **Version:** 0.05 / workspace `0.5.0-beta.1` (release candidate).
-- **State (verified 2026-11-25):** `cargo fmt --all -- --check`,
-  `cargo build --workspace --all-targets` and `cargo test --workspace` are green
-  (439 passed, 1 intentionally ignored, 0 failed), including the 365-day and
-  730-day 3-seed chaos soaks, save/load determinism, council/shadow modes,
-  brain-inspector proposals, gang politics and AI orchestration suites. All 14
-  Ralph specs are `done`.
+- **State at the 0.05 release (verified 2026-11-25):** `cargo fmt --all -- --check`,
+  `cargo build --workspace --all-targets` and `cargo test --workspace` are green, including the
+  365-day and 730-day 3-seed chaos soaks, save/load determinism, council/shadow modes,
+  brain-inspector proposals, gang politics and AI orchestration suites. All 14 Ralph specs are
+  `done`.
 - **Status:** the major UI/GUI overhaul and real game map are implemented and accepted in
   0.05 (see `dev/ralph/specs/002-map-gui-acceptance.md`); both frontends render the shared
-  `sumo::MapFrame`. Wave 4 engine surface R1–R7 is complete. Only Wave 5 depth remains
-  (real nav pathfinding, deeper map fidelity), outside the 0.05 exit criteria.
+  `sumo::MapFrame`. The historical Wave 4 engine surface R1–R7 is complete. Real nav pathfinding
+  and deeper map fidelity remain future depth, outside the 0.05 exit criteria.
 - Root `Cargo.toml` workspace `version` is reconciled to `0.5.0-beta.1`.
 
 ## Milestones
@@ -25,25 +24,25 @@
 
 ## Version 0.1 beta — planned scope
 
-Derived from `../Project/design-status.md` and the Wave 4 requests.
+Derived from `../Project/design-status.md` and the historical Wave 4 requests.
 
 ### Already resolved (not in 0.1 beta scope)
 
 Schedule resolution and need-driven decisions in tick; escape/parole intake gating; emergent
-gangs; personality-biased decisions; all 15 `WardenAction` variants; interactive TUI; economy
+gangs; personality-biased decisions; all 14 `WardenAction` variants; interactive TUI; economy
 sustainability fixes.
 
 ### Remaining scope
 
-1. **Major UI/GUI overhaul + real game map:** complete — `alc-gui` is a buildable workspace member sharing DTOs/controls with the TUI; both render `sumo::MapFrame` with facility occupancy, pawn positions, overlays, pan/zoom and hover detail. Only real nav pathfinding remains as Wave 5 depth.
+1. **Major UI/GUI overhaul + real game map:** complete — `alc-gui` is a buildable workspace member sharing DTOs/controls with the TUI; both render `sumo::MapFrame` with facility occupancy, pawn positions, overlays, pan/zoom and hover detail. Only real nav pathfinding remains as future depth.
 2. Full `KnowledgeStore` (design §9) — claims/provenance/standing; warden currently uses an inbox of delivered report ids rather than omniscient state.
-3. Wave 4 engine support (R1–R7): complete. Remaining Wave 5 gaps: real nav graph and driver-authority unification.
+3. Historical Wave 4 engine support (R1–R7): complete. Remaining future gaps: real nav graph and full driver-authority unification.
 4. Contraband and rehab full world lifecycle wiring: complete (spec 005).
 5. Post-release outcome tracking (design §15): complete (spec 005).
 6. AI-generated narrative text (no provider client wired).
 7. `World::summary()` / CLI polish; reconcile with `sumo::Observation`.
 8. `alc-gui` integration — resolved by item 1: it must be buildable and in scope for 0.05, not deferred or retired.
-9. Doc drift cleanup and test-suite green restoration. **(Done 2026-11-25: 439 passed, 1 ignored, 0 failed; all specs and active docs re-audited.)**
+9. Doc drift cleanup and test-suite green restoration. **(Done for the 0.05 release 2026-11-25; the full workspace suite was green and all specs and active docs were re-audited.)**
 
 ### Acceptance criteria
 

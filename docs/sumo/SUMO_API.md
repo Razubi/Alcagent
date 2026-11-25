@@ -17,7 +17,8 @@ modify arbitrary simulation state") is enforced by this boundary.
 
 > The 0.05 gameplay systems (policy controls, decision/incident audit, queued construction,
 > daily rehab/contraband steps, parole, report-driven warden strategy and save format v5) have
-> landed and are documented in section 12. The workspace builds and tests green at commit `f525e76`.
+> landed and are documented in section 12. The workspace build/test gates were green at the 0.05
+> release; source signatures in `crates/sumo/src/*.rs` remain authoritative.
 
 ---
 
@@ -98,8 +99,9 @@ Source: `Observation::capture` and `Stats::from_events` (`src/observation.rs`).
 `Sim::prisoners()`, `gangs()`, `guards()`, `warden()`, `economy()`, `social_edges()`,
 `facilities()` return serializable summary structs (`PrisonerSummary`, `GangSummary`,
 `GuardSummary`, `WardenSummary`, `EconomySummary`, `SocialEdge`, `FacilitySummary`) used by the
-TUI. Caveats: `WardenSummary.inbox` is always empty, `FacilitySummary.wing`/`staff_required`
-are always 0, and gang rivalry/alliance intensities are simplified to `1.0`.
+TUI. `WardenSummary.inbox` is populated from delivered guard reports (fog of war), and gang
+rivalry/alliance intensities are derived from observed social ties and declared relations.
+`FacilitySummary.wing`/`staff_required` are still 0 in this summary helper.
 
 ### 3.3 Live map (`MapFrame`)
 
@@ -129,12 +131,14 @@ until real pathfinding lands. `MapFrame::capture(&World)` is available but omits
 ### 4.1 Submitting a decision
 
 ```rust
-use alc_agents::Decision;
-use alc_core::PrisonerId;
+use alc_agents::{Decision, DecisionAction};
 
 let p1 = sim.world().prisoners[0].id;
 let p2 = sim.world().prisoners[1].id;
-let outcome = sim.deliver_decision(p1, Decision::Fight { target: p2.raw() });
+let outcome = sim.deliver_decision(
+    p1,
+    Decision::new(DecisionAction::Fight { target: p2.raw() }),
+);
 assert_eq!(outcome.applied, true);
 println!("{:?} -> {:?}", outcome.result, outcome.decision);
 ```
@@ -150,7 +154,7 @@ Applied decisions enter `sim.decision_log()`; every outcome, including rejected 
 | `MoveTo { target_facility }` | Rejected during lockdown / unknown facility. Updates the prisoner's authoritative `world.prisoner_location` (and schedule wing). |
 | `Socialize { with }` | Unknown target rejected. Adds familiarity/friendship/trust to the social dyad; emits `RelationshipShift`. |
 | `Trade { with, item }` | Unknown target or empty item rejected. Records a balanced pair of 1-unit economy ledger entries and a social delta; emits `RelationshipShift`. (No inmate wallets yet.) |
-| `Fight { target }` | Resolves via `alc_social::resolve_conflict` using aggression/discipline and a seeded RNG; applies relationship/gang outcomes; emits `Argument`/`Threat`/`Theft`/`Fight`/`GangClash`. If more than one guard is nearby, validation *repairs* the fight into `Socialize { with: 0 }`. |
+| `Fight { target }` | Resolves via `alc_social::resolve_conflict` using aggression/discipline and a seeded RNG; applies relationship/gang outcomes; emits `Argument`/`Threat`/`Theft`/`Fight`/`GangClash`. If more than one guard is nearby, validation *repairs* the fight into `Socialize { with: target }`, preserving the original counterparty. |
 | `Comply` / `Refuse` / `None` | Accepted; no world mutation. |
 | `EscapeAttempt` | Rejected during lockdown; otherwise resolves via `resolve_escape_attempt` + `apply_escape_consequences`; emits `EscapeAttempt`/`EscapePrevented`/`EscapeSucceeded`. |
 | `RequestMedical` | Raises `medical_need` by 0.35 (clamped to 1.0). |
@@ -196,16 +200,11 @@ Comply/Refuse/None) or if the prisoner has a pending decision.
   `sim.emit_event(event)` for public emission.
 - `WorldEvent { id, at, kind, summary, actors, causes, confidence }` with builders
   `with_actor`, `with_cause`, `with_confidence`. Every event carries causes (AGENTS.md §17).
-- `EventKind` (39 variants): population (`Admission`, `TransferOut`, `Release`,
-  `ParoleHearing`, `ParoleGranted`, `ParoleDenied`, `Death`), social (`RelationshipShift`,
-  `GangFormed`, `GangDisbanded`, `GangRecruit`, `GangRivalry`), conflict (`Argument`, `Threat`,
-  `Theft`, `Fight`, `GangClash`, `Protests`, `PropertyDamage`, `ContrabandFound`), health
-  (`MedicalEmergency`, `Illness`, `Injury`), security (`EscapeAttempt`, `EscapePrevented`,
-  `EscapeSucceeded`, `StaffMisconduct`, `Investigation`, `SecurityResponse`, `GuardReport`),
-  institution (`PolicyChange`, `Expansion`, `ConstructionComplete`, `FoodShortage`,
-  `EquipmentFailure`, `BudgetChange`, `ParoleBoardDecision`), narrative (`Rumor`,
-  `FamilyCorrespondence`, `Visitor`, `LeadershipDispute`, `RehabilitationSuccess`,
-  `ProgramEnrolled`) and `Dialogue`/`Interaction` (appended last to preserve bincode indices).
+- `EventKind` has **51 variants** (source of truth: `crates/alc-events/src/lib.rs`): 7
+  population/lifecycle, 3 rehab/reintegration, 3 construction, 5 social, 8 conflict/discipline,
+  3 health, 7 security, 6 institution, 6 narrative, `Dialogue`/`Interaction` (2), and the
+  append-only `ContrabandConfiscated`. The taxonomy is append-only for bincode stability; consult
+  the source enum for exact variant names and indices.
 - The bus is bounded at **50,000** events; older ones are evicted.
 - Engine-side logs: `sim.record_incident(event)`, `sim.incident_log()`,
   `sim.record_sidecar_incident(incident)`, `sim.incidents_since(at)`, `sim.record_decision(d)`,
@@ -252,7 +251,7 @@ the rationale. `Shadow` runs both on the same snapshot, applies only the baselin
 
 - `sim.warden_cycle() -> Vec<WardenAction>` — arbitrate (per policy mode) and apply.
 - `sim.apply_warden_action(action)` — engine applier; emits events, resyncs the policy mirror,
-  records `AdjustParoleRecommendation` lean. All 15 `WardenAction` variants are handled.
+  records `AdjustParoleRecommendation` lean. All 14 `WardenAction` variants are handled.
 - `sim.warden_pending() -> Vec<WardenAction>`.
 
 Note: use `Sim::set_lockdown(true)` rather than
@@ -370,8 +369,8 @@ cargo test -p sumo --test chaos_soak -- --nocapture  # 730-day, 3 seeds
 The ignored test (`logs_over_limit_are_detected`) is a 10k-entry stress case. All tests use
 fixed seeds and id/time-derived RNG streams; none require a network connection or an AI model.
 
-For design rationale, see [`../alcagent/Design/Engine/sumo-engine.md`](../alcagent/Design/Engine/sumo-engine.md)
-and [`../alcagent/Systems/engine-api.md`](../alcagent/Systems/engine-api.md).
+For design rationale, see [`SUMO_ENGINE.md`](SUMO_ENGINE.md) and the
+[warden cycle contract](../alcagent/Systems/warden-cycle.md).
 
 ---
 
@@ -425,8 +424,10 @@ sim.construction_queue() -> Vec<ConstructionSummary>
 ```
 
 `ConstructionSummary { id, kind, wing, capacity, total_days, progress_days, cost, started_day }`.
-`WardenAction::Expand` now **queues** a project (7–14 days depending on facility type) instead
-of adding the facility immediately; completion emits `ConstructionComplete`.
+Warden strategy selects a catalog key, while the world queue derives duration and cost from
+facility type and capacity. `WardenAction::Expand` now **queues** a project (7–14 days depending
+on facility type) instead of adding the facility immediately; completion emits
+`ConstructionComplete`.
 
 ### Daily rehab / contraband steps
 

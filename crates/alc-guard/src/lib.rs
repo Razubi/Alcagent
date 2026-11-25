@@ -404,6 +404,12 @@ pub struct Guard {
     /// Sim-hour of the last assistance escalation (cooldown gate).
     #[serde(default)]
     pub last_escalation_hour: u64,
+    /// Cumulative mistakes; survives bounded history trimming.
+    #[serde(default)]
+    pub cumulative_mistakes: u32,
+    /// Cumulative policy violations; survives bounded history trimming.
+    #[serde(default)]
+    pub cumulative_violations: u32,
 }
 
 fn default_authority() -> AuthorityLevel {
@@ -446,6 +452,8 @@ impl Guard {
             rotation: ShiftRotation::default(),
             report_credibility: credibility.clamp(0.05, 0.99),
             last_escalation_hour: 0,
+            cumulative_mistakes: 0,
+            cumulative_violations: 0,
         }
     }
 
@@ -560,19 +568,39 @@ impl Guard {
     }
 
     /// Cumulative number of recorded perceptual/enforcement mistakes.
+    /// History is bounded, so the durable counter is authoritative.
     pub fn mistake_count(&self) -> u32 {
-        self.history
-            .iter()
-            .filter(|e| e.starts_with("mistake@"))
-            .count() as u32
+        self.cumulative_mistakes
     }
 
     /// Cumulative number of recorded policy violations.
+    /// History is bounded, so the durable counter is authoritative.
     pub fn violation_count(&self) -> u32 {
-        self.history
-            .iter()
-            .filter(|e| e.starts_with("violation@"))
-            .count() as u32
+        self.cumulative_violations
+    }
+
+    /// Rebuild cumulative audit counters from legacy history on load.
+    ///
+    /// Older saves predate the durable counters, so their totals live only in
+    /// the bounded history log. New saves keep nonzero counters authoritative;
+    /// this only fills a genuine zero baseline and never double-counts.
+    pub fn restore_legacy_counters_from_history(&mut self) {
+        if self.cumulative_mistakes == 0 {
+            let seen = self
+                .history
+                .iter()
+                .filter(|entry| entry.starts_with("mistake@"))
+                .count();
+            self.cumulative_mistakes = u32::try_from(seen).unwrap_or(u32::MAX);
+        }
+        if self.cumulative_violations == 0 {
+            let seen = self
+                .history
+                .iter()
+                .filter(|entry| entry.starts_with("violation@"))
+                .count();
+            self.cumulative_violations = u32::try_from(seen).unwrap_or(u32::MAX);
+        }
     }
 
     /// Duty-loop step: observe surroundings/post state (stub).
@@ -835,6 +863,7 @@ impl Guard {
                 severity = severity.saturating_sub(1);
                 summary = format!("Unverified/misremembered report: {summary}");
                 self.push_history(format!("mistake@{hour}:perception"));
+                self.cumulative_mistakes = self.cumulative_mistakes.saturating_add(1);
                 result.mistakes += 1;
             }
 
@@ -879,6 +908,7 @@ impl Guard {
                     "excessive_force"
                 };
                 self.push_history(format!("violation@{hour}:{kind}"));
+                self.cumulative_violations = self.cumulative_violations.saturating_add(1);
                 result.violations += 1;
                 if let Some(target) = peak_obs {
                     result.interactions.push(GuardInteraction {
@@ -1105,5 +1135,57 @@ mod tests {
         assert!(guard.mistake_count() > 0, "no mistakes recorded");
         assert!(guard.violation_count() > 0, "no violations recorded");
         assert!(guard.history.len() <= Guard::HISTORY_CAP);
+    }
+
+    #[test]
+    fn cumulative_counts_survive_bounded_history_trimming() {
+        let mut guard = test_guard(5, PostType::Yard);
+        guard.competence = 0.05;
+        guard.integrity = 0.02;
+        guard.stress = 0.98;
+        guard.fatigue = 0.98;
+        guard.morale = 0.02;
+        guard.personality = 0.9;
+
+        let obs = [observation(401, 1.0)];
+        for hour in 0..(Guard::HISTORY_CAP * 2) {
+            guard.duty_tick_area(&obs, ctx(hour as u64), &mut RngStream::new(29, hour as u64));
+        }
+        let mistakes_in_history = guard
+            .history
+            .iter()
+            .filter(|e| e.starts_with("mistake@"))
+            .count();
+        let violations_in_history = guard
+            .history
+            .iter()
+            .filter(|e| e.starts_with("violation@"))
+            .count();
+        assert!(guard.mistake_count() > 0);
+        assert!(guard.violation_count() > 0);
+        assert!(guard.mistake_count() as usize >= mistakes_in_history);
+        assert!(guard.violation_count() as usize >= violations_in_history);
+        assert!(guard.history.len() <= Guard::HISTORY_CAP);
+
+        // Even a fully trimmed history must not erase the audit totals.
+        guard.history.clear();
+        assert!(guard.mistake_count() > 0);
+        assert!(guard.violation_count() > 0);
+    }
+
+    #[test]
+    fn legacy_counters_are_restored_once_from_history() {
+        let mut guard = test_guard(6, PostType::Yard);
+        guard.push_history("mistake@1:perception".to_string());
+        guard.push_history("mistake@2:perception".to_string());
+        guard.push_history("violation@3:bribery".to_string());
+        guard.restore_legacy_counters_from_history();
+        assert_eq!(guard.mistake_count(), 2);
+        assert_eq!(guard.violation_count(), 1);
+
+        // New counters are authoritative; a second restore must not double-count.
+        guard.push_history("mistake@4:perception".to_string());
+        guard.restore_legacy_counters_from_history();
+        assert_eq!(guard.mistake_count(), 2);
     }
 }

@@ -37,9 +37,17 @@ pub struct ViewData {
     pub social_roles: Vec<SocialRoleSummary>,
     pub facilities: Vec<FacilitySummary>,
     pub construction_queue: Vec<sumo::ConstructionSummary>,
+    /// Full filtered event history for the timeline view.
     pub events: Vec<WorldEvent>,
+    /// Capped tail for capped previews (loaded through `recent_events`).
+    pub recent_events: Vec<WorldEvent>,
     pub incident_log: Vec<WorldEvent>,
+    /// Incident rows visible in the list/summary (search + filter applied).
     pub incident_records: Vec<sumo::IncidentRecord>,
+    /// Unfiltered prisoner names for detail panels, even when lists are searched.
+    pub all_prisoners: Vec<PrisonerSummary>,
+    /// Unfiltered incident records for causal links/history in detail panels.
+    pub all_incident_records: Vec<sumo::IncidentRecord>,
     pub decision_audit: Vec<sumo::DecisionAuditRecord>,
     pub policy: sumo::PolicySummary,
     pub post_release_records: Vec<sumo::PostReleaseSummary>,
@@ -70,7 +78,13 @@ pub struct AppStatus {
     pub status_msg: Option<String>,
     pub save_dir: String,
     pub autosave_days: u64,
+    /// Global open-critical count from the driver, independent of filters.
+    pub open_critical: usize,
 }
+
+/// Number of events shown in the overview preview; the timeline keeps the
+/// full filtered history, but this preview only needs a bounded tail.
+pub const OVERVIEW_EVENT_LIMIT: usize = 10;
 
 const ALL_MODES: [ViewMode; 11] = [
     ViewMode::InstitutionOverview,
@@ -88,10 +102,10 @@ const ALL_MODES: [ViewMode; 11] = [
 
 /// Full status-bar help text. Measured at render time; tests assert it stays
 /// in sync with the keys handled in `app::App::handle_key`.
-pub const HELP_WIDE: &str = " ←↑↓→ select · 1-9,0,A views · SPACE pause · +/- speed · S save · Ctrl-L load · / search · Ctrl-W clear query · Tab pin · n notes · V auto-pause · N/E/K policy bands · p policy mode · L/U lock · x/X lockdown (non-Warden) · Ctrl-R resolve critical · c/C/u/U/x/X/> build (Warden) · v approve build · H/G/J/Y parole hearing/grant/deny/release (Prisoner) · t/r/R rehab · f/F contraband · m/o filters · d/D decision filter · ? help · q quit";
+pub const HELP_WIDE: &str = " ←↑↓→ select · 1-9,0,A views · SPACE pause · +/- speed · S save · Ctrl-L load · / search · Ctrl-W clear query · b/B intake · Tab pin · n notes · V auto-pause · N/E/K policy bands · p policy mode · L lock · U unlock (non-Warden) · x/X lockdown (non-Warden) · Ctrl-R resolve critical · Warden: c kind C queue u/U project v approve x/X cancel/fail > advance · H/G/J/Y parole (Prisoner) · t/r/R rehab · f/F contraband · m/o filters · d/D decision filter · ? help (Esc/? close) · q quit";
 /// Compact status-bar help used when the terminal is too narrow for
 /// [`HELP_WIDE`] (measured by [`Line::width`]).
-pub const HELP_COMPACT: &str = " ↑↓ 1-9,0,A SPC +/- S Ctrl-L / Tab n V c/C u/U x/X N/E/K p ? q";
+pub const HELP_COMPACT: &str = " ↑↓ 1-9,0,A SPC +/- S Ctrl-L / b Tab n V c/C u/U x/X N/E/K p ? q";
 
 /// Map a `1`-`9`, `0`, `-` key press to its observation mode.
 pub fn mode_from_index(index: usize) -> Option<ViewMode> {
@@ -292,23 +306,25 @@ fn help_body() -> Vec<Line<'static>> {
         entry(
             "1-9,0,A Switch views (2=Prisoner 3=Gang 4=Staff 5=Warden 6=Financial 7=Timeline 8=Network 9=Map 0=Incidents A=Decisions)",
         ),
-        entry("↑↓,h,l,j,k Scroll lists (h/l work in the help overlay too)"),
-        entry("q,Esc,Ctrl-C Quit"),
+        entry("↑↓,h,l,j,k Scroll lists (h/l also scroll the help overlay)"),
+        entry("q,Q,Esc,Ctrl-C Quit outside help"),
         Line::from(""),
         title("Simulation"),
         entry("SPACE Pause/resume · +/- Speed · S Save · Ctrl-L Quick load"),
+        entry("b/B Pause/resume intake"),
         Line::from(""),
         title("Observer"),
         entry(
             "/ Search · Ctrl-W Clear query · Tab Pin entity · n Notes feed · V Auto-pause on critical",
         ),
-        entry("Ctrl-R Resolve selected/newest open critical incident"),
+        entry("Ctrl-R Resolve selected/newest open critical incident (also while searching)"),
         entry("Ctrl-C Quit · Ctrl-L Quick load (also works while searching)"),
         Line::from(""),
         title("Policy"),
         entry("N/E/K Policy bands (Normal / Enhanced / Lockdown)"),
         entry("p Policy mode (Council / Shadow / Deterministic)"),
-        entry("L/U Lock / unlock; x/X Toggle lockdown (outside Warden view)"),
+        entry("L Lock · U Unlock (outside Warden view)"),
+        entry("x/X Toggle lockdown (outside Warden view)"),
         entry("[ ] , . Security/privileges sliders · ; ' Rehab funding"),
         Line::from(""),
         title("Construction (Warden view)"),
@@ -329,7 +345,7 @@ fn help_body() -> Vec<Line<'static>> {
         entry("d/D Decision validation filter"),
         Line::from(""),
         Line::from(Span::styled(
-            "↑/↓ (or j/k) scrolls the help overlay itself.",
+            "↑/↓ (or h/j/k/l) scrolls the help overlay; Esc or ? closes it.",
             Style::default().fg(Color::DarkGray),
         )),
     ]
@@ -604,15 +620,10 @@ fn render_status(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState, s
             Style::default().fg(Color::Cyan),
         ));
     }
-    let open_critical = data
-        .incident_records
-        .iter()
-        .filter(|r| !r.resolved && r.severity >= 0.75)
-        .count();
-    if open_critical > 0 {
+    if status.open_critical > 0 {
         spans.push(Span::raw(" │ "));
         spans.push(Span::styled(
-            format!("CRITICAL:{} open", open_critical),
+            format!("CRITICAL:{} open", status.open_critical),
             Style::default()
                 .fg(Color::Black)
                 .bg(Color::Red)
@@ -699,7 +710,7 @@ fn render_overview(frame: &mut Frame, area: Rect, data: &ViewData) {
 
     let mid = Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)])
         .split(chunks[1]);
-    let events = recent_event_lines(&data.events, 10);
+    let events = recent_event_lines(&data.recent_events, OVERVIEW_EVENT_LIMIT);
     frame.render_widget(
         Paragraph::new(events).block(title_block(" Recent Events ")),
         mid[0],
@@ -1229,7 +1240,7 @@ fn render_gang(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
     // `data.gangs` is already filtered by the observer search.
     let filtered: &[GangSummary] = &data.gangs;
     let idx = (ui.scroll as usize).min(filtered.len().saturating_sub(1));
-    let names = name_map(&data.prisoners);
+    let names = name_map(&data.all_prisoners);
     let items: Vec<ListItem<'static>> = filtered
         .iter()
         .enumerate()
@@ -1801,7 +1812,7 @@ fn render_warden(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
         .join(" ");
     detail_lines.push(plain(format!("Catalog: {catalog}")));
     detail_lines.push(plain(
-        "c cycle · C queue · v approve · x cancel · X fail · > advance",
+        "c cycle · C queue · u/U select · v approve · x cancel · X fail · > advance",
     ));
     frame.render_widget(
         Paragraph::new(detail_lines).block(title_block(" Construction Detail ")),
@@ -2202,7 +2213,7 @@ fn render_network(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) 
         Constraint::Length(8),
     ])
     .split(area);
-    let names = name_map(&data.prisoners);
+    let names = name_map(&data.all_prisoners);
 
     let active_gangs = data.gangs.iter().filter(|g| g.active).count();
     frame.render_widget(
@@ -2627,7 +2638,7 @@ fn render_incidents(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
     let open = records.iter().filter(|r| !r.resolved).count();
     let resolved = records.iter().filter(|r| r.resolved).count();
 
-    let names = name_map(&data.prisoners);
+    let names = name_map(&data.all_prisoners);
     let summary = vec![
         kv(
             "Incidents",
@@ -2760,7 +2771,7 @@ fn render_incidents(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
             if !seen.insert(cid) {
                 break;
             }
-            if let Some(c) = data.incident_records.iter().find(|x| x.id == cid) {
+            if let Some(c) = data.all_incident_records.iter().find(|x| x.id == cid) {
                 chain.push(format!(
                     "#{} {} sev {:.0}%",
                     c.id,
@@ -2784,7 +2795,7 @@ fn render_incidents(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
             if !seen_f.insert(cid) {
                 break;
             }
-            if let Some(c) = data.incident_records.iter().find(|x| x.id == cid) {
+            if let Some(c) = data.all_incident_records.iter().find(|x| x.id == cid) {
                 chain.push(format!(
                     "#{} {} sev {:.0}%",
                     c.id,
@@ -2909,7 +2920,7 @@ fn render_incidents(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
                 .cloned()
                 .unwrap_or_else(|| format!("P{}", pid));
             let history: Vec<String> = data
-                .incident_records
+                .all_incident_records
                 .iter()
                 .filter(|rr| rr.id != r.id && rr.involved_prisoners.contains(&pid))
                 .rev()
@@ -3230,12 +3241,13 @@ mod tests {
             status_msg: None,
             save_dir: "saves/default".to_string(),
             autosave_days: 0,
+            open_critical: 0,
         }
     }
 
     fn view_data_from_world(world: &alc_world::World) -> ViewData {
         let observation = sumo::Observation::capture(world);
-        let prisoners = world
+        let prisoners: Vec<PrisonerSummary> = world
             .prisoners
             .iter()
             .map(|p| PrisonerSummary {
@@ -3404,14 +3416,17 @@ mod tests {
                 staff_required: 0,
             })
             .collect();
-        let events: Vec<WorldEvent> = world.events.recent().cloned().collect();
+        // The overview only displays a bounded tail; use the capped EventBus
+        // API instead of materialising the whole bounded history in tests.
+        let mut events: Vec<WorldEvent> = world.events.last_reversed(OVERVIEW_EVENT_LIMIT);
+        events.reverse();
         ViewData {
             observation,
             map_frame: MapFrame::capture(world),
             total_prisoners: world.prisoners.len(),
             total_gangs: world.gangs.len(),
             total_guards: world.guards.len(),
-            prisoners,
+            prisoners: prisoners.clone(),
             gangs,
             guards,
             warden,
@@ -3421,9 +3436,12 @@ mod tests {
             social_roles: Vec::new(),
             facilities,
             construction_queue: Vec::new(),
-            events,
+            events: events.clone(),
+            recent_events: events,
             incident_log: Vec::new(),
             incident_records: Vec::new(),
+            all_prisoners: prisoners,
+            all_incident_records: Vec::new(),
             decision_audit: Vec::new(),
             policy: sumo::PolicySummary::default(),
             post_release_records: Vec::new(),
@@ -3843,6 +3861,13 @@ mod tests {
     fn incident_detail_shows_cause_actors_validation_and_outcome() {
         let world = alc_world::World::new(11);
         let mut data = view_data_from_world(&world);
+        data.all_incident_records = vec![sumo::IncidentRecord {
+            id: 11,
+            kind: "Argument".to_string(),
+            severity: 0.6,
+            resolved: true,
+            ..Default::default()
+        }];
         data.incident_records = vec![sumo::IncidentRecord {
             id: 12,
             at: alc_core::SimTime { secs: 60 },
@@ -3870,13 +3895,14 @@ mod tests {
             ..UiState::new()
         };
         let rendered = render_text(&data, &ui, 160, 60);
-        let actor_label = name_map(&data.prisoners)
+        let actor_label = name_map(&data.all_prisoners)
             .get(&7)
             .cloned()
             .unwrap_or_else(|| "P7".to_string());
         for needle in [
             "Cause",
             "prior argument",
+            "Argument",
             "Actors",
             actor_label.as_str(),
             "Validation",
@@ -3889,6 +3915,10 @@ mod tests {
                 "incident detail missing {needle}"
             );
         }
+        assert!(
+            !rendered.contains("(missing)"),
+            "full incident records must resolve causal links"
+        );
     }
 
     #[test]
@@ -3985,5 +4015,134 @@ mod tests {
         terminal
             .draw(|frame| draw(frame, &data, &ui, &status(false)))
             .unwrap();
+    }
+
+    #[test]
+    fn help_body_documents_current_keybindings() {
+        let text = help_body()
+            .into_iter()
+            .flat_map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        for needle in [
+            "b/B Pause/resume intake",
+            "u/U Select project",
+            "L Lock · U Unlock",
+            "Esc or ? closes it",
+            "Ctrl-R Resolve",
+        ] {
+            assert!(text.contains(needle), "help body missing {needle}");
+        }
+        assert!(HELP_WIDE.contains("b/B"));
+        assert!(HELP_WIDE.contains("u/U"));
+        assert!(HELP_COMPACT.contains("b"));
+    }
+
+    #[test]
+    fn status_bar_reports_global_critical_count() {
+        let world = alc_world::World::new(3);
+        let data = view_data_from_world(&world);
+        let mut st = status(false);
+        st.open_critical = 3;
+        let mut terminal = Terminal::new(TestBackend::new(240, 1)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_status(frame, area, &data, &UiState::new(), &st);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let rendered: String = (0..buf.area.width)
+            .map(|x| buf[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(rendered.contains("CRITICAL:3 open"), "{rendered}");
+    }
+
+    #[test]
+    fn overview_event_preview_uses_capped_recent_events() {
+        let world = alc_world::World::new(3);
+        let mut data = view_data_from_world(&world);
+        data.events = vec![alc_events::WorldEvent::new(
+            1,
+            sumo::SimTime::EPOCH,
+            alc_events::EventKind::Rumor,
+            "FULL-HISTORY-ONLY",
+        )];
+        data.recent_events = vec![alc_events::WorldEvent::new(
+            2,
+            sumo::SimTime::EPOCH,
+            alc_events::EventKind::Investigation,
+            "CAPPED-PREVIEW-EVENT",
+        )];
+        let ui = UiState {
+            mode: ViewMode::InstitutionOverview,
+            ..UiState::new()
+        };
+        let rendered = render_text(&data, &ui, 140, 40);
+        assert!(
+            rendered.contains("CAPPED-PREVIEW-EVENT"),
+            "overview must render the capped tail"
+        );
+        assert!(
+            !rendered.contains("FULL-HISTORY-ONLY"),
+            "overview must not render the full history list"
+        );
+    }
+
+    #[test]
+    fn incident_detail_uses_unfiltered_sources_under_search() {
+        let world = alc_world::World::new(31);
+        let mut data = view_data_from_world(&world);
+        let participant = data.all_prisoners[1].id.raw();
+        let expected_name = data.all_prisoners[1].name.clone();
+        let cause_id = 77;
+        let cause = sumo::IncidentRecord {
+            id: cause_id,
+            kind: "Argument".to_string(),
+            severity: 0.7,
+            resolved: true,
+            ..Default::default()
+        };
+        let incident = sumo::IncidentRecord {
+            id: 12,
+            kind: "Fight".to_string(),
+            severity: 0.9,
+            involved_prisoners: vec![participant],
+            cause: Some(cause_id),
+            causal_chain: vec![sumo::incidents::CausalLink::incident(
+                cause_id,
+                "prior dispute",
+            )],
+            disposition: "Disciplinary".to_string(),
+            ..Default::default()
+        };
+        data.all_incident_records = vec![cause, incident.clone()];
+        // Simulate a search that narrows both visible lists.
+        data.prisoners.clear();
+        data.incident_records = vec![incident];
+        let ui = UiState {
+            mode: ViewMode::IncidentReports,
+            selected_incident: Some(12),
+            ..UiState::new()
+        };
+        let rendered = render_text(&data, &ui, 160, 60);
+        assert!(
+            rendered.contains(&expected_name),
+            "detail must use unfiltered prisoner names: {rendered}"
+        );
+        assert!(
+            !rendered.contains(&format!("P{participant}")),
+            "filtered name map must not leak placeholder ids"
+        );
+        assert!(rendered.contains("Argument"), "cause record missing");
+        assert!(
+            !rendered.contains("(missing)"),
+            "full records must resolve causal links"
+        );
     }
 }

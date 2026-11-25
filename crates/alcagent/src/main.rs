@@ -4,20 +4,25 @@ use clap::{Parser, Subcommand};
 
 const DEFAULT_SEED: u64 = 0xA1C_0A_6E_17_0;
 const DEFAULT_SPEED: u32 = 60;
+const MAX_OBSERVER_SPEED: u32 = 4_000;
+
+fn valid_observer_speed(speed: u32) -> bool {
+    (1..=MAX_OBSERVER_SPEED).contains(&speed)
+}
 
 #[derive(Parser)]
 #[command(
     name = "alcagent",
     version,
     about = "Autonomous Living Prison Simulation",
-    long_about = "Autonomous Living Prison Simulation\n\nWith no arguments (or `observe`) an interactive ratatui observer opens.\n\nTUI controls:\n  q / Q / Esc / Ctrl-C   quit\n  Space                  pause / resume\n  + / =                  speed up\n  - / _                  speed down\n  1-9,0,A                 switch observation view\n  Up/Down/Left/Right or k/j/h/l   move the selection cursor\n  /                      free-text search (type, Backspace, Enter/Esc)\n  Tab                    pin/unpin the selected entity\n  n                      toggle observer feed (notices/pins)\n  V                      toggle auto-pause on critical incidents\n  ?                      help overlay\n  S                      manual save to --save-dir\n  Ctrl-L                 quick load from --save-dir\n  x / X                  toggle lockdown (outside Warden view)\n  N/E/K                  policy band (Normal/Enhanced/Lockdown)\n  L/U                    lockdown enable/lift\n  [/]                    security level down/up\n  ,/.                    privileges down/up\n  ;/'                    rehab funding down/up\n  B                      toggle intake pause\n  P                      cycle policy mode (Deterministic/Council/Shadow)\n  c/C/x/X/>              Warden construction: cycle, queue, cancel, fail, advance\n  t/r/R                  rehab program cycle/enroll/drop\n  f/F                    contraband case cycle/resolve\n  m/o                    incident severity/resolved filters (Incident Reports)\n  d/D                    decision validation filter (Decision Audit)\n\nUse `run <days>` for a headless soak run, or `--no-tui` for a short report."
+    long_about = "Autonomous Living Prison Simulation\n\nWith no arguments (or `observe`) an interactive ratatui observer opens.\n\nTUI controls:\n  q / Q / Esc / Ctrl-C   quit (Esc closes help/search first)\n  Space                  pause / resume\n  + / =                  speed up\n  - / _                  speed down\n  1-9,0,A                 switch observation view\n  Arrows or h/j/k/l      move the selection cursor\n  /                      free-text search (Ctrl-W clears)\n  Tab                    pin/unpin the selected entity\n  n                      toggle observer feed (notices/pins)\n  V                      toggle auto-pause on critical incidents\n  Ctrl-R                 resolve a critical incident\n  ?                      modal help overlay (Esc/? close)\n  S                      manual save to --save-dir\n  Ctrl-L                 quick load from --save-dir\n  b/B                    toggle intake pause\n  N/E/K                  policy band (Normal/Enhanced/Lockdown)\n  p                      cycle policy mode (Deterministic/Council/Shadow)\n  L/U                    lockdown enable/lift (U unlocks outside Warden)\n  x/X                    lockdown toggle outside Warden view\n  [/]                    security level down/up\n  ,/.                    privileges down/up\n  ;/'                    rehab funding down/up\n  Warden: c/C/u/U/v/x/X/>  construction kind/queue/project/approve/cancel/fail/advance\n  H/G/J/Y                parole hearing/grant/deny/release (Prisoner view)\n  t/r/R                  rehab program cycle/enroll/drop\n  f/F                    contraband case cycle/resolve\n  m/o                    incident severity/resolved filters (Incident Reports)\n  d/D                    decision validation filter (Decision Audit)\n\nUse `run <days>` for a headless soak run, or `--no-tui` for a short report."
 )]
 struct Cli {
     /// World-generation seed (same seed reproduces the same institution).
     #[arg(long, global = true, default_value_t = DEFAULT_SEED)]
     seed: u64,
 
-    /// Observer speed in simulation ticks per wall-clock second (min 1).
+    /// Observer speed in simulation ticks per wall-clock second (1..=4000).
     #[arg(long, global = true, default_value_t = DEFAULT_SPEED)]
     speed: u32,
 
@@ -73,7 +78,7 @@ enum Cmd {
 /// Adapts the engine (`sumo::Sim`) to the UI's `SimDriver` trait. Implemented
 /// here — not in `alc-ui` — because `alc-ui` already depends on `sumo`; putting
 /// this adapter in `alc-ui` would create a crate cycle.
-struct EngineDriver(sumo::Sim);
+struct EngineDriver(sumo::Sim, alc_core::config::AiConfig);
 
 impl SimDriver for EngineDriver {
     fn tick(&mut self) {
@@ -90,6 +95,9 @@ impl SimDriver for EngineDriver {
     }
     fn events_since(&self, at: sumo::SimTime) -> Vec<sumo::WorldEvent> {
         self.0.events_since(at)
+    }
+    fn recent_events(&self, n: usize) -> Vec<sumo::WorldEvent> {
+        self.0.events().last(n)
     }
     fn prisoners(&self) -> Vec<sumo::PrisonerSummary> {
         self.0.prisoners()
@@ -185,7 +193,7 @@ impl SimDriver for EngineDriver {
         self.0.decision_audit_log().to_vec()
     }
     fn load(&mut self, dir: &std::path::Path) -> Result<(), String> {
-        let loaded = sumo::Sim::load(dir).map_err(|e| e.to_string())?;
+        let loaded = sumo::Sim::load_with_config(dir, &self.1).map_err(|e| e.to_string())?;
         self.0 = loaded;
         Ok(())
     }
@@ -300,10 +308,11 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     let cli = Cli::parse();
-    if cli.speed == 0 {
+    if !valid_observer_speed(cli.speed) {
         return Err(anyhow::anyhow!(
-            "invalid --speed {}: must be at least 1",
-            cli.speed
+            "invalid --speed {}: must be in 1..={}",
+            cli.speed,
+            MAX_OBSERVER_SPEED
         ));
     }
     match cli.cmd {
@@ -334,24 +343,33 @@ fn main() -> anyhow::Result<()> {
             cli.autosave_days,
         )?,
         Some(Cmd::Docs) => {
-            println!(
-                "See agents.md (directive) and Documentation/ (index, design, systems, reports)"
-            );
+            println!("See agents.md (directive) and docs/ (see docs/README.md)");
         }
     }
     Ok(())
 }
 
+fn default_ai_config() -> alc_core::config::AiConfig {
+    alc_core::config::AiConfig::default()
+}
+
 fn load_or_new(seed: u64, load: Option<&std::path::Path>) -> anyhow::Result<sumo::Sim> {
+    load_or_new_with_config(seed, load, &default_ai_config())
+}
+
+fn load_or_new_with_config(
+    seed: u64,
+    load: Option<&std::path::Path>,
+    ai: &alc_core::config::AiConfig,
+) -> anyhow::Result<sumo::Sim> {
     // Startup AI settings come from the additive `AiConfig` defaults. Runtime
     // provider/cache/telemetry stay out of the v5 save format and are restored
     // through the config-driven constructors on both fresh and loaded worlds.
-    let ai = alc_core::config::AiConfig::default();
     if let Some(dir) = load {
-        sumo::Sim::load_with_config(dir, &ai)
+        sumo::Sim::load_with_config(dir, ai)
             .map_err(|e| anyhow::anyhow!("failed to load save from {}: {e}", dir.display()))
     } else {
-        Ok(sumo::Sim::new_with_config(seed, &ai))
+        Ok(sumo::Sim::new_with_config(seed, ai))
     }
 }
 
@@ -362,11 +380,12 @@ fn launch_tui(
     save_dir: &std::path::Path,
     autosave_days: u64,
 ) -> anyhow::Result<()> {
-    let mut sim = load_or_new(seed, load)?;
+    let ai = default_ai_config();
+    let mut sim = load_or_new_with_config(seed, load, &ai)?;
     if autosave_days > 0 {
         sim.enable_autosave(save_dir.to_path_buf(), autosave_days);
     }
-    let driver = EngineDriver(sim);
+    let driver = EngineDriver(sim, ai);
     alc_ui::app::run_tui(
         Box::new(driver),
         TuiOptions {
@@ -423,9 +442,22 @@ fn run_headless(
     print!("{}", sim.report());
     println!();
     println!("Recent events (last 10):");
-    let all: Vec<&alc_events::WorldEvent> = sim.world.events.recent().collect();
-    for e in all.iter().rev().take(10) {
+    for e in sim.world.events.last_reversed(10) {
         println!("  [{}] {:?} — {}", e.at, e.kind, e.summary);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn observer_speed_bounds_match_tui() {
+        assert!(!valid_observer_speed(0));
+        assert!(valid_observer_speed(1));
+        assert!(valid_observer_speed(DEFAULT_SPEED));
+        assert!(valid_observer_speed(MAX_OBSERVER_SPEED));
+        assert!(!valid_observer_speed(MAX_OBSERVER_SPEED + 1));
+    }
 }

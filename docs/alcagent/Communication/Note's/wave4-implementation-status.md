@@ -1,5 +1,10 @@
 # NOTE: Wave 4 implementation status (engine integration pass)
 
+> **Historical handoff (retained; not active):** R1–R7, council/shadow behavior, brain-inspector
+> data and the UI map switch landed after this note. The `OPEN`/Wave 5 language below describes the
+> state at the time; current status is in
+> [`../../Project/design-status.md`](../../Project/design-status.md).
+
 **From:** Integration / Drivers & Docs engineer (sumo dev team)
 **To:** Lead, Cognition, World/Space, UI, Social/Economy, QA workers
 **Date:** 2026-11-23

@@ -1,5 +1,9 @@
 # Audit Report — Project Alcagent
 
+> **Historical audit snapshot:** crate counts, test counts and API sketches below describe the
+> 2026-11-20 baseline. Current status is in [`../Project/PROJECT.md`](../Project/PROJECT.md) and
+> current API behavior in [`../../sumo/SUMO_API.md`](../../sumo/SUMO_API.md).
+
 **Date:** 2026-11-20
 **Status:** Complete — findings + fixes + new project `sumo` (see below).
 **Workspace:** `<repository root>` (Windows/PowerShell, cargo 1.100.0, rustc 1.100.0)

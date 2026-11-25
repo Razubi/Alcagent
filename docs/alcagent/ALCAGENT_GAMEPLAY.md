@@ -45,7 +45,7 @@ cargo run -- docs            # one-line documentation pointer
 | Flag | Default | Effect |
 |---|---|---|
 | `--seed <u64>` | `0xA1C_0A_6E_17_0` | World-generation seed; same seed ⇒ same institution. Ignored when loading a save. |
-| `--speed <u32>` | `60` | TUI tick rate (ticks/second, clamped 1–4000). Ignored by headless `run`. |
+| `--speed <u32>` | `60` | TUI tick rate (ticks/second); CLI rejects values outside `1..=4000`. Ignored by headless `run`. |
 | `--no-tui` | off | `observe` becomes a 30-day headless report (CI-friendly). |
 | `--load <DIR>` | none | Resume from a save directory; overrides `--seed`. |
 | `--save-dir <DIR>` | `saves/default` | Where saves are written. |
@@ -53,43 +53,46 @@ cargo run -- docs            # one-line documentation pointer
 | `RUST_LOG=sumo=debug` | unset | Enables engine trace logging (PowerShell: `$env:RUST_LOG='sumo=debug'`). |
 
 Headless `run N` adds `N` days to the world's current day (when loading) and **always saves** on
-completion. The printed `Ticks/sec` is actually days/second (legacy label).
+completion. The run prints real elapsed time, tick count, requested/progressed days and the
+engine report; there is no `Ticks/sec` label in the current output.
 
 ### 2.2 TUI keybindings (complete)
 
 | Key | Action |
 |---|---|
-| `q`, `Q`, `Esc`, `Ctrl-C` | Quit (terminal is always restored). |
+| `q`, `Q`, `Esc`, `Ctrl-C` | Quit (the terminal is always restored; `Esc` closes modal help/search first). |
 | `Space` | Pause / resume the observer tick loop (not policy mode). |
-| `+` / `=` | Double tick speed (max 4000). |
-| `-` / `_` | Halve tick speed (min 1). |
-| `1`–`9` | Switch observation view (see §2.3). |
-| `0`, `i` / `I` | Incident Reports view. |
-| `a` / `A` | Decision Audit view. |
-| `↑ ↓ ← →` / `k j h l` | Move the selection cursor (held keys repeat). |
-| `s` / `S` | Manual save to `--save-dir`. |
+| `+` / `=`, `-` / `_` | Speed up / slow down (max 4000, min 1). |
+| `1`–`9`, `0`, `A` | Switch observation view (see §2.3); `0` = Incident Reports, `A` = Decision Audit. |
+| `↑ ↓ ← →` / `h j k l` | Move the selection cursor (held keys repeat). |
+| `/` | Free-text search; `Backspace` edits, `Enter` finishes, `Ctrl-W` clears the query. |
+| `?` | Open modal help; `Esc` or `?` closes it. |
+| `Tab` | Pin/unpin the selected prisoner, gang or guard. |
+| `n` | Toggle the observer notices/pins feed. |
+| `V` | Toggle auto-pause on newly seen critical incidents. |
+| `Ctrl-R` | Resolve a critical incident via validated control. |
+| `S` | Manual save to `--save-dir`. |
 | `Ctrl-L` | Quick load from `--save-dir`. |
-| `x` / `X`, `L` / `U` | Toggle / enable / lift lockdown. |
-| `p` / `P` | Cycle policy mode: Deterministic → Council → Shadow. |
-| `N` / `E` / `K` | Policy band: Normal / Enhanced / Lockdown. |
-| `[` / `]` | Security level −/+ 0.05. |
-| `,` / `.` | Privileges −/+ 0.05. |
-| `;` / `'` | Rehab funding −/+ 0.1. |
-| `b` / `B` | Toggle manual intake pause. |
-| `t` / `T` | Cycle selected rehab program (Prisoner/Warden views). |
-| `r` / `R` | Enroll / drop selected prisoner from rehab program. |
-| `f` / `F` | Cycle / resolve selected contraband case (Incident Reports). |
-| `m` / `M` | Cycle incident severity filter (all → high → critical). |
-| `o` / `O` | Cycle incident resolved filter (all → open → resolved). |
-| `d` / `D` | Cycle decision validation filter (all → accepted → repaired → rejected). |
+| `b`, `B` | Toggle manual intake pause. |
+| `N`, `E`, `K` | Policy band: Normal / Enhanced / Lockdown. |
+| `p` | Cycle policy mode: Deterministic → Council → Shadow. |
+| `L`, `U` | Lock / unlock; `U` unlocks outside the Warden view. |
+| `x`, `X` | Outside the Warden view, toggle lockdown. |
+| `[` / `]` | Security level −/+. |
+| `,` / `.` | Privileges −/+. |
+| `;` / `'` | Rehab funding −/+. |
+| Warden `c`, `C` | Cycle construction kind / queue the selected kind. |
+| Warden `u`, `U` | Cycle construction project selection. |
+| Warden `v`, `x`, `X`, `>` | Approve / cancel / fail / advance the selected project one day. |
+| Prisoner `H`, `G`, `J`, `Y` | Schedule hearing / grant / deny / release on parole. |
+| `t`, `r`, `R` | Rehab program cycle / enroll / drop. |
+| `f`, `F` | Contraband case cycle / resolve (Incident Reports). |
+| `m`, `o` | Incident severity / resolved-status filters (Incident Reports). |
+| `d`, `D` | Decision validation filter (Decision Audit). |
 
-The in-app help bar shows common controls; the full policy panel lives in the Warden view.
-A red `LOCKDOWN` badge appears in the status bar when lockdown is active. (A `UiState.search`
-field exists in code but has no bound key, so search is not a usable control.)
-
-> **In-flight (2026-11-24):** the policy keys, `0`/`A` views, rehab/contraband controls and
-> construction table are in the working tree but the gameplay wave has not landed as a stable
-> release — the tree may not compile while mid-edit.
+The in-app help bar shows common controls; `?` opens the modal help and the policy panel lives in
+the Warden view. A red `LOCKDOWN` badge appears in the status bar when lockdown is active. These
+controls landed in the 0.05 release.
 
 ### 2.3 Observation views (9 core + 2 audit)
 
@@ -125,10 +128,10 @@ Views are read-only over engine snapshots and remain stable on sparse or 2,000-p
 
 ### 3.2 Needs and psychology
 
-29 need-deficit pressures: physical (hunger, thirst, sleep, fatigue, hygiene, medical, exercise,
-temperature, bathroom), psychological (safety, companionship, respect, freedom, autonomy,
-purpose, stimulation, stability, privacy, belonging) and social (friendship, family contact,
-group acceptance, status, protection, recognition). High values mean *unmet* need.
+25 stored need-deficit pressures: physical (hunger, thirst, sleep, fatigue, hygiene, medical,
+exercise, temperature, bathroom), psychological (safety, companionship, respect, freedom,
+autonomy, purpose, stimulation, stability, privacy, belonging) and social (friendship, family
+contact, group acceptance, status, protection, recognition). High values mean *unmet* need.
 
 Derived behaviors drive decisions: hunger → irritability, exhaustion → low alertness, isolation →
 desperation, safety deficit → gang-seeking, stimulation deficit → rule-breaking, low hope →
@@ -195,8 +198,9 @@ pause. These are directly controllable from both frontends (§2.2).
 ### 3.9 Expansion and construction
 
 Warden `Expand` actions no longer add a facility instantly: they **queue a construction project**
-(7–14 days, with a cost charged to the economy ledger). The queue advances daily; completion
-adds the facility and emits `ConstructionComplete`. Progress appears in the map view.
+(7–14 days depending on facility type, with a cost charged to the economy ledger when queued and
+staffing/material/prerequisite flags recorded). The queue advances daily; completion adds the
+facility and emits `ConstructionComplete`. Progress appears in the map view.
 
 ### 3.10 Rehabilitation, contraband and post-release
 
@@ -218,16 +222,16 @@ spare capacity and policy permits (blocked by lockdown, high security or manual 
 Every meaningful change is an event with a summary, causes, actors and confidence, stored in a
 bounded (50k) bus plus engine incident/decision audit logs. Institutional history and per-agent
 memories (short-term, long-term, institutional layers with importance/decay/consolidation) give
-the world a persistent past. **In-flight:** structured `IncidentRecord`s and `DecisionAuditRecord`s
-expose causality and actor/source/validation for debugging.
+the world a persistent past. Structured `IncidentRecord`s and `DecisionAuditRecord`s expose
+causality and actor/source/validation for debugging.
 
 ---
 
 ## 4. Saves, replay and reproducibility
 
 - `saves/<dir>/world.bin` — versioned bincode (world + engine state); `world.debug.json` —
-  human-readable sidecar. Format version is currently **3**.
-- Autosave cadence is configurable; `s` saves manually; headless runs always save.
+  human-readable sidecar. Format version is currently **5**; v1/v3/v4 saves are migrated on load.
+- Autosave cadence is configurable; `S` saves manually; headless runs always save.
 - Load with `--load <dir>`; the save's seed wins. Loaded worlds can be continued and replayed
   deterministically; `trace_hash()` / `trace_hash_v2()` fingerprints verify equality.
 - The same `--seed` reproduces the same institution from a fresh world — share seeds to share
@@ -244,7 +248,7 @@ expose causality and actor/source/validation for debugging.
 | "No save found" on `--load` | Point at a *directory* containing `world.bin`. |
 | Different results with same seed | You may have loaded a save (its seed overrides the CLI value). |
 | Terminal stuck in raw mode after crash | Open a fresh shell; normal shutdown always restores the terminal. |
-| Old save won't load | Save format is v3; regenerate or migrate older saves. |
+| Old save won't load | Save format is v5; regenerate or migrate older saves. |
 
 ---
 

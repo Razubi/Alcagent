@@ -31,9 +31,10 @@
 //! mutating the world.
 
 use crate::Sim;
+use alc_agents::decision::DecisionOutcomeState;
 use alc_agents::{Decision, DecisionAction, ValidationResult};
 use alc_core::PrisonerId;
-use alc_events::EventKind;
+use alc_events::{EventKind, WorldEvent};
 use alc_prisoner::Prisoner;
 use alc_world::World;
 use serde::{Deserialize, Serialize};
@@ -736,6 +737,82 @@ pub struct DecisionBatchOutcome {
     pub applied: usize,
 }
 
+/// Rebuild the decision carried by an accepted/repaired validation result.
+///
+/// This is the single non-panicking conversion used by both delivery paths: a
+/// rejected result becomes `Err(reason)` instead of reaching a panic site. The
+/// decision outcome is stamped from the variant so the audit log and the
+/// decision log always agree on whether the proposal was repaired.
+fn accepted_decision_from(result: &ValidationResult) -> Result<Decision, String> {
+    let (decision, outcome) = match result {
+        ValidationResult::Accepted(decision) => (decision, DecisionOutcomeState::Accepted),
+        ValidationResult::Repaired(decision) => (decision, DecisionOutcomeState::Repaired),
+        ValidationResult::Rejected { reason } => return Err(reason.to_string()),
+    };
+    let mut decision = (*decision).clone();
+    decision.outcome = outcome;
+    Ok(decision)
+}
+
+/// Build a decision-audit row with the canonical shape used by every path.
+///
+/// `actor`, `source` and `validation` are the stable prefixes observers rely
+/// on; `decision` is whichever decision the path decided to record (the
+/// applied decision for accepted proposals, the proposal itself for rejected
+/// ones).
+fn decision_audit_record(
+    id: PrisonerId,
+    decision: &Decision,
+    at: alc_core::SimTime,
+    validation: String,
+    reason: String,
+) -> crate::DecisionAuditRecord {
+    crate::DecisionAuditRecord {
+        time: at,
+        actor: format!("prisoner:{}", id.raw()),
+        source: "agent".to_string(),
+        action: decision.action_name().to_string(),
+        summary: format!("{decision:?}"),
+        validation,
+        reason,
+        rationale: decision.rationale.clone(),
+        repair_reason: decision.repair_reason.clone(),
+        outcome: decision.outcome,
+    }
+}
+
+/// Apply one accepted result and perform all shared bookkeeping.
+///
+/// Outcome reconstruction, audit recording and escape post-release handling
+/// live here so single and batch delivery cannot diverge. Escape events are
+/// checked against this agent's returned events *and* their actor list, so an
+/// unrelated escape elsewhere in a batch never marks another agent.
+fn apply_accepted(
+    sim: &mut Sim,
+    id: PrisonerId,
+    result: &ValidationResult,
+    label: String,
+    reason: String,
+) -> Result<(Decision, Vec<WorldEvent>), String> {
+    let applied = accepted_decision_from(result)?;
+    let events = sim.world.apply_validated_decision(id, result);
+    if events
+        .iter()
+        .any(|e| e.kind == EventKind::EscapeSucceeded && e.actors.contains(&id.raw()))
+    {
+        sim.engine_state.post_release.insert(id, false);
+    }
+    sim.record_decision(applied.clone());
+    sim.record_decision_audit(decision_audit_record(
+        id,
+        &applied,
+        sim.world.time,
+        label,
+        reason,
+    ));
+    Ok((applied, events))
+}
+
 /// Validate + apply one decision on the engine.
 ///
 /// Audit policy: applied decisions enter [`Sim::decision_log`] and every
@@ -745,28 +822,19 @@ pub struct DecisionBatchOutcome {
 pub fn deliver(sim: &mut Sim, id: PrisonerId, decision: Decision) -> DecisionOutcome {
     tracing::debug!(agent = id.raw(), ?decision, "deliver_decision");
     let (ok, result) = validate(&sim.world, id, &decision);
-    let validated = result
-        .accepted_decision()
-        .cloned()
-        .unwrap_or_else(|| decision.clone());
     let label = validation_label(&result);
     if !ok {
         let reason = result
             .rejected_reason()
             .unwrap_or("validation failed")
             .to_string();
-        sim.record_decision_audit(crate::DecisionAuditRecord {
-            time: sim.world.time,
-            actor: format!("prisoner:{}", id.raw()),
-            source: "agent".to_string(),
-            action: decision.action_name().to_string(),
-            summary: format!("{:?}", decision),
-            validation: label,
+        sim.record_decision_audit(decision_audit_record(
+            id,
+            &decision,
+            sim.world.time,
+            label,
             reason,
-            rationale: decision.rationale.clone(),
-            repair_reason: decision.repair_reason.clone(),
-            outcome: decision.outcome,
-        });
+        ));
         return DecisionOutcome {
             agent: id,
             decision,
@@ -775,34 +843,27 @@ pub fn deliver(sim: &mut Sim, id: PrisonerId, decision: Decision) -> DecisionOut
         };
     }
 
-    let mut applied_decision = validated;
-    applied_decision.outcome = match &result {
-        ValidationResult::Accepted(_) => alc_agents::decision::DecisionOutcomeState::Accepted,
-        ValidationResult::Repaired(_) => alc_agents::decision::DecisionOutcomeState::Repaired,
-        ValidationResult::Rejected { .. } => unreachable!("rejected result handled above"),
-    };
-    let apply_result = match &result {
-        ValidationResult::Accepted(_) => ValidationResult::Accepted(applied_decision.clone()),
-        ValidationResult::Repaired(_) => ValidationResult::Repaired(applied_decision.clone()),
-        ValidationResult::Rejected { .. } => unreachable!("rejected result handled above"),
-    };
-    let mut events = sim.world.apply_validated_decision(id, &apply_result);
-    if events.iter().any(|e| e.kind == EventKind::EscapeSucceeded) {
-        sim.engine_state.post_release.insert(id, false);
-    }
-    sim.record_decision(applied_decision.clone());
-    sim.record_decision_audit(crate::DecisionAuditRecord {
-        time: sim.world.time,
-        actor: format!("prisoner:{}", id.raw()),
-        source: "agent".to_string(),
-        action: applied_decision.action_name().to_string(),
-        summary: format!("{:?}", applied_decision),
-        validation: label,
-        reason: "applied by engine".to_string(),
-        rationale: applied_decision.rationale.clone(),
-        repair_reason: applied_decision.repair_reason.clone(),
-        outcome: applied_decision.outcome,
-    });
+    let (applied_decision, mut events) =
+        match apply_accepted(sim, id, &result, label, "applied by engine".to_string()) {
+            Ok(applied) => applied,
+            Err(reason) => {
+                // Defensive fallback: validation said accepted but reconstruction
+                // failed. Report it as unapplied rather than panicking.
+                sim.record_decision_audit(decision_audit_record(
+                    id,
+                    &decision,
+                    sim.world.time,
+                    validation_label(&result),
+                    reason,
+                ));
+                return DecisionOutcome {
+                    agent: id,
+                    decision,
+                    result,
+                    applied: false,
+                };
+            }
+        };
     // Emits with bus-assigned ids and mirrors conflict kinds exactly once.
     sim.emit_events(&mut events);
     DecisionOutcome {
@@ -844,67 +905,57 @@ pub(crate) fn deliver_batch(
         let validation = sim.world.validate_decision_in_context(id, &decision, &ctx);
         let accepted = validation.is_accepted();
         let label = validation_label(&validation.result);
-        let reason = if accepted {
-            "applied by engine batch".to_string()
+        let mut applied = false;
+        if accepted {
+            match apply_accepted(
+                sim,
+                id,
+                &validation.result,
+                label,
+                "applied by engine batch".to_string(),
+            ) {
+                Ok((_, events)) => {
+                    all_events.extend(events);
+                    sim.world.orchestrator.record_validated(matches!(
+                        validation.result,
+                        ValidationResult::Repaired(_)
+                    ));
+                    batch.accepted += 1;
+                    batch.applied += 1;
+                    applied = true;
+                }
+                Err(reason) => {
+                    sim.world.orchestrator.record_rejected();
+                    batch.rejected += 1;
+                    sim.record_decision_audit(decision_audit_record(
+                        id,
+                        &decision,
+                        sim.world.time,
+                        validation_label(&validation.result),
+                        reason,
+                    ));
+                }
+            }
         } else {
-            validation
+            let reason = validation
                 .rejected_reason()
                 .unwrap_or("validation failed")
-                .to_string()
-        };
-        if accepted {
-            let mut validated = validation
-                .accepted_decision()
-                .cloned()
-                .expect("accepted validation carries a decision");
-            validated.outcome = match &validation.result {
-                ValidationResult::Accepted(_) => {
-                    alc_agents::decision::DecisionOutcomeState::Accepted
-                }
-                ValidationResult::Repaired(_) => {
-                    alc_agents::decision::DecisionOutcomeState::Repaired
-                }
-                ValidationResult::Rejected { .. } => unreachable!(),
-            };
-            let apply_result = match &validation.result {
-                ValidationResult::Accepted(_) => ValidationResult::Accepted(validated.clone()),
-                ValidationResult::Repaired(_) => ValidationResult::Repaired(validated.clone()),
-                ValidationResult::Rejected { .. } => unreachable!(),
-            };
-            all_events.extend(sim.world.apply_validated_decision(id, &apply_result));
-            if all_events
-                .iter()
-                .any(|e| e.kind == EventKind::EscapeSucceeded)
-            {
-                sim.engine_state.post_release.insert(id, false);
-            }
-            sim.record_decision(validated.clone());
-            sim.world
-                .orchestrator
-                .record_validated(matches!(validation.result, ValidationResult::Repaired(_)));
-            batch.accepted += 1;
-            batch.applied += 1;
-        } else {
+                .to_string();
             sim.world.orchestrator.record_rejected();
             batch.rejected += 1;
+            sim.record_decision_audit(decision_audit_record(
+                id,
+                &decision,
+                sim.world.time,
+                label,
+                reason,
+            ));
         }
-        sim.record_decision_audit(crate::DecisionAuditRecord {
-            time: sim.world.time,
-            actor: format!("prisoner:{}", id.raw()),
-            source: "agent".to_string(),
-            action: decision.action_name().to_string(),
-            summary: format!("{:?}", decision),
-            validation: label,
-            reason,
-            rationale: decision.rationale.clone(),
-            repair_reason: decision.repair_reason.clone(),
-            outcome: decision.outcome,
-        });
         batch.outcomes.push(DecisionOutcome {
             agent: id,
             decision,
             result: validation.result,
-            applied: accepted,
+            applied,
         });
     }
     sim.emit_events(&mut all_events);
@@ -938,4 +989,109 @@ pub(crate) fn validate_with_engine_rules(
     decision: &Decision,
 ) -> ValidationResult {
     world.validate_decision_for(id, decision).result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alc_core::RngStream;
+    use alc_social::{EscapeOutcome, resolve_escape_attempt};
+
+    #[test]
+    fn accepted_decision_reconstruction_is_total() {
+        let proposal = Decision::new(DecisionAction::Comply);
+
+        let accepted = ValidationResult::Accepted(proposal.clone());
+        assert!(accepted_decision_from(&accepted).is_ok());
+        if let Ok(decision) = accepted_decision_from(&accepted) {
+            assert_eq!(decision.outcome, DecisionOutcomeState::Accepted);
+            assert_eq!(decision.action, proposal.action);
+        }
+
+        let repaired = ValidationResult::Repaired(proposal.clone());
+        assert!(accepted_decision_from(&repaired).is_ok());
+        if let Ok(decision) = accepted_decision_from(&repaired) {
+            assert_eq!(decision.outcome, DecisionOutcomeState::Repaired);
+        }
+
+        let rejected = ValidationResult::Rejected {
+            reason: "not allowed".to_string(),
+        };
+        assert_eq!(
+            accepted_decision_from(&rejected).err().as_deref(),
+            Some("not allowed")
+        );
+    }
+
+    #[test]
+    fn audit_records_use_canonical_actor_and_source() {
+        let proposal = Decision::new(DecisionAction::Comply);
+        let record = decision_audit_record(
+            PrisonerId(42),
+            &proposal,
+            alc_core::SimTime::EPOCH,
+            "accepted".to_string(),
+            "applied by engine".to_string(),
+        );
+        assert_eq!(record.actor, "prisoner:42");
+        assert_eq!(record.source, "agent");
+        assert_eq!(record.action, "comply");
+        assert_eq!(record.validation, "accepted");
+        assert_eq!(record.reason, "applied by engine");
+    }
+
+    #[test]
+    fn batch_escape_marks_only_the_escaping_agent() {
+        let mut sim = Sim::new(9_101);
+        // Resource validation uses `condition.hope` as stamina; keep both
+        // proposals comfortably affordable so the test isolates batch routing.
+        for prisoner in &mut sim.world.prisoners {
+            prisoner.condition.hope = 1.0;
+        }
+        let mut ids: Vec<PrisonerId> = sim.world.prisoners.iter().map(|p| p.id).collect();
+        ids.sort_by_key(|id| id.raw());
+        assert!(ids.len() >= 2, "bootstrap world needs two prisoners");
+        let escaper = ids[0];
+        let observer = ids[1];
+
+        // The escape outcome is seeded from (world.seed, current seconds), so
+        // find a seed that makes this actor escape and install it before the
+        // batch. This keeps the test deterministic without touching policy.
+        let motivation = sim
+            .world
+            .prisoners
+            .iter()
+            .find(|p| p.id == escaper)
+            .map(|p| p.escape_motivation())
+            .unwrap_or_default();
+        let security = sim.world.policies.security_level;
+        let mut seed = 0u64;
+        let mut found = false;
+        for candidate in 0..20_000u64 {
+            let mut rng = RngStream::new(candidate, sim.world.time.as_secs());
+            if resolve_escape_attempt(&mut rng, motivation, security, 0.5, 0.2)
+                == EscapeOutcome::SuccessfulEscape
+            {
+                seed = candidate;
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "no escape seed found for the test inputs");
+        sim.world.seed = seed;
+
+        let outcome = deliver_batch(
+            &mut sim,
+            vec![
+                (escaper, Decision::new(DecisionAction::EscapeAttempt)),
+                (observer, Decision::new(DecisionAction::Comply)),
+            ],
+        );
+        assert_eq!(outcome.applied, 2);
+        assert!(sim.engine_state.post_release.contains_key(&escaper));
+        assert!(
+            !sim.engine_state.post_release.contains_key(&observer),
+            "an unrelated batch member must not inherit another agent's escape"
+        );
+    }
 }

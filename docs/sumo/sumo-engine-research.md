@@ -1,5 +1,11 @@
 # Deep Research Report — What `sumo` Should Become
 
+> **Historical research snapshot (2026-11-24):** the findings below are retained as written.
+> Current code has 25 stored need fields, 51 `EventKind` variants, 14 `WardenAction` variants,
+> save format v5, and struct-based `Decision::new(DecisionAction::...)` construction. For current
+> API/behavior use [`SUMO_API.md`](SUMO_API.md) and
+> [`../alcagent/Project/PROJECT.md`](../alcagent/Project/PROJECT.md).
+
 **Date:** 2026-11-24 · **Status:** report only (no code changed)
 **Owner's requirements driving this research:**
 1. `sumo` must run entirely separate from `alcagent`.
@@ -274,18 +280,21 @@ Effort: S (<1 wk), M (1–4 wk), L (>1 mo), one developer.
 ## 10. Gameplay/doc audit findings (track C)
 
 - Alcagent has **11 live views** (9 core + Incident Reports + Decision Audit), not 9 **[Codebase]**.
-- ~14 active TUI keys were undocumented (`Ctrl-L`, `x/X`, `t/T`, `r/R`, `f/F`, `m/M`, `o/O`,
-  `d/D`, `i/I`, lowercase `a`); `run` defaults to 30 days; `--speed 0` is a hard error.
-- Code has **25 stored need fields**, not 29; `EventKind` has **47 variants**, not 39.
-- `UiState.search` exists but has no key binding — do not document it as a control.
+- ~14 active TUI keys were undocumented at audit time (`Ctrl-L`, `x/X`, `t/T`, `r/R`, `f/F`,
+  `m/M`, `o/O`, `d/D`, `i/I`, lowercase `a`); `run` defaults to 30 days; `--speed 0` is a hard
+  error. Current keys are listed in `crates/alcagent/src/main.rs` help and the gameplay manual.
+- Code has **25 stored need fields**, not 29; `EventKind` has **51 variants** today (the audit
+  counted 47, not the 39 in older docs).
+- `UiState.search` now has `/` bound; `Ctrl-W` clears the query.
 - Parole has three disagreeing authorities (world's automatic daily hearing, `ParoleBoard`,
   sumo manual ledger); the warden's recommendation is recorded but not applied to release chance.
-- The in-flight wave changes `Decision` from an enum to a struct and currently fails to build;
-  document in-flight features as experimental until green.
+- The in-flight wave changed `Decision` from an enum to a struct; the 0.05 release is green with
+  `Decision::new(DecisionAction::...)` construction.
 
-Gameplay/control corrections were made in the Alcagent repo's `docs/ALCAGENT_GAMEPLAY.md` and
-`docs/ALCAGENT.md`; engine findings are reflected in this repo's `docs/SUMO_ENGINE.md`,
-`docs/SUMO_API.md` and root README.
+Gameplay/control corrections are maintained in this repo's
+[`../alcagent/ALCAGENT_GAMEPLAY.md`](../alcagent/ALCAGENT_GAMEPLAY.md) and
+[`../alcagent/ALCAGENT.md`](../alcagent/ALCAGENT.md); engine findings are reflected in
+[`SUMO_ENGINE.md`](SUMO_ENGINE.md), [`SUMO_API.md`](SUMO_API.md) and the root README.
 
 ---
 

@@ -20,15 +20,15 @@ conventions, testing and documentation expectations. The full product specificat
 
 ## Development workflow (AGENTS.md §24)
 
-1. **Investigate** — read the relevant design doc under `docs/Design/` and system
-   contract under `docs/Systems/`, plus the current code. Use subagents for large audits.
+1. **Investigate** — read the relevant design doc under `docs/alcagent/Design/Core/` and system
+   contract under `docs/alcagent/Systems/`, plus the current code. Use subagents for large audits.
 2. **Design** — add/update a design or planning doc before large changes; note dependencies.
 3. **Implement** — small, incremental changes with the crate's file ownership respected. Coordinate
    so two workers never edit the same file simultaneously.
 4. **Test** — add or update tests under `tests/` or `#[cfg(test)]` modules; run the suite.
 5. **Review** — self-review, then independent review via subagents for significant features.
-6. **Document** — update user docs (`README.md`, `docs/`) and internal docs
-   (`docs/Project/PROJECT.md`, `design-status.md`, `version-milestones.md`,
+6. **Document** — update user docs (`README.md`, `docs/`) and project docs
+   (`docs/alcagent/Project/PROJECT.md`, `design-status.md`, `version-milestones.md`,
    `CHANGELOG.md`) in the same change. Stale docs are treated as defects.
 
 ## Build and test
@@ -41,15 +41,16 @@ cargo test -p sumo --test chaos_soak -- --nocapture   # 730-day, 3 seeds
 cargo test -p sumo --test integration_wave4           # end-to-end engine flow
 ```
 
-Current baseline (2026-11-25): 439 passed, 0 failed, 1 ignored (the 10k-entry log stress test).
+Current baseline: the workspace test suite is green at the 0.05 release (2026-11-25), including
+the long-run soaks and the 10k-entry log stress test.
 
-## Crate map (14 workspace members)
+## Crate map (15 workspace members)
 
 | Crate | Owns |
 |---|---|
 | `alc-core` | `SimTime`, `TimeSpeed`, `RngStream`, IDs, capabilities, config |
 | `alc-world` | `World` state and the main `tick()` loop (needs drift, schedules, encounters, day boundary) |
-| `alc-prisoner` | Prisoner model, 29 needs, schedules, intake |
+| `alc-prisoner` | Prisoner model, 25 stored need deficits, schedules, intake |
 | `alc-social` | Relationships, gangs, conflict, escape, parole board, rehab, contraband |
 | `alc-economy` | `Money`, ledger, funding, expenses, health |
 | `alc-warden` | Warden traits/arbitration, expansion catalog, finance planning |
@@ -59,11 +60,12 @@ Current baseline (2026-11-25): 439 passed, 0 failed, 1 ignored (the 10k-entry lo
 | `alc-persistence` | Versioned bincode saves, migration, autosave |
 | `alc-testing` | Invariants, soak helpers |
 | `alc-ui` | Ratatui observer (read-only) |
+| `alc-gui` | Egui observer (buildable workspace member) |
 | `sumo` | **Public engine API** — the integration surface |
 | `alcagent` | CLI binary |
 
-`crates/alc-gui` is an incomplete experiment and **not** a workspace member. Do not build on it
-without first completing its missing modules and adding it to `Cargo.toml`.
+Both frontends consume engine snapshots and validated controls; do not add a backend that mutates
+`alc_world::World` directly.
 
 ## Code style
 
@@ -78,11 +80,12 @@ without first completing its missing modules and adding it to `Cargo.toml`.
 1. Where does it live? Pure simulation logic → an `alc-*` crate. Public control surface → `sumo`.
 2. Does it need new state? Add it to `World` or `EngineState` with `#[serde(default)]`, bump
    `SAVE_FORMAT_VERSION` only if the binary layout changes incompatibly, and add migration.
-3. Does it need an event? Add an `EventKind` at the end and document emit points in
-   [`docs/Systems/event-contract.md`](docs/Systems/event-contract.md).
-4. Does it need an agent action? Add a `Decision` variant plus validation rules and engine
-   application, then document it in [`docs/SUMO_API.md`](docs/SUMO_API.md) and
-   [`docs/Systems/engine-api.md`](docs/Systems/engine-api.md).
+3. Does it need an event? Append an `EventKind` variant in `crates/alc-events/src/lib.rs` and
+   document the emit point in the relevant system doc; the published taxonomy lives in
+   [`docs/sumo/SUMO_API.md`](docs/sumo/SUMO_API.md).
+4. Does it need an agent action? Add a `DecisionAction` variant (decisions are structs with
+   `Decision::new(...)`) plus validation rules and engine application, then document it in
+   [`docs/sumo/SUMO_API.md`](docs/sumo/SUMO_API.md).
 5. Add tests: unit, integration, and an invariant/soak check for long-run stability.
 
 ## Reporting issues

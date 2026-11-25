@@ -30,14 +30,14 @@ Executable: `target\debug\alcagent.exe` (Windows). For long runs use
 |---|---|
 | *(none)* / `observe` | Interactive ratatui TUI; `--no-tui` falls back to a 30-day headless report. |
 | `run [DAYS]` | Headless run at extreme speed (default **30** days), prints a report, always saves. |
-| `docs` | Prints `See agents.md (directive) and docs/ (index, design, systems, reports)`. |
+| `docs` | Prints `See agents.md (directive) and docs/ (see docs/README.md)`. |
 
 ## Global flags (before or after the command)
 
 | Flag | Default | Effect |
 |---|---|---|
 | `--seed <u64>` | `0xA1C_0A_6E_17_0` | Reproducible world seed; ignored when `--load` is used. |
-| `--speed <u32>` | `60` | TUI ticks/second (`0` is an error; clamped 1–4000). Ignored by headless `run`. |
+| `--speed <u32>` | `60` | TUI ticks/second; must be in `1..=4000` or the CLI exits with an error. Ignored by headless `run`. |
 | `--no-tui` | off | `observe` becomes a headless 30-day report (CI-friendly). |
 | `--load <DIR>` | none | Resume from a save directory; overrides the seed. |
 | `--save-dir <DIR>` | `saves/default` | Save/output directory. |
@@ -47,25 +47,33 @@ Executable: `target\debug\alcagent.exe` (Windows). For long runs use
 
 ```
 === Alcagent headless run ===
-Seed:            0xa1c0a6e170
-Sim time:        Day 0005 00:00
-Days simulated:  5
-Population:      25 / 80
-Cash (major):    253378.00
-Ticks/sec:       104        (actually days/sec — legacy label)
+Loaded from:    new world (seed 0xa1c0a6e170)
+Save dir:       saves/default
+Real elapsed:   1.23s
+Ticks:          12345
+Requested days: 365
+Progressed days: 365
+<sim.report() output>
 Recent events (last 10): …
 ```
 
 ## TUI essentials
 
 - **Views:** `1`–`9` = Overview, Prisoner, Gang, Staff, Warden, Financial, Event Timeline,
-  Social Network, Prison Map; `0`/`i` = Incident Reports; `a`/`A` = Decision Audit.
-- **Playback:** `Space` pause, `+`/`-` speed, arrows/`hjkl` cursor, `q` quit.
-- **Policy:** `p` mode, `N`/`E`/`K` band, `L`/`U` or `x` lockdown, `[ ]` security, `, .`
-  privileges, `; '` rehab funding, `b` intake pause.
-- **Gameplay:** `t` program, `r`/`R` enroll/drop, `f`/`F` contraband case, `m`/`o`/`d` filters.
-- **Saves:** `s` save, `Ctrl-L` load, `--autosave-days` cadence.
-- Full key-by-key effects are in [`ALCAGENT_GAMEPLAY.md`](ALCAGENT_GAMEPLAY.md#2-tui-keybindings-complete).
+  Social Network, Prison Map; `0` = Incident Reports; `A` = Decision Audit.
+- **Playback/navigation:** `Space` pause/resume, `+`/`-` speed, arrows/`hjkl` cursor,
+  `q`/`Q`/`Esc`/`Ctrl-C` quit (`Esc` closes modal help/search first).
+- **Search/help:** `/` free-text search (`Ctrl-W` clears), `?` modal help (`Esc`/`?` close),
+  `Tab` pin, `n` notices, `V` auto-pause on critical incidents, `Ctrl-R` resolve critical incident.
+- **Saves/policy:** `S` save, `Ctrl-L` load, `b`/`B` intake toggle, `p` policy mode,
+  `N`/`E`/`K` policy band, `L` lock / `U` unlock outside Warden, `x`/`X` lockdown toggle outside
+  Warden, `[ ]` security, `, .` privileges, `; '` rehab funding.
+- **Construction (Warden):** `c` kind, `C` queue, `u`/`U` project cycle, `v` approve,
+  `x`/`X` cancel/fail, `>` advance one day.
+- **Gameplay:** Prisoner `H`/`G`/`J`/`Y` parole hearing/grant/deny/release; `t` rehab program
+  cycle, `r`/`R` enroll/drop, `f`/`F` contraband case cycle/resolve, `m`/`o` incident filters,
+  `d`/`D` decision validation filter.
+- Full key-by-key effects are in [`ALCAGENT_GAMEPLAY.md`](ALCAGENT_GAMEPLAY.md#22-tui-keybindings-complete).
 
 ## Troubleshooting
 
@@ -75,4 +83,4 @@ Recent events (last 10): …
 | Wrong binary | `cargo run -p alcagent -- <args>`. |
 | "No save found" | Point `--load` at a directory containing `world.bin`. |
 | Same seed, different result | A loaded save overrides the CLI seed. |
-| Old save won't load | Save format is v3; regenerate or migrate older saves. |
+| Old save won't load | Current save format is v5; regenerate or migrate older saves. |

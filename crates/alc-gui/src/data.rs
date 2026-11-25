@@ -604,9 +604,7 @@ pub fn capture(sim: &sumo::Sim, selected_prisoner: Option<PrisonerId>) -> Snapsh
         }
     }
 
-    let mut events: Vec<sumo::WorldEvent> = sim.events().recent().cloned().collect();
-    events.reverse();
-    events.truncate(300);
+    let events: Vec<sumo::WorldEvent> = sim.events().last_reversed(300);
     let selected_agent = selected_prisoner.and_then(|id| sim.agent_observation(id));
     let selected_schedule = selected_prisoner.and_then(|id| sim.schedule_timeline(id));
     let selected_parole = selected_prisoner

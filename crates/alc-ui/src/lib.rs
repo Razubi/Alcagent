@@ -30,7 +30,7 @@ pub enum ViewMode {
 /// Construction projects offered by the observer `c`/`C` controls.
 ///
 /// Kept in one place so the keybind handler and Warden view never drift apart.
-pub const CONSTRUCTION_KINDS: [alc_world::FacilityKind; 7] = [
+pub const CONSTRUCTION_KINDS: [alc_world::FacilityKind; 12] = [
     alc_world::FacilityKind::CellBlock,
     alc_world::FacilityKind::Dormitory,
     alc_world::FacilityKind::Medical,
@@ -38,6 +38,13 @@ pub const CONSTRUCTION_KINDS: [alc_world::FacilityKind; 7] = [
     alc_world::FacilityKind::Isolation,
     alc_world::FacilityKind::Visitor,
     alc_world::FacilityKind::Workshop,
+    // Keep the original order stable; append the remaining facility kinds so
+    // existing observer selections/cycle expectations do not shift.
+    alc_world::FacilityKind::Kitchen,
+    alc_world::FacilityKind::Recreation,
+    alc_world::FacilityKind::Admin,
+    alc_world::FacilityKind::Staff,
+    alc_world::FacilityKind::Yard,
 ];
 
 /// Observer-side selection/filter state (0.05 control wiring).
@@ -235,5 +242,53 @@ mod tests {
             decision_key(&later),
             "time alone must disambiguate rows"
         );
+    }
+
+    #[test]
+    fn construction_kinds_cover_every_facility_kind() {
+        use alc_world::FacilityKind;
+        use std::collections::HashSet;
+
+        let expected = [
+            FacilityKind::CellBlock,
+            FacilityKind::Dormitory,
+            FacilityKind::Medical,
+            FacilityKind::Kitchen,
+            FacilityKind::Workshop,
+            FacilityKind::Recreation,
+            FacilityKind::Education,
+            FacilityKind::Admin,
+            FacilityKind::Isolation,
+            FacilityKind::Visitor,
+            FacilityKind::Staff,
+            FacilityKind::Yard,
+        ];
+        assert_eq!(CONSTRUCTION_KINDS.len(), expected.len());
+        let unique: HashSet<_> = CONSTRUCTION_KINDS.iter().copied().collect();
+        assert_eq!(unique.len(), CONSTRUCTION_KINDS.len(), "no duplicate kinds");
+        for kind in expected {
+            assert!(
+                CONSTRUCTION_KINDS.contains(&kind),
+                "missing construction kind: {:?}",
+                kind
+            );
+        }
+    }
+
+    #[test]
+    fn event_bus_last_reversed_returns_only_the_displayed_tail() {
+        let mut bus = alc_events::EventBus::new(16);
+        for i in 0..5u64 {
+            bus.emit(alc_events::WorldEvent::new(
+                0,
+                sumo::SimTime::from_secs(i),
+                alc_events::EventKind::Rumor,
+                format!("event-{i}"),
+            ));
+        }
+        let tail = bus.last_reversed(2);
+        assert_eq!(tail.len(), 2);
+        assert_eq!(tail[0].summary, "event-4");
+        assert_eq!(tail[1].summary, "event-3");
     }
 }

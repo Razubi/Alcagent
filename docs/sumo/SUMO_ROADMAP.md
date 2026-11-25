@@ -1,5 +1,10 @@
 # sumo Engine Roadmap — 0.05 completion → 0.06+ addons & mass bug-fixing
 
+> **Historical planning snapshot:** 0.05 acceptance has landed. Items described as open below
+> are retained as original backlog intent; current status is in
+> [`../alcagent/Project/PROJECT.md`](../alcagent/Project/PROJECT.md) and
+> [`SUMO_API.md`](SUMO_API.md).
+
 **Status:** planning document · **Date:** 2026-11-24 · **No code changed.**
 **Scope:** the `sumo` engine (the `sumo` subfolder of this repository). Gameplay content
 (prison/town) belongs to Alcagent; this roadmap covers engine capabilities, stability and tooling.

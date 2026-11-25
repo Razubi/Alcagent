@@ -19,7 +19,8 @@
 //! ## Design
 //! The design is documented in `Documentation/Design/Engine/sumo-engine.md`.
 //!
-//! (GUI feature removed - use alc-ui crate instead)
+//! Observation UIs live in the `alc-ui` and `alc-gui` crates; this engine crate
+//! is headless and exposes read-only DTOs for them.
 
 #![deny(missing_docs)]
 #![deny(unused_crate_dependencies)]
@@ -82,8 +83,8 @@ use alc_warden::{DecisionSource, StrategyDecision, WardenReportSignal, WardenStr
 
 use crate::autosave::AutosaveScheduler;
 use crate::views::{
-    REHAB_PROGRAMS, ReleaseEventInfo, contraband_severity_for_label, detect_contraband_item,
-    parse_f32_after, parse_guard_cause, parse_plan_flag, rehab_state_for, write_back_rehab_state,
+    REHAB_PROGRAMS, ReleaseEventInfo, parse_f32_after, parse_plan_flag, rehab_state_for,
+    write_back_rehab_state,
 };
 use alc_core::TimeSpeed;
 use alc_core::config::AiConfig;
@@ -95,6 +96,7 @@ use alc_prisoner::{
     AttendanceContext, SchedulePolicy, ScheduleTemplate, attendance_probability, current_block,
     resolve_schedule,
 };
+use alc_social::contraband::ContrabandCaseRecord;
 use alc_social::rehab::{RehabProgram, enroll_in_program};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -1735,61 +1737,113 @@ impl Sim {
         }
     }
 
-    /// Contraband cases derived from the event record (0.05).
+    /// Contraband cases from the world-owned case store (0.05).
     ///
-    /// TODO(world-state): there is no persisted contraband inventory/case
-    /// store yet — `alc-world` only emits `EventKind::ContrabandFound` events.
-    /// This accessor therefore reconstructs cases from the bounded world event
-    /// bus (plus the engine incident log), deduplicated by event id. Item and
-    /// guard are best-effort parsed from the event summary/causes; `resolved`
-    /// is always `false` until a real case store exists.
+    /// Reads `World::contraband_cases` directly; summaries never parse event
+    /// text. Standalone legacy `ContrabandFound` events are ingested once by
+    /// [`Self::emit_event`] or during [`Self::load_with_config`], after which
+    /// case ids, item, holder, guard, severity and summary are authoritative
+    /// case fields. Resolution merges the world store with the persisted
+    /// engine mirror. Rows stay sorted by case id.
     pub fn contraband_summaries(&self) -> Vec<ContrabandCaseSummary> {
-        let mut cases: Vec<ContrabandCaseSummary> = Vec::new();
-        let mut seen: HashSet<u64> = HashSet::new();
-        let bus_events = self.world.events.recent();
-        let log_events = self.engine_state.incidents.iter();
-        for event in bus_events.chain(log_events) {
-            if event.kind != EventKind::ContrabandFound || !seen.insert(event.id) {
-                continue;
-            }
-            let item = detect_contraband_item(&event.summary);
-            let severity = item
-                .as_deref()
-                .map(contraband_severity_for_label)
-                .unwrap_or(0.5);
-            let resolved = self
-                .engine_state
-                .resolved_contraband_cases
-                .contains(&event.id);
-            cases.push(ContrabandCaseSummary {
-                case_id: event.id,
-                at: event.at,
-                item,
-                holder: event.actors.first().copied().map(PrisonerId),
-                guard: event.causes.iter().find_map(|c| parse_guard_cause(c)),
-                severity,
-                summary: event.summary.clone(),
-                causes: event.causes.clone(),
-                resolved,
-                resolved_at: self
-                    .engine_state
+        let mut cases: Vec<ContrabandCaseSummary> = self
+            .world
+            .contraband_cases
+            .iter()
+            .map(|case| {
+                let mut causes = vec![format!(
+                    "discovery by guard {}",
+                    case.discovering_guard.raw()
+                )];
+                causes.push(format!("disposition: {:?}", case.disposition));
+                if let Some(action) = &case.disciplinary_action {
+                    causes.push(format!("disciplinary action: {action:?}"));
+                }
+                let resolved_at = self
+                    .world
                     .resolved_contraband_at
-                    .get(&event.id)
-                    .copied(),
-            });
-        }
+                    .get(&case.case_id)
+                    .copied()
+                    .or_else(|| {
+                        self.engine_state
+                            .resolved_contraband_at
+                            .get(&case.case_id)
+                            .copied()
+                    });
+                ContrabandCaseSummary {
+                    case_id: case.case_id,
+                    at: case.discovered_at,
+                    item: Some(format!("{:?}", case.item)),
+                    holder: Some(case.holder),
+                    guard: Some(case.discovering_guard.raw()),
+                    severity: case.severity,
+                    summary: case.summary.clone(),
+                    causes,
+                    resolved: self
+                        .engine_state
+                        .resolved_contraband_cases
+                        .contains(&case.case_id)
+                        || self
+                            .world
+                            .resolved_contraband_at
+                            .contains_key(&case.case_id),
+                    resolved_at,
+                }
+            })
+            .collect();
         cases.sort_by_key(|c| c.case_id);
         cases
     }
 
-    /// Mark a contraband case resolved (observer/control, 0.05).
+    /// Mark a known contraband case resolved (observer/control, 0.05).
     ///
-    /// Returns `true` when the case was newly resolved. Records a decision-audit
-    /// entry and an engine-only resolution timestamp (not persisted unless the
-    /// persistence format is coordinated).
+    /// Validated against the world case store: unknown ids are rejected and
+    /// leave both resolution maps untouched. Returns `true` only when the case
+    /// was newly resolved. The world store is authoritative; the engine sets
+    /// are kept as a save-compatible mirror.
     pub fn resolve_contraband_case(&mut self, case_id: u64) -> bool {
-        let inserted = self.engine_state.resolved_contraband_cases.insert(case_id);
-        if !inserted {
+        if !self
+            .world
+            .contraband_cases
+            .iter()
+            .any(|case| case.case_id == case_id)
+        {
+            self.audit_control_rejected(
+                "observer/control",
+                "ResolveContrabandCase",
+                format!("Contraband case {case_id} not found"),
+                "unknown contraband case id",
+            );
+            return false;
+        }
+        let at = self.world.time;
+        let already_resolved = self
+            .engine_state
+            .resolved_contraband_cases
+            .contains(&case_id)
+            || self.world.resolved_contraband_at.contains_key(&case_id);
+        if already_resolved {
+            // Heal either side if only one copy recorded the resolution: the
+            // world store is authoritative, but older saves may carry only the
+            // engine mirror. Use the earliest known timestamp via `or_insert`.
+            let resolved_at = self
+                .world
+                .resolved_contraband_at
+                .get(&case_id)
+                .copied()
+                .or_else(|| {
+                    self.engine_state
+                        .resolved_contraband_at
+                        .get(&case_id)
+                        .copied()
+                })
+                .unwrap_or(at);
+            self.engine_state.resolved_contraband_cases.insert(case_id);
+            self.engine_state
+                .resolved_contraband_at
+                .entry(case_id)
+                .or_insert(resolved_at);
+            self.world.resolve_contraband_case(case_id, resolved_at);
             self.audit_control(
                 "observer/control",
                 "ResolveContrabandCase",
@@ -1799,7 +1853,7 @@ impl Sim {
             );
             return false;
         }
-        let at = self.world.time;
+        self.engine_state.resolved_contraband_cases.insert(case_id);
         self.engine_state.resolved_contraband_at.insert(case_id, at);
         self.world.resolve_contraband_case(case_id, at);
         self.audit_control(
@@ -1814,7 +1868,7 @@ impl Sim {
 
     /// Contraband inventory rollup by item category (0.05).
     ///
-    /// Aggregates [`Sim::contraband_summaries`]; again event-derived only.
+    /// Aggregates [`Sim::contraband_summaries`] from the world case store.
     pub fn contraband_inventory(&self) -> Vec<ContrabandInventorySummary> {
         let mut map: BTreeMap<String, ContrabandInventorySummary> = BTreeMap::new();
         for case in self.contraband_summaries() {
@@ -2357,14 +2411,19 @@ impl Sim {
         world.configure_ai(ai);
 
         let speed = world.speed;
-        Ok(Sim {
+        let mut sim = Sim {
             world,
             speed,
             engine_state: engine_state
                 .map(|es| EngineState::from_persistence(es, &dir))
                 .unwrap_or_default(),
             last_autosave_error: None,
-        })
+        };
+        sim.migrate_legacy_contraband_on_load();
+        for guard in &mut sim.world.guards {
+            guard.restore_legacy_counters_from_history();
+        }
+        Ok(sim)
     }
 
     /// Enable autosave: write the world every `interval_days` simulated days.
@@ -2920,7 +2979,8 @@ impl Sim {
     ///
     /// Conflict-kind events are mirrored into the engine incident log and
     /// structured sidecar so observers see them consistently regardless of
-    /// which path emitted them.
+    /// which path emitted them. Standalone `ContrabandFound` events are ingested
+    /// into the world-owned case store once so summaries stay store-backed.
     pub fn emit_event(&mut self, e: WorldEvent) {
         let at = self.world.time;
         let mut ev = e;
@@ -2930,7 +2990,239 @@ impl Sim {
         let id = self.world.events.emit(ev.clone());
         let mut emitted = ev;
         emitted.id = id;
+        // Compatibility bridge for callers that inject a legacy standalone
+        // `ContrabandFound` event. The durable case store remains the single
+        // source of truth for summaries and resolution; ingestion just ensures
+        // such events are representable there instead of parsed on every read.
+        self.ingest_legacy_contraband_event(&emitted);
         self.mirror_conflict_event_to_engine_log(&emitted);
+    }
+
+    /// Parse a legacy standalone `ContrabandFound` event into a durable case.
+    fn legacy_contraband_case_from_event(
+        event: &WorldEvent,
+        case_id: u64,
+    ) -> Option<ContrabandCaseRecord> {
+        use alc_social::ContrabandItem;
+        use alc_social::contraband::ConfiscationDisposition;
+
+        if event.kind != EventKind::ContrabandFound {
+            return None;
+        }
+        let holder = event.actors.first().copied().map(PrisonerId)?;
+        let candidates = [
+            ("Weapons", ContrabandItem::Weapons, 0.95_f32),
+            ("Drugs", ContrabandItem::Drugs, 0.75),
+            ("Tools", ContrabandItem::Tools, 0.7),
+            ("Phones", ContrabandItem::Phones, 0.55),
+            ("Money", ContrabandItem::Money, 0.35),
+        ];
+        let (_, item, severity) = candidates
+            .into_iter()
+            .find(|(label, _, _)| event.summary.contains(*label))?;
+        let guard = event
+            .causes
+            .iter()
+            .find_map(|cause| {
+                let lower = cause.to_ascii_lowercase();
+                let start = lower.find("guard")? + "guard".len();
+                let digits: String = cause[start..]
+                    .trim_start()
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect();
+                digits.parse::<u64>().ok()
+            })
+            .unwrap_or(0);
+        let disposition = if severity >= 0.8 {
+            ConfiscationDisposition::Evidence
+        } else if severity >= 0.4 {
+            ConfiscationDisposition::Seized
+        } else {
+            ConfiscationDisposition::Destroyed
+        };
+        Some(ContrabandCaseRecord {
+            case_id,
+            discovered_at: event.at,
+            discovering_guard: GuardId(guard),
+            holder,
+            item,
+            severity,
+            disposition,
+            disciplinary_action: None,
+            summary: event.summary.clone(),
+        })
+    }
+
+    /// Allocate a case id that cannot alias any existing case or persisted
+    /// resolution id. Legacy engine-only resolutions have no case row, so the
+    /// allocator must reserve them explicitly.
+    fn allocate_contraband_case_id(&self) -> u64 {
+        let mut id = self.world.next_contraband_case_id.max(1);
+        while id < u64::MAX
+            && (self.world.contraband_cases.iter().any(|c| c.case_id == id)
+                || self.engine_state.resolved_contraband_cases.contains(&id)
+                || self.world.resolved_contraband_at.contains_key(&id))
+        {
+            id = id.saturating_add(1);
+        }
+        id
+    }
+
+    /// Ingest an externally emitted `ContrabandFound` event into the world case
+    /// store once. Real discoveries already write a case record before emitting
+    /// their event, so the holder/item/time guard prevents duplicates.
+    fn ingest_legacy_contraband_event(&mut self, event: &WorldEvent) {
+        let case_id = self.allocate_contraband_case_id();
+        let Some(case) = Self::legacy_contraband_case_from_event(event, case_id) else {
+            return;
+        };
+        if self.world.contraband_cases.iter().any(|existing| {
+            existing.holder == case.holder
+                && existing.item == case.item
+                && existing.discovered_at == case.discovered_at
+        }) {
+            return;
+        }
+        self.world.next_contraband_case_id = case_id.saturating_add(1);
+        self.world.contraband_cases.push(case);
+        // Match the world's bounded case log so external event injection cannot
+        // grow the durable store without limit.
+        if self.world.contraband_cases.len() > 512 {
+            let excess = self.world.contraband_cases.len() - 512;
+            self.world.contraband_cases.drain(..excess);
+        }
+    }
+
+    /// Migrate `ContrabandFound` events from older saves into the durable case
+    /// store and heal resolution mirrors keyed by their original event ids.
+    ///
+    /// Old saves had no `world.contraband_cases` but did persist discovery
+    /// events and resolution ids. Preserving the event id as the case id keeps
+    /// those resolutions valid. Engine-only resolutions with no case row remain
+    /// part of the persistence contract, so they are preserved too; their ids
+    /// are reserved before future allocation so they cannot mislabel new cases.
+    fn migrate_legacy_contraband_on_load(&mut self) {
+        use std::collections::{BTreeMap, HashSet};
+
+        const MAX_CASES: usize = 512;
+        let had_case_store = !self.world.contraband_cases.is_empty();
+        let mut events: Vec<WorldEvent> = self
+            .world
+            .events
+            .recent()
+            .cloned()
+            .chain(self.engine_state.incidents.iter().cloned())
+            .filter(|event| event.kind == EventKind::ContrabandFound)
+            .collect();
+        events.sort_by_key(|event| event.id);
+        let mut seen_event_ids = HashSet::new();
+        events.retain(|event| seen_event_ids.insert(event.id));
+
+        let mut used_ids: HashSet<u64> = self
+            .world
+            .contraband_cases
+            .iter()
+            .map(|case| case.case_id)
+            .collect();
+        let mut remap: BTreeMap<u64, u64> = BTreeMap::new();
+        let reserved_ids: HashSet<u64> = self
+            .engine_state
+            .resolved_contraband_cases
+            .iter()
+            .copied()
+            .chain(self.engine_state.resolved_contraband_at.keys().copied())
+            .chain(self.world.resolved_contraband_at.keys().copied())
+            .collect();
+        let mut next_id = self.world.next_contraband_case_id.max(1);
+
+        for event in events {
+            let Some(mut case) = Self::legacy_contraband_case_from_event(&event, 0) else {
+                continue;
+            };
+            if let Some(existing) = self.world.contraband_cases.iter().find(|existing| {
+                existing.holder == case.holder
+                    && existing.item == case.item
+                    && existing.discovered_at == case.discovered_at
+            }) {
+                remap.insert(event.id, existing.case_id);
+                continue;
+            }
+            let case_id = if !had_case_store && !used_ids.contains(&event.id) {
+                event.id
+            } else {
+                while (used_ids.contains(&next_id) || reserved_ids.contains(&next_id))
+                    && next_id < u64::MAX
+                {
+                    next_id = next_id.saturating_add(1);
+                }
+                let id = next_id;
+                next_id = next_id.saturating_add(1);
+                id
+            };
+            case.case_id = case_id;
+            self.world.contraband_cases.push(case);
+            used_ids.insert(case_id);
+            remap.insert(event.id, case_id);
+        }
+
+        if self.world.contraband_cases.len() > MAX_CASES {
+            self.world.contraband_cases.sort_by_key(|case| case.case_id);
+            let excess = self.world.contraband_cases.len() - MAX_CASES;
+            self.world.contraband_cases.drain(..excess);
+        }
+        used_ids = self
+            .world
+            .contraband_cases
+            .iter()
+            .map(|case| case.case_id)
+            .collect();
+
+        let remapped_id = |id: u64| remap.get(&id).copied().unwrap_or(id);
+        let engine_ids: Vec<u64> = self
+            .engine_state
+            .resolved_contraband_cases
+            .iter()
+            .copied()
+            .collect();
+        self.engine_state.resolved_contraband_cases.clear();
+        for id in engine_ids {
+            self.engine_state
+                .resolved_contraband_cases
+                .insert(remapped_id(id));
+        }
+        let engine_at = std::mem::take(&mut self.engine_state.resolved_contraband_at);
+        for (id, at) in engine_at {
+            self.engine_state
+                .resolved_contraband_at
+                .entry(remapped_id(id))
+                .or_insert(at);
+        }
+        let world_at = std::mem::take(&mut self.world.resolved_contraband_at);
+        for (id, at) in world_at {
+            self.world
+                .resolved_contraband_at
+                .entry(remapped_id(id))
+                .or_insert(at);
+        }
+
+        let max_case_id = used_ids.iter().copied().max().unwrap_or(0);
+        let max_resolution_id = self
+            .engine_state
+            .resolved_contraband_cases
+            .iter()
+            .copied()
+            .chain(self.engine_state.resolved_contraband_at.keys().copied())
+            .chain(self.world.resolved_contraband_at.keys().copied())
+            .max()
+            .unwrap_or(0);
+        self.world.next_contraband_case_id = self
+            .world
+            .next_contraband_case_id
+            .max(next_id)
+            .max(max_case_id.saturating_add(1))
+            .max(max_resolution_id.saturating_add(1))
+            .max(1);
     }
 
     // --- 4.3 Guard duty ---
@@ -3540,28 +3832,6 @@ impl Sim {
     }
 }
 
-// Same modules as above, but conditionally compiled.
-// The `gui` feature gate ensures these types only exist when the feature is active.
-//
-// Enable with `cargo build -p sumo --features gui`.
-//
-// ## GUI types
-// - `SumoApp` — the main GUI application window
-// - `SumoGui` — the GUI backend instance
-// - `Panel` — a UI panel within the application
-// - `launch_gui` — launch the egui/eframe application
-
-// Optional GUI rendering backend (feature `gui`).
-/// Enable with `cargo build -p sumo --features gui`.
-/// This module and its types are compiled only when the `gui` feature is active.
-
-#[cfg(feature = "gui")]
-mod gui;
-
-/// Re-export GUI types when the `gui` feature is active.
-#[cfg(feature = "gui")]
-pub use gui::{SumoApp, launch_gui};
-
 #[cfg(test)]
 mod dto_tests {
     use super::*;
@@ -3602,6 +3872,140 @@ mod dto_tests {
         }
         // Unknown prisoner is always rejected.
         assert!(!sim.enroll_rehab(PrisonerId(99_999), RehabProgram::Counseling));
+    }
+
+    #[test]
+    fn contraband_summaries_come_from_world_case_store() {
+        use alc_social::contraband::{
+            ConfiscationDisposition, ContrabandCaseRecord, DisciplinaryAction,
+        };
+
+        let mut sim = Sim::new(48);
+        let holder = sim.world.prisoners[0].id;
+        sim.world.contraband_cases.push(ContrabandCaseRecord {
+            case_id: 77,
+            discovered_at: sim.world.time,
+            discovering_guard: GuardId(7),
+            holder,
+            item: alc_social::ContrabandItem::Phones,
+            severity: 0.55,
+            disposition: ConfiscationDisposition::Seized,
+            disciplinary_action: Some(DisciplinaryAction::Warning),
+            summary: "Case 77: Phones found".to_string(),
+        });
+
+        let rows = sim.contraband_summaries();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].case_id, 77);
+        assert_eq!(rows[0].item.as_deref(), Some("Phones"));
+        assert_eq!(rows[0].holder, Some(holder));
+        assert_eq!(rows[0].guard, Some(7));
+        assert!(!rows[0].resolved);
+        assert!(rows[0].causes.iter().any(|c| c == "discovery by guard 7"));
+
+        assert!(
+            !sim.resolve_contraband_case(999),
+            "unknown case must be rejected"
+        );
+        assert!(sim.resolve_contraband_case(77));
+        assert!(!sim.resolve_contraband_case(77));
+        let resolved = sim.contraband_summaries();
+        assert!(resolved[0].resolved);
+        assert_eq!(resolved[0].resolved_at, Some(sim.world.time));
+        assert!(sim.world.resolved_contraband_at.contains_key(&77));
+    }
+
+    #[test]
+    fn load_migrates_legacy_contraband_cases_and_resolution_ids() {
+        let dir = std::env::temp_dir().join(format!(
+            "alcagent-contraband-legacy-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut sim = Sim::new(49);
+        let holder = sim.world.prisoners[0].id;
+        sim.emit_event(
+            WorldEvent::new(
+                0,
+                sim.world.time,
+                EventKind::ContrabandFound,
+                "Phones found in cell",
+            )
+            .with_actor(holder.raw())
+            .with_cause("guard 7 search"),
+        );
+        let event_id = sim
+            .world
+            .events
+            .recent()
+            .last()
+            .expect("discovery event")
+            .id;
+        // Reshape the save into the pre-case-store format: events and engine
+        // resolution ids exist, but the durable case store does not.
+        sim.world.contraband_cases.clear();
+        sim.world.next_contraband_case_id = 1;
+        sim.world
+            .resolved_contraband_at
+            .insert(event_id, sim.world.time);
+        sim.engine_state.resolved_contraband_cases.insert(event_id);
+        sim.engine_state
+            .resolved_contraband_at
+            .insert(event_id, sim.world.time);
+        sim.engine_state.resolved_contraband_cases.insert(999_999);
+        sim.engine_state
+            .resolved_contraband_at
+            .insert(999_999, sim.world.time);
+        sim.save(&dir).expect("save legacy-shaped world");
+
+        let mut loaded = Sim::load(&dir).expect("load legacy-shaped world");
+        let rows = loaded.contraband_summaries();
+        assert_eq!(rows.len(), 1, "legacy event must become a durable case");
+        assert_eq!(rows[0].case_id, event_id);
+        assert!(rows[0].resolved, "legacy resolution must survive load");
+        assert!(
+            loaded
+                .engine_state
+                .resolved_contraband_cases
+                .contains(&999_999),
+            "engine-only resolutions remain part of the save contract"
+        );
+        assert!(loaded.world.next_contraband_case_id > 999_999);
+
+        loaded.emit_event(
+            WorldEvent::new(
+                0,
+                loaded.world.time,
+                EventKind::ContrabandFound,
+                "Money found in cell",
+            )
+            .with_actor(holder.raw())
+            .with_cause("guard 8 search"),
+        );
+        let new_case = loaded
+            .world
+            .contraband_cases
+            .last()
+            .expect("new legacy bridge case");
+        assert_ne!(new_case.case_id, event_id);
+        assert!(
+            new_case.case_id > 999_999,
+            "new allocation must skip reserved legacy ids"
+        );
+        assert!(
+            !loaded
+                .contraband_summaries()
+                .iter()
+                .any(|row| row.case_id == new_case.case_id && row.resolved),
+            "fresh case must not inherit a stale resolution"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Identifier for a prisoner.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PrisonerId(pub u64);
 
 /// Identifier for a guard.
@@ -24,12 +24,6 @@ pub struct GangId(pub u64);
 /// concrete agent kind is not known (e.g. during dispatch).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AgentId(pub u64);
-
-impl Default for PrisonerId {
-    fn default() -> Self {
-        Self(0)
-    }
-}
 
 impl PrisonerId {
     pub fn raw(self) -> u64 {

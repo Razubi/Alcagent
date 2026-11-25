@@ -133,6 +133,125 @@ impl ObserverState {
             autosave_days: self.autosave_days,
         }
     }
+
+    /// Drop observer state that may point into the world that was just replaced
+    /// by a load. Camera position and view preference are kept; all selected
+    /// ids, free-text queries and content-derived keys are cleared because they
+    /// cannot be meaningfully revalidated against a different save.
+    fn clear_stale_for_load(&mut self) {
+        self.search.clear();
+        self.selected_prisoner = None;
+        self.selected_gang = None;
+        self.selected_guard = None;
+        self.selected_incident = None;
+        self.selected_event = None;
+        self.selected_contraband = None;
+        self.selected_decision = None;
+        self.selected_facility = None;
+        self.construction_kind_index = 0;
+        self.rehab_program_index = 0;
+        self.status = None;
+        self.incident_min_severity = 0.0;
+        self.incident_open_only = false;
+        self.decision_validation_filter = None;
+        self.event_kind_filter.clear();
+        self.map.hovered_pawn = None;
+        self.map.selected_pawn = None;
+        self.map.hovered_facility = None;
+        self.map.selected_facility = None;
+    }
+}
+
+/// Coarse, read-only fingerprint of the control surfaces a warden action can
+/// touch. It is captured immediately before/after a validated action so the UI
+/// can report a no-op instead of claiming every `WardenAction` was applied.
+#[derive(Debug, Clone, PartialEq)]
+struct WardenControlFingerprint {
+    last_event_id: u64,
+    last_event_summary: String,
+    guards: usize,
+    cash_major: f64,
+    ledger_len: usize,
+    security: f32,
+    privileges: f32,
+    rehab_funding: f32,
+    lockdown: bool,
+    construction: usize,
+    facility_condition_sum: f32,
+    attention: f32,
+}
+
+impl WardenControlFingerprint {
+    fn capture(sim: &sumo::Sim) -> Self {
+        let world = sim.world();
+        let policy = sim.policy_summary();
+        let economy = sim.economy();
+        let last_event = sim.events().recent().last();
+        Self {
+            last_event_id: last_event.map_or(0, |e| e.id),
+            last_event_summary: last_event.map_or_else(String::new, |e| e.summary.clone()),
+            guards: world.guards.len(),
+            cash_major: economy.cash_major,
+            ledger_len: economy.ledger.len(),
+            security: policy.security_level,
+            privileges: policy.privileges_level,
+            rehab_funding: policy.rehab_funding_multiplier,
+            lockdown: policy.lockdown,
+            construction: world.construction_queue.len(),
+            facility_condition_sum: world.facilities.iter().map(|f| f.condition).sum(),
+            attention: world.warden.attention,
+        }
+    }
+}
+
+/// Observable result of a validated warden control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WardenActionOutcome {
+    Applied,
+    Deferred,
+    NoOp,
+    Rejected,
+}
+
+/// Derive the observer-facing outcome without bypassing engine validation.
+/// `apply_warden_action` always writes an accepted audit record, so audit
+/// presence alone is not proof that state changed; compare the control surface
+/// and honour explicit rejection/deferred markers.
+fn warden_action_outcome(
+    before: &WardenControlFingerprint,
+    after: &WardenControlFingerprint,
+    audit: Option<&sumo::DecisionAuditRecord>,
+    action: &WardenAction,
+) -> WardenActionOutcome {
+    if let Some(record) = audit {
+        let validation = record.validation.to_ascii_lowercase();
+        let outcome = format!("{:?}", record.outcome).to_ascii_lowercase();
+        if validation.starts_with("rejected") || outcome == "rejected" {
+            return WardenActionOutcome::Rejected;
+        }
+    }
+    if matches!(action, WardenAction::NoAction { .. }) {
+        return WardenActionOutcome::NoOp;
+    }
+    if after.last_event_id > before.last_event_id
+        && after
+            .last_event_summary
+            .to_ascii_lowercase()
+            .contains("deferred")
+    {
+        return WardenActionOutcome::Deferred;
+    }
+    if before == after {
+        // ReduceExpenses deliberately defers when finances are healthy or the
+        // cooldown is active; surface that instead of a generic no-op.
+        if matches!(action, WardenAction::ReduceExpenses) {
+            WardenActionOutcome::Deferred
+        } else {
+            WardenActionOutcome::NoOp
+        }
+    } else {
+        WardenActionOutcome::Applied
+    }
 }
 
 /// The eframe observer application.
@@ -243,7 +362,25 @@ impl App {
                         let speed = self.sim.speed();
                         self.sim = sim;
                         self.sim.set_speed(speed);
+                        // A loaded save carries its own runtime autosave state;
+                        // reapply the observer's current preference like the
+                        // TUI does, then drop every selection/query that could
+                        // point into the previous world.
+                        self.state.save_dir = dir.clone();
+                        self.state.save_input = dir.clone();
+                        self.state.load_input = dir.clone();
+                        if self.state.autosave_days > 0 {
+                            let autosave_dir = self.state.save_dir.clone();
+                            self.sim
+                                .enable_autosave(autosave_dir, self.state.autosave_days);
+                        } else {
+                            self.sim.disable_autosave();
+                        }
+                        self.state.clear_stale_for_load();
                         self.state.status = Some(format!("Loaded world from {dir}"));
+                        self.snapshot = None;
+                        self.cache_revision = u64::MAX;
+                        self.cache_selection = None;
                     }
                     Err(e) => self.state.status = Some(format!("Load failed: {e}")),
                 }
@@ -292,8 +429,27 @@ impl App {
             }
             WardenAction(action) => {
                 let label = action.label();
-                self.sim.apply_warden_action(action);
-                self.state.status = Some(format!("Warden action applied: {label}"));
+                let before = WardenControlFingerprint::capture(&self.sim);
+                // Keep the single validated mutation boundary; only the
+                // observer-facing status is derived from the resulting state.
+                self.sim.apply_warden_action(action.clone());
+                let after = WardenControlFingerprint::capture(&self.sim);
+                let outcome = warden_action_outcome(
+                    &before,
+                    &after,
+                    self.sim.decision_audit_log().last(),
+                    &action,
+                );
+                self.state.status = Some(match outcome {
+                    WardenActionOutcome::Applied => format!("Warden action applied: {label}"),
+                    WardenActionOutcome::Deferred => {
+                        format!("Warden action deferred: {label} (engine held it back this cycle)")
+                    }
+                    WardenActionOutcome::NoOp => {
+                        format!("Warden action had no observable effect: {label}")
+                    }
+                    WardenActionOutcome::Rejected => format!("Warden action rejected: {label}"),
+                });
             }
             EnqueueConstruction {
                 kind,
@@ -583,5 +739,90 @@ mod tests {
             App::ticks_per_second(TimeSpeed::FastForward)
                 < App::ticks_per_second(TimeSpeed::Extreme)
         );
+    }
+
+    #[test]
+    fn load_clear_drops_stale_selections_and_filters_but_keeps_preferences() {
+        let mut state = ObserverState::from_settings(&settings::Settings::default());
+        state.view = ViewMode::Map;
+        state.search = "stale".into();
+        state.selected_prisoner = Some(PrisonerId(7));
+        state.selected_incident = Some(3);
+        state.selected_decision = Some("old-key".into());
+        state.event_kind_filter = "Fight".into();
+        state.incident_min_severity = 0.8;
+        state.incident_open_only = true;
+        state.map.selected_facility = Some(2);
+        state.map.hovered_pawn = Some((true, 9));
+
+        state.clear_stale_for_load();
+
+        assert_eq!(state.view, ViewMode::Map);
+        assert!(state.search.is_empty());
+        assert!(state.selected_prisoner.is_none());
+        assert!(state.selected_incident.is_none());
+        assert!(state.selected_decision.is_none());
+        assert!(state.event_kind_filter.is_empty());
+        assert_eq!(state.incident_min_severity, 0.0);
+        assert!(!state.incident_open_only);
+        assert!(state.map.selected_facility.is_none());
+        assert!(state.map.hovered_pawn.is_none());
+    }
+
+    #[test]
+    fn warden_actions_report_observed_outcome_not_universal_success() {
+        let mut app = App::new(0xC0FFEE_10);
+        app.apply(Command::WardenAction(WardenAction::NoAction {
+            rationale: "hold".into(),
+        }));
+        let status = app.state.status.as_deref().unwrap_or_default();
+        assert!(status.contains("no observable effect"), "{status}");
+        assert!(!status.contains("applied"), "{status}");
+
+        app.apply(Command::WardenAction(WardenAction::ReduceExpenses));
+        let status = app.state.status.as_deref().unwrap_or_default();
+        assert!(status.contains("deferred"), "{status}");
+
+        app.apply(Command::WardenAction(WardenAction::HireGuards { count: 1 }));
+        let status = app.state.status.as_deref().unwrap_or_default();
+        assert!(status.contains("applied"), "{status}");
+
+        app.apply(Command::WardenAction(WardenAction::RequestFunding {
+            amount_major: 1_000,
+        }));
+        let status = app.state.status.as_deref().unwrap_or_default();
+        assert!(status.contains("applied"), "{status}");
+        app.apply(Command::WardenAction(WardenAction::RequestFunding {
+            amount_major: 1_000,
+        }));
+        let status = app.state.status.as_deref().unwrap_or_default();
+        assert!(status.contains("deferred"), "{status}");
+        assert!(!status.contains("applied"), "{status}");
+    }
+
+    #[test]
+    fn successful_load_invalidates_snapshot_and_observer_state() {
+        let dir = std::env::temp_dir().join(format!("alc-gui-load-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut app = App::new(0xC0FFEE_11);
+        app.state.search = "stale".into();
+        app.state.selected_prisoner = Some(app.sim.world().prisoners[0].id);
+        app.sim.save(&dir).expect("save test world");
+        app.apply(Command::Load(dir.to_string_lossy().into_owned()));
+
+        assert!(
+            app.state
+                .status
+                .as_deref()
+                .is_some_and(|s| s.starts_with("Loaded world"))
+        );
+        assert!(app.state.search.is_empty());
+        assert!(app.state.selected_prisoner.is_none());
+        assert!(app.snapshot.is_none());
+        assert_eq!(app.cache_revision, u64::MAX);
+        assert_eq!(app.cache_selection, None);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

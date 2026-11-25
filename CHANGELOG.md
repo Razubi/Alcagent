@@ -4,16 +4,17 @@
 
 ### Build / tests
 - Final 2026-11-25 gates are green: `cargo fmt --all -- --check`,
-  `cargo build --workspace --all-targets` (no warnings) and `cargo test --workspace`
-  (439 passed, 1 intentionally ignored, 0 failed), including the 365-day and 730-day
-  chaos soaks, review-agent suites, save/load determinism and both frontend suites.
+  `cargo build --workspace --all-targets` (no warnings) and `cargo test --workspace` — the full
+  workspace test suite is green at 0.05, including the 365-day and 730-day chaos soaks,
+  review-agent suites, save/load determinism and both frontend suites.
 - All 14 Ralph specs in `dev/ralph/specs` are `done`.
-- Workspace manifest version reconciled from `0.1.0` to `0.5.0-beta.1`.
+- Workspace manifest version reconciled from `0.1.0` to `0.5.0-beta.1`; the workspace has 15
+  members, including the buildable `alc-gui` observer.
 
 ### Repository split
-- The `sumo` engine and its 11 `alc-*` dependencies were extracted into a standalone repository
-  at `../sumo` for independent publishing. This repository remains the full application
-  (`alcagent` CLI + `alc-ui` TUI + engine).
+- Historical 0.05 note: an out-of-tree `../sumo` snapshot was used for independent publishing.
+  This repository remains the full application (`alcagent` CLI + `alc-ui` TUI + `alc-gui` observer
+  + engine), and its `docs/` are canonical rather than shared/synced with that snapshot.
 
 ### Implemented (pre-Wave-4)
 - Capability catalog + trait deltas (`alc-core::capability`, 23 kinds).
@@ -21,7 +22,8 @@
 - Rehabilitation program state machine (`alc-social::rehab`).
 - Daily schedule resolution + prisoner placement (`alc-world::resolve_schedules_step`, `prisoner_location`).
 - Simplified rehab progress API (`sumo::Sim::apply_rehab_progress`, `rehab_score`).
-- `alc-gui` pure data-extraction layer (`data.rs`) — crate not a workspace member.
+- `alc-gui` pure data-extraction layer (`data.rs`) — pre-Wave-5 state, superseded below by its
+  buildable workspace-member GUI.
 
 ### Implemented (Wave 5 — R0 map + GUI acceptance, spec 002)
 - Both frontends render a real spatial map from `sumo::MapFrame`: the egui GUI (`alc-gui`, a
@@ -58,8 +60,9 @@
 - Social-network analysis: authoritative social roles and derived dyad labels exposed in TUI/GUI
   (spec 012).
 - Warden strategy: report-only objective scoring with explicit conflicts, finance/attention gates,
-  catalog-aware construction, funding/hiring consequences, and rationale persisted in both audit
-  stores and exposed in TUI/GUI (spec 010).
+  catalog-driven expansion planning, funding/hiring consequences, and rationale persisted in both
+  audit stores and exposed in TUI/GUI (spec 010). The engine construction queue itself still uses
+  hard-coded duration/cost rules by facility type and capacity.
 
 ### Implemented (final 0.05 wave: specs 008, 011, 013, 014)
 - Gang politics: authoritative membership reconciliation, event-sourced gang history, disputes,

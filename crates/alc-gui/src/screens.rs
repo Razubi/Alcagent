@@ -2,14 +2,14 @@
 //! snapshot and only queues [`Command`]s through [`panels::RenderCtx`].
 
 use crate::{
-    CONSTRUCTION_KINDS, ViewMode,
+    ViewMode,
     app::Command,
     data, map_view,
     panels::{self, RenderCtx},
     theme,
 };
 use eframe::egui::{self, Color32, FontId};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Dispatch a frame to the active observation view.
 pub fn show(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
@@ -168,14 +168,102 @@ fn overview(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
 // 2 — Prisoner profiles
 // ---------------------------------------------------------------------------
 
+/// UI state for one parole control: enabled flag plus an explanatory tooltip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ParoleButtonState {
+    enabled: bool,
+    tip: &'static str,
+}
+
+/// The snapshot carries the engine status as its debug label. Keep the decode
+/// local to the GUI so `data.rs` remains untouched.
+fn parole_status_from_label(label: Option<&str>) -> Option<sumo::ParoleStatus> {
+    match label {
+        Some("Scheduled") => Some(sumo::ParoleStatus::Scheduled),
+        Some("Granted") => Some(sumo::ParoleStatus::Granted),
+        Some("Denied") => Some(sumo::ParoleStatus::Denied),
+        Some("InHearing") => Some(sumo::ParoleStatus::InHearing),
+        _ => None,
+    }
+}
+
+/// Pure gating for the four parole buttons, newest state first:
+/// `[schedule, grant, deny, release]`.
+fn parole_button_states(
+    due: bool,
+    status: Option<sumo::ParoleStatus>,
+    has_conditions: bool,
+    released: bool,
+) -> [ParoleButtonState; 4] {
+    use sumo::ParoleStatus as P;
+    let schedule = if released {
+        ParoleButtonState {
+            enabled: false,
+            tip: "Prisoner has already been released",
+        }
+    } else if due && status.is_none() {
+        ParoleButtonState {
+            enabled: true,
+            tip: "Schedule a hearing for this eligible prisoner",
+        }
+    } else {
+        ParoleButtonState {
+            enabled: false,
+            tip: if status.is_some() {
+                "A parole record already exists for this prisoner"
+            } else {
+                "Prisoner is not currently eligible for parole review"
+            },
+        }
+    };
+    // The engine opens a hearing automatically when a grant/deny is recorded
+    // for an eligible prisoner with no prior record, so `due` alone is enough.
+    let decision_open = !released
+        && (matches!(status, Some(P::Scheduled | P::InHearing)) || (due && status.is_none()));
+    let decision_tip = if released {
+        "Prisoner has already been released"
+    } else if matches!(status, Some(P::Granted | P::Denied)) {
+        "A terminal parole decision has already been recorded"
+    } else if decision_open {
+        "Record a decision for this eligible prisoner"
+    } else {
+        "Prisoner is not currently eligible for a parole decision"
+    };
+    let grant = ParoleButtonState {
+        enabled: decision_open,
+        tip: decision_tip,
+    };
+    let deny = grant;
+    let release = if released {
+        ParoleButtonState {
+            enabled: false,
+            tip: "Parole release has already been executed",
+        }
+    } else if status == Some(P::Granted) && has_conditions {
+        ParoleButtonState {
+            enabled: true,
+            tip: "Execute release with the recorded parole conditions",
+        }
+    } else {
+        ParoleButtonState {
+            enabled: false,
+            tip: if status == Some(P::Granted) {
+                "Granted parole has no recorded conditions yet"
+            } else {
+                "Parole must be granted before release"
+            },
+        }
+    };
+    [schedule, grant, deny, release]
+}
+
 fn prisoner(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
     let snap = ctx.snapshot;
-    let q = ctx.state.search.to_lowercase();
     columns(
         ui,
         ctx,
         |ui, ctx| {
-            ui.add(egui::TextEdit::singleline(&mut ctx.state.search).hint_text("Search prisoners"));
+            let q = panels::search_field(ui, ctx, "Search prisoners");
             let list: Vec<_> = snap
                 .prisoners
                 .iter()
@@ -326,16 +414,40 @@ fn prisoner(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                     if snap.selected_parole_released {
                         ui.label("Released from custody on parole.");
                     }
-                    if ui.button("Schedule hearing").clicked() {
+                    let due = snap.parole_due.contains(&id);
+                    let status = parole_status_from_label(snap.selected_parole.as_deref());
+                    let [schedule, grant, deny, release] = parole_button_states(
+                        due,
+                        status,
+                        snap.selected_parole_conditions.is_some(),
+                        snap.selected_parole_released,
+                    );
+                    if ui
+                        .add_enabled(schedule.enabled, egui::Button::new("Schedule hearing"))
+                        .on_hover_text(schedule.tip)
+                        .clicked()
+                    {
                         ctx.emit(Command::StartParole(id));
                     }
-                    if ui.button("Grant").clicked() {
+                    if ui
+                        .add_enabled(grant.enabled, egui::Button::new("Grant"))
+                        .on_hover_text(grant.tip)
+                        .clicked()
+                    {
                         ctx.emit(Command::GrantParole(id));
                     }
-                    if ui.button("Deny").clicked() {
+                    if ui
+                        .add_enabled(deny.enabled, egui::Button::new("Deny"))
+                        .on_hover_text(deny.tip)
+                        .clicked()
+                    {
                         ctx.emit(Command::DenyParole(id, "institutional conduct".to_string()));
                     }
-                    if ui.button("Release on parole").clicked() {
+                    if ui
+                        .add_enabled(release.enabled, egui::Button::new("Release on parole"))
+                        .on_hover_text(release.tip)
+                        .clicked()
+                    {
                         ctx.emit(Command::ReleaseParole(id));
                     }
                 });
@@ -372,7 +484,7 @@ fn gang(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
         ui,
         ctx,
         |ui, ctx| {
-            let q = ctx.state.search.to_lowercase();
+            let q = panels::search_field(ui, ctx, "Search gangs");
             egui::ScrollArea::vertical()
                 .id_salt("gang_list")
                 .show(ui, |ui| {
@@ -542,7 +654,7 @@ fn staff(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
         ui,
         ctx,
         |ui, ctx| {
-            let q = ctx.state.search.to_lowercase();
+            let q = panels::search_field(ui, ctx, "Filter guards");
             egui::ScrollArea::vertical()
                 .id_salt("staff_list")
                 .show(ui, |ui| {
@@ -852,10 +964,14 @@ fn warden(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                 });
             });
             panels::section(ui, "Construction", |ui| {
+                let kind_index = ctx
+                    .state
+                    .construction_kind_index
+                    .min(crate::CONSTRUCTION_KINDS.len() - 1);
                 egui::ComboBox::from_label("Facility")
-                    .selected_text(CONSTRUCTION_KINDS[ctx.state.construction_kind_index].display())
+                    .selected_text(crate::CONSTRUCTION_KINDS[kind_index].display())
                     .show_ui(ui, |ui| {
-                        for (i, kind) in CONSTRUCTION_KINDS.iter().enumerate() {
+                        for (i, kind) in crate::CONSTRUCTION_KINDS.iter().enumerate() {
                             ui.selectable_value(
                                 &mut ctx.state.construction_kind_index,
                                 i,
@@ -871,7 +987,7 @@ fn warden(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                 });
                 if ui.button("Queue construction").clicked() {
                     ctx.emit(Command::EnqueueConstruction {
-                        kind: CONSTRUCTION_KINDS[ctx.state.construction_kind_index],
+                        kind: crate::CONSTRUCTION_KINDS[kind_index],
                         wing: ctx.state.build_wing,
                         capacity: ctx.state.build_capacity,
                     });
@@ -1102,6 +1218,77 @@ fn timeline(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
 // 8 — Social network
 // ---------------------------------------------------------------------------
 
+/// Deterministic grid placement: stable for a given prisoner order and canvas,
+/// and readable when the ring would collapse into overlapping labels.
+const SOCIAL_MAX_EDGES_DRAWN: usize = 400;
+const SOCIAL_MAX_LABELS: usize = 24;
+const SOCIAL_LIST_LIMIT: usize = 200;
+
+fn social_cell(index: usize, count: usize, rect: egui::Rect) -> egui::Pos2 {
+    if count == 0 {
+        return rect.center();
+    }
+    let cols = (count as f32).sqrt().ceil() as usize;
+    let rows = (count + cols - 1) / cols;
+    let col = index % cols;
+    let row = index / cols;
+    let margin = 24.0;
+    let width = (rect.width() - margin * 2.0).max(1.0);
+    let height = (rect.height() - margin * 2.0).max(1.0);
+    let x = if cols == 1 {
+        0.5
+    } else {
+        col as f32 / (cols - 1) as f32
+    };
+    let y = if rows == 1 {
+        0.5
+    } else {
+        row as f32 / (rows - 1) as f32
+    };
+    rect.min + egui::vec2(margin + x * width, margin + y * height)
+}
+
+/// Labels are capped and biased toward the selected prisoner and its direct
+/// neighbours; with no selection a deterministic stride sample is shown.
+fn social_label_ids(
+    prisoners: &[sumo::PrisonerSummary],
+    edges: &[sumo::SocialEdge],
+    selected: Option<u64>,
+    max: usize,
+) -> HashSet<u64> {
+    let mut out = HashSet::new();
+    if max == 0 {
+        return out;
+    }
+    if let Some(selected) = selected {
+        out.insert(selected);
+        for edge in edges {
+            if out.len() >= max {
+                break;
+            }
+            let a = edge.prisoner_a.raw();
+            let b = edge.prisoner_b.raw();
+            if a == selected {
+                out.insert(b);
+            } else if b == selected {
+                out.insert(a);
+            }
+        }
+    }
+    if out.is_empty() {
+        let stride = (prisoners.len() + max - 1) / max;
+        for (i, prisoner) in prisoners.iter().enumerate() {
+            if out.len() >= max {
+                break;
+            }
+            if i % stride == 0 {
+                out.insert(prisoner.id.raw());
+            }
+        }
+    }
+    out
+}
+
 fn social_network(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
     let snap = ctx.snapshot;
     let (rect, response) = ui.allocate_exact_size(
@@ -1115,18 +1302,10 @@ fn social_network(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
     painter.rect_filled(rect, 4.0, theme::MAP_BG);
     let n = snap.prisoners.len();
     let mut positions = HashMap::new();
-    if n > 0 {
-        let radius = (rect.width().min(rect.height()) * 0.5 - 40.0).max(30.0);
-        let center = rect.center();
-        for (i, p) in snap.prisoners.iter().enumerate() {
-            let angle = (i as f32 / n as f32) * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
-            positions.insert(
-                p.id.raw(),
-                center + egui::vec2(angle.cos() * radius, angle.sin() * radius),
-            );
-        }
+    for (i, p) in snap.prisoners.iter().enumerate() {
+        positions.insert(p.id.raw(), social_cell(i, n, rect));
     }
-    for edge in &snap.social_edges {
+    for edge in snap.social_edges.iter().take(SOCIAL_MAX_EDGES_DRAWN) {
         let Some(&a) = positions.get(&edge.prisoner_a.raw()) else {
             continue;
         };
@@ -1143,6 +1322,12 @@ fn social_network(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
             egui::Stroke::new(1.0 + edge.bond_score * 2.5, colour),
         );
     }
+    let labels = social_label_ids(
+        &snap.prisoners,
+        &snap.social_edges,
+        ctx.state.selected_prisoner.map(|id| id.raw()),
+        SOCIAL_MAX_LABELS,
+    );
     for p in &snap.prisoners {
         let Some(&pos) = positions.get(&p.id.raw()) else {
             continue;
@@ -1157,13 +1342,19 @@ fn social_network(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                 theme::PRISONER
             },
         );
-        painter.text(
-            pos + egui::vec2(8.0, 0.0),
-            egui::Align2::LEFT_CENTER,
-            &p.name,
-            FontId::proportional(9.0),
-            Color32::WHITE,
-        );
+        if labels.contains(&p.id.raw()) {
+            painter.text(
+                pos + egui::vec2(8.0, 0.0),
+                egui::Align2::LEFT_CENTER,
+                data::short_truncate(&p.name, 12),
+                FontId::proportional(9.0),
+                if selected {
+                    theme::ACCENT
+                } else {
+                    Color32::WHITE
+                },
+            );
+        }
     }
     if response.clicked() {
         if let Some(pos) = response.hover_pos() {
@@ -1188,20 +1379,36 @@ fn social_network(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
 
     ui.separator();
     let name_map = names(snap);
-    let q = ctx.state.search.to_lowercase();
+    let q = panels::search_field(ui, ctx, "Filter edges and roles");
+    let hidden_edges = snap
+        .social_edges
+        .len()
+        .saturating_sub(SOCIAL_MAX_EDGES_DRAWN);
     ui.horizontal(|ui| {
         ui.label("Social edges");
         ui.label(format!(
-            "{} edges · {} prisoners",
+            "{} edges · {} prisoners · drawing {} · {} labels",
             snap.social_edges.len(),
-            n
+            n,
+            snap.social_edges.len() - hidden_edges,
+            labels.len()
         ));
     });
+    if hidden_edges > 0 {
+        ui.add(egui::Label::new(
+            egui::RichText::new(format!(
+                "+{hidden_edges} edges not drawn (layout cap {SOCIAL_MAX_EDGES_DRAWN})"
+            ))
+            .color(theme::MUTED)
+            .small(),
+        ));
+    }
     egui::ScrollArea::vertical()
         .id_salt("social_edges")
         .max_height(180.0)
         .show(ui, |ui| {
-            for edge in snap.social_edges.iter().take(200) {
+            let mut matched = 0usize;
+            for edge in &snap.social_edges {
                 let a = name_map
                     .get(&edge.prisoner_a.raw())
                     .map_or_else(|| format!("#{}", edge.prisoner_a.raw()), Clone::clone);
@@ -1215,7 +1422,21 @@ fn social_network(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                 if !q.is_empty() && !label.to_lowercase().contains(&q) {
                     continue;
                 }
-                ui.add(egui::Label::new(egui::RichText::new(label).small()));
+                matched += 1;
+                if matched <= SOCIAL_LIST_LIMIT {
+                    ui.add(egui::Label::new(egui::RichText::new(label).small()));
+                }
+            }
+            if matched > SOCIAL_LIST_LIMIT {
+                ui.add(egui::Label::new(
+                    egui::RichText::new(format!(
+                        "+{} more edges ({} matching; list cap {SOCIAL_LIST_LIMIT})",
+                        matched - SOCIAL_LIST_LIMIT,
+                        matched
+                    ))
+                    .color(theme::MUTED)
+                    .small(),
+                ));
             }
         });
 
@@ -1264,6 +1485,19 @@ fn social_network(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
 // 9 — Incident reports
 // ---------------------------------------------------------------------------
 
+/// Count structured incident records by their engine kind label. This keeps
+/// the bucket summary in sync with the records the list/detail actually show
+/// (the event window is capped and can disagree with the incident store).
+fn incident_bucket_rows(records: &[sumo::IncidentRecord]) -> Vec<(String, u32)> {
+    let mut counts: HashMap<String, u32> = HashMap::new();
+    for record in records {
+        *counts.entry(record.kind.clone()).or_insert(0) += 1;
+    }
+    let mut rows: Vec<(String, u32)> = counts.into_iter().collect();
+    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    rows
+}
+
 fn incidents(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
     let snap = ctx.snapshot;
     ui.horizontal(|ui| {
@@ -1274,21 +1508,29 @@ fn incidents(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
         ));
         ui.checkbox(&mut ctx.state.incident_open_only, "Open only");
     });
-    let rows = data::incident_report_rows(&snap.events);
-    let summary: Vec<String> = rows
+    let buckets = incident_bucket_rows(&snap.incidents);
+    let summary: Vec<String> = buckets
         .iter()
-        .map(|r| format!("{}: {}", r.kind.label(), r.count))
+        .map(|(kind, count)| format!("{kind}: {count}"))
         .collect();
     theme::kv(
         ui,
-        "Buckets",
+        "Buckets (structured incidents)",
         if summary.is_empty() {
             "none".into()
         } else {
-            summary.join(" · ")
+            format!("{} total · {}", snap.incidents.len(), summary.join(" · "))
         },
     );
     let name_map = names(snap);
+    let min_severity = ctx.state.incident_min_severity;
+    let open_only = ctx.state.incident_open_only;
+    let visible: Vec<&sumo::IncidentRecord> = snap
+        .incidents
+        .iter()
+        .rev()
+        .filter(|r| r.severity >= min_severity && (!open_only || !r.resolved))
+        .collect();
     columns(
         ui,
         ctx,
@@ -1296,13 +1538,7 @@ fn incidents(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
             egui::ScrollArea::vertical()
                 .id_salt("incident_list")
                 .show(ui, |ui| {
-                    for record in snap.incidents.iter().rev() {
-                        if record.severity < ctx.state.incident_min_severity {
-                            continue;
-                        }
-                        if ctx.state.incident_open_only && record.resolved {
-                            continue;
-                        }
+                    for record in &visible {
                         let selected = ctx.state.selected_incident == Some(record.id);
                         if ui
                             .selectable_label(
@@ -1323,26 +1559,31 @@ fn incidents(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                     }
                     if snap.incidents.is_empty() {
                         ui.label("No structured incidents recorded yet.");
+                    } else if visible.is_empty() {
+                        ui.label("No incidents match the active filters.");
                     }
                 });
         },
         |ui, ctx| {
-            let selected = ctx
-                .state
-                .selected_incident
-                .and_then(|id| snap.incidents.iter().find(|r| r.id == id))
-                .or_else(|| {
-                    snap.incidents.iter().rev().find(|r| {
-                        r.severity >= ctx.state.incident_min_severity
-                            && (!ctx.state.incident_open_only || !r.resolved)
-                    })
-                });
-            if let Some(record) = selected {
+            // Read selection after the list column ran so a click in this frame
+            // is reflected in the detail column.
+            let selected_id = ctx.state.selected_incident;
+            let selected = selected_id.and_then(|id| visible.iter().copied().find(|r| r.id == id));
+            // Auto-show the newest visible record only when nothing was pinned;
+            // never let the detail panel fall back to a hidden selection.
+            let fallback = if selected_id.is_none() {
+                visible.first().copied()
+            } else {
+                None
+            };
+            if let Some(record) = selected.or(fallback) {
                 ui.heading("Incident detail");
                 panels::incident_detail(ui, record, &name_map);
                 if !record.resolved && ui.button("Resolve incident").clicked() {
                     ctx.emit(Command::ResolveIncident(record.id));
                 }
+            } else if selected_id.is_some() {
+                ui.label("Selected incident is hidden by the active filters.");
             } else {
                 ui.label("Select an incident to see its cause, actors, validation and outcome.");
             }
@@ -1520,5 +1761,102 @@ mod tests {
         assert_eq!(value("Scores"), "#9 a0.20/h0.70");
         assert!(value("Pressure").parse::<f32>().unwrap() > 0.4);
         assert!(value("History").contains("leadership"));
+    }
+
+    #[test]
+    fn construction_catalog_exposes_every_engine_facility_kind() {
+        use alc_world::FacilityKind as F;
+        use std::collections::HashSet;
+
+        let offered: HashSet<_> = crate::CONSTRUCTION_KINDS.iter().copied().collect();
+        let expected = [
+            F::CellBlock,
+            F::Dormitory,
+            F::Medical,
+            F::Education,
+            F::Isolation,
+            F::Visitor,
+            F::Workshop,
+            F::Kitchen,
+            F::Recreation,
+            F::Admin,
+            F::Staff,
+            F::Yard,
+        ];
+        assert_eq!(offered.len(), expected.len());
+        for kind in expected {
+            assert!(
+                offered.contains(&kind),
+                "{kind:?} missing from build controls"
+            );
+        }
+    }
+
+    #[test]
+    fn social_grid_layout_is_deterministic_and_stays_in_canvas() {
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(300.0, 200.0));
+        assert_eq!(social_cell(2, 0, rect), rect.center());
+        let first = social_cell(0, 5, rect);
+        let last = social_cell(4, 5, rect);
+        assert_eq!(first, social_cell(0, 5, rect));
+        assert!(rect.contains(first) && rect.contains(last));
+        assert!(first.x < last.x && first.y < last.y);
+    }
+
+    #[test]
+    fn social_label_culling_prefers_selection_and_stays_bounded() {
+        let sim = sumo::Sim::new(0xC0FFEE_20);
+        let prisoners = sim.prisoners();
+        let selected = prisoners[0].id.raw();
+        let focused = social_label_ids(&prisoners, &[], Some(selected), 3);
+        assert!(focused.contains(&selected));
+        assert!(focused.len() <= 3);
+        let sampled = social_label_ids(&prisoners, &[], None, 4);
+        assert!(!sampled.is_empty());
+        assert!(sampled.len() <= 4);
+        assert_eq!(sampled, social_label_ids(&prisoners, &[], None, 4));
+    }
+
+    #[test]
+    fn incident_buckets_count_structured_records_not_event_window() {
+        let mut fight = sumo::IncidentRecord::default();
+        fight.kind = "Fight".into();
+        let fight2 = fight.clone();
+        let mut argument = sumo::IncidentRecord::default();
+        argument.kind = "Argument".into();
+        let rows = incident_bucket_rows(&[fight, fight2, argument]);
+        assert_eq!(rows[0], ("Fight".to_string(), 2));
+        assert_eq!(rows[1], ("Argument".to_string(), 1));
+        assert!(incident_bucket_rows(&[]).is_empty());
+    }
+
+    #[test]
+    fn parole_controls_gate_on_status_conditions_and_release() {
+        use sumo::ParoleStatus as P;
+        assert_eq!(
+            parole_status_from_label(Some("Scheduled")),
+            Some(P::Scheduled)
+        );
+        assert_eq!(parole_status_from_label(Some("None")), None);
+        assert_eq!(parole_status_from_label(None), None);
+
+        let due = parole_button_states(true, None, false, false);
+        assert!(due[0].enabled && due[1].enabled && due[2].enabled);
+        assert!(!due[3].enabled);
+
+        let not_due = parole_button_states(false, None, false, false);
+        assert!(not_due.iter().all(|state| !state.enabled));
+
+        let scheduled = parole_button_states(false, Some(P::Scheduled), false, false);
+        assert!(!scheduled[0].enabled);
+        assert!(scheduled[1].enabled && scheduled[2].enabled);
+        assert!(!scheduled[3].enabled);
+
+        let granted = parole_button_states(false, Some(P::Granted), true, false);
+        assert!(granted[3].enabled);
+        assert!(!granted[1].enabled && !granted[2].enabled);
+
+        let released = parole_button_states(true, Some(P::Granted), true, true);
+        assert!(released.iter().all(|state| !state.enabled));
     }
 }

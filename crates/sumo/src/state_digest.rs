@@ -443,8 +443,47 @@ pub fn compute_world_digest(world: &alc_world::World) -> u64 {
         .to_bits()
         .hash(&mut hasher);
 
-    // Economy
+    // Economy: cash plus the durable ledger. Ledger entries are hashed in a
+    // stable key order rather than relying on append order, so equivalent
+    // logical states digest equally.
     world.economy.cash.0.hash(&mut hasher);
+    let mut ledger: Vec<_> = world.economy.ledger.iter().collect();
+    ledger.sort_by(|a, b| {
+        a.at_secs
+            .cmp(&b.at_secs)
+            .then_with(|| format!("{:?}", a.account).cmp(&format!("{:?}", b.account)))
+            .then_with(|| a.amount.0.cmp(&b.amount.0))
+            .then_with(|| a.note.cmp(&b.note))
+    });
+    for entry in ledger {
+        entry.at_secs.hash(&mut hasher);
+        format!("{:?}", entry.account).hash(&mut hasher);
+        entry.amount.0.hash(&mut hasher);
+        entry.note.hash(&mut hasher);
+    }
+
+    // Institutional memory: the durable history log is persistent state, so
+    // changes to it must move the digest. Event ids are monotonic, so sorting
+    // by id is both deterministic and faithful to append order.
+    let mut institutional_history: Vec<_> = world.history.iter().collect();
+    institutional_history.sort_by_key(|event| event.id);
+    for event in institutional_history {
+        event.id.hash(&mut hasher);
+        event.at.secs.hash(&mut hasher);
+        event.kind.hash(&mut hasher);
+        event.summary.hash(&mut hasher);
+        event.confidence.to_bits().hash(&mut hasher);
+        let mut actors = event.actors.clone();
+        actors.sort_unstable();
+        for actor in actors {
+            actor.hash(&mut hasher);
+        }
+        let mut causes = event.causes.clone();
+        causes.sort_unstable();
+        for cause in causes {
+            cause.hash(&mut hasher);
+        }
+    }
 
     // Events (recent only to avoid unbounded growth)
     for e in world.events.recent() {
@@ -643,5 +682,57 @@ mod tests {
         b.write_bytes(&0x0102_0304_0506_0708u64.to_be_bytes());
 
         assert_eq!(a.finish(), b.finish());
+    }
+
+    #[test]
+    fn world_digest_covers_history_and_economy_ledger() {
+        let mut world = alc_world::World::new(77);
+        let baseline = compute_world_digest(&world);
+
+        world.history.push(
+            alc_events::WorldEvent::new(
+                1,
+                world.time,
+                alc_events::EventKind::PolicyChange,
+                "digest history entry",
+            )
+            .with_cause("digest test"),
+        );
+        let with_history = compute_world_digest(&world);
+        assert_ne!(with_history, baseline, "history must affect the digest");
+
+        world.economy.ledger.push(alc_economy::LedgerEntry {
+            at_secs: world.time.as_secs(),
+            account: alc_economy::Account::Admin,
+            amount: alc_economy::Money::from_major(-5),
+            note: "digest ledger entry".to_string(),
+        });
+        assert_ne!(
+            compute_world_digest(&world),
+            with_history,
+            "ledger must affect the digest"
+        );
+    }
+
+    #[test]
+    fn ledger_digest_is_independent_of_append_order() {
+        let mut a = alc_world::World::new(78);
+        let first = alc_economy::LedgerEntry {
+            at_secs: 10,
+            account: alc_economy::Account::Food,
+            amount: alc_economy::Money::from_major(-2),
+            note: "first".to_string(),
+        };
+        let second = alc_economy::LedgerEntry {
+            at_secs: 20,
+            account: alc_economy::Account::GovGrant,
+            amount: alc_economy::Money::from_major(3),
+            note: "second".to_string(),
+        };
+        a.economy.ledger = vec![first.clone(), second.clone()];
+
+        let mut b = a.clone();
+        b.economy.ledger = vec![second, first];
+        assert_eq!(compute_world_digest(&a), compute_world_digest(&b));
     }
 }

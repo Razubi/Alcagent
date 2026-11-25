@@ -13,7 +13,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            seed: 0xA1C_0A_6E_17_0,
+            seed: 0x00A1_C0A6_E170,
             starting_population: 24,
             save_interval_days: 7,
             autosave_dir: "saves".into(),

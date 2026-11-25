@@ -1,5 +1,10 @@
 # REQUEST: Engine support required by the next update (Wave 4)
 
+> **Historical handoff (retained; not active):** Wave 4 R1–R7 landed, council/shadow behavior and
+> the UI map switch shipped in 0.05, and remaining depth is tracked in
+> [`../../Project/design-status.md`](../../Project/design-status.md). The body below is preserved
+> as the original request.
+
 **From:** Lead / simulation team
 **To:** Sumo AI team (owner of `crates/sumo`)
 **Status:** OPEN — nothing here is implemented; aligned with the finalized beta-0.05 update list and next-version plan.
