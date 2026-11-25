@@ -20,3 +20,12 @@
 - Final manifest cleanup removed the last unused dependency; `cargo build --workspace --all-targets` is warning-free.
 - Fixed Ralph launcher: temporarily downgrade `ErrorActionPreference` around the native CLI call so CLI stderr progress no longer aborts the loop; verify CLI exit code before accepting DONE.
 
+
+## 2026-11-25 - iteration 2.1: spec 003 persistence durability
+
+- Closed remaining durability gaps in `sumo`: world-side `resolved_contraband_at` now feeds the state digest, and `maybe_autosave` logs (`tracing::warn!`) every failure at the source before recording it in `Sim::last_autosave_error`; `tick` no longer drops errors silently.
+- Extended `alcagent_005_regressions::state_digest_covers_new_state` to prove digest sensitivity for decision audit, engine + world contraband resolution, construction queue, rehab records and post-release records; added `autosave_failure_is_surfaced_and_recoverable`.
+- Hardened `alc-persistence` tests: `World.speed` round-trip assertion and stale-temp-file atomic-rename coverage; documented the fsync-before-rename write contract. Existing v3-to-v4 bincode fixture migration verified.
+- Validation: `cargo build --workspace --all-targets` clean (0 warnings), `cargo test -p sumo --test alcagent_005_regressions` 7/7, `cargo test -p alc-persistence` 18/18, `cargo test --workspace` green (including long-run soaks).
+- Spec `dev/ralph/specs/003-persistence-durability.md`: Status set to `done`.
+- Commit: 8c503c9 (`fix(persistence): harden save durability and digest coverage (spec 003)`).
