@@ -29,3 +29,14 @@
 - Validation: `cargo build --workspace --all-targets` clean (0 warnings), `cargo test -p sumo --test alcagent_005_regressions` 7/7, `cargo test -p alc-persistence` 18/18, `cargo test --workspace` green (including long-run soaks).
 - Spec `dev/ralph/specs/003-persistence-durability.md`: Status set to `done`.
 - Commit: 8c503c9 (`fix(persistence): harden save durability and digest coverage (spec 003)`).
+- ITER 2.1 003-persistence-durability.md: DONE. Validation and commit verified.
+
+## 2026-11-25 — iteration 2.2: spec 004 incident/decision audit
+
+- Made incident causal chains durable across bounded-log trimming: incident and world-event references are scrubbed from live id sets, structured chain links are invariant-checked, and prior-cause matching no longer compares incident ids with world event ids.
+- Bounded decision auditing inside `record_decision_audit`; public emission assigns authoritative world event ids before mirroring conflict kinds, with dedupe by world event id and regression coverage.
+- Unified TUI/GUI drill-down on stable content-derived decision keys, cursor-driven detail, newest-first lists, and explicit cause/actors/validation/outcome rows; GUI validation filters/colours handle engine status prefixes.
+- Validation: `cargo build --workspace --all-targets` clean; `cargo test --workspace` green; targeted engine/UI regressions green; GUI launched via game-development skill with 0 errors (frame captured but not readable by this model).
+- Spec `dev/ralph/specs/004-incident-decision-audit.md`: Status set to `done`.
+- Commit: 24da165 (`fix(audit): make incident and decision traces durable and inspectable (spec 004)`).
+- ITER 2.2 004-incident-decision-audit.md: DONE. Validation and commit verified.
