@@ -135,8 +135,8 @@ fn engine_state_roundtrip_preserves_all_subfields() {
     assert_eq!(loaded.post_release().get(&PrisonerId(43)), Some(&false));
 
     // Contraband resolutions and their timestamps (v4 persistence fix).
-    assert!(loaded.resolved_contraband_cases().contains(&77));
-    assert_eq!(loaded.resolved_contraband_at().get(&77), Some(&SimTime::from_secs(3600)));
+    assert!(loaded.engine_state.resolved_contraband_cases.contains(&77));
+    assert_eq!(loaded.engine_state.resolved_contraband_at.get(&77), Some(&SimTime::from_secs(3600)));
 
     // Policy + mode.
     assert!(loaded.policy_state().lockdown);

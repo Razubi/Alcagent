@@ -8,7 +8,7 @@ use alc_agents::DecisionAction;
 use alc_core::FacilityId;
 use alc_events::EventKind;
 use alc_world::World;
-use crate::{Decision, EngineState, Sim, Policy};
+use crate::{EngineState, Sim, Policy};
 use std::collections::HashSet;
 
 /// Maximum number of entries permitted in the incident/decision logs.
