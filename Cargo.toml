@@ -38,7 +38,6 @@ crossterm = "0.28"
 eframe = "0.37.0"
 egui = "0.37.0"
 ratatui = "0.29"
-uuid = { version = "1", features = ["v4", "serde"] }
 alc-core = { path = "crates/alc-core" }
 alc-world = { path = "crates/alc-world" }
 alc-agents = { path = "crates/alc-agents" }
@@ -51,7 +50,6 @@ alc-events = { path = "crates/alc-events" }
 alc-persistence = { path = "crates/alc-persistence" }
 alc-testing = { path = "crates/alc-testing" }
 alc-ui = { path = "crates/alc-ui" }
-alcagent = { path = "crates/alcagent" }
 sumo = { path = "crates/sumo" }
 
 [workspace.lints.clippy]

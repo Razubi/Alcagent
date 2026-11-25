@@ -9,7 +9,6 @@ description = "AI orchestration: decision loops, memory, info model, prompt vali
 [dependencies]
 alc-core = { workspace = true }
 alc-prisoner = { workspace = true }
-alc-social = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

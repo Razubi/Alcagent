@@ -93,9 +93,9 @@ pub fn show(ui: &mut egui::Ui, ctx: &mut panels::RenderCtx<'_>) {
                 state.pan += response.drag_delta();
             }
             if response.hovered() {
-                let scroll = ui.input(|i| i.scroll_delta.y);
+                let scroll = ui.input(|i| i.smooth_scroll_delta.y);
                 if scroll != 0.0 {
-                    let anchor = response.hover_pos().unwrap_or(rect.center()) - rect.min;
+                    let anchor = response.hover_pos().unwrap_or(rect.center()) - rect.min.to_vec2();
                     let factor = if scroll > 0.0 { 1.12 } else { 1.0 / 1.12 };
                     let (zoom, pan) =
                         data::zoom_at(anchor, state.zoom, state.pan, factor, 0.25, 5.0);
@@ -104,7 +104,7 @@ pub fn show(ui: &mut egui::Ui, ctx: &mut panels::RenderCtx<'_>) {
                 }
             }
 
-            let local_mouse = response.hover_pos().map(|p| p - rect.min);
+            let local_mouse = response.hover_pos().map(|p| p - rect.min.to_vec2());
             let hits = hit_test(snap, state, rect, local_mouse);
             state.hovered_pawn = hits.pawn;
             state.hovered_facility = hits.facility;
@@ -145,7 +145,7 @@ fn hit_test(
     snap: &data::Snapshot,
     state: &MapViewState,
     rect: Rect,
-    mouse: Option<Vec2>,
+    mouse: Option<egui::Pos2>,
 ) -> HitTest {
     let Some(mouse) = mouse else {
         return HitTest::default();
@@ -177,7 +177,7 @@ fn hit_test(
 }
 
 fn local(world: (f32, f32), state: &MapViewState, rect: Rect) -> egui::Pos2 {
-    rect.min + data::world_to_screen(world, state.zoom, state.pan)
+    rect.min + data::world_to_screen(world, state.zoom, state.pan).to_vec2()
 }
 
 fn facility_size(zoom: f32) -> Vec2 {

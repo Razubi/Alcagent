@@ -10,7 +10,7 @@ use std::path::Path;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     /// Last observation view that was open.
-    pub view: alc_ui::ViewMode,
+    pub view: crate::ViewMode,
     /// Last playback speed.
     pub speed: TimeSpeed,
     /// Directory used by the Save / Load controls (relative paths allowed).
@@ -22,7 +22,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            view: alc_ui::ViewMode::InstitutionOverview,
+            view: crate::ViewMode::InstitutionOverview,
             speed: TimeSpeed::Paused,
             save_dir: "saves/gui".to_string(),
             autosave_days: 0,
@@ -60,14 +60,14 @@ mod tests {
     #[test]
     fn settings_round_trip() {
         let s = Settings {
-            view: alc_ui::ViewMode::Map,
+            view: crate::ViewMode::Map,
             speed: TimeSpeed::FastForward,
             save_dir: "tmp/save".to_string(),
             autosave_days: 7,
         };
         let json = serde_json::to_string(&s).unwrap();
         let back: Settings = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.view, alc_ui::ViewMode::Map);
+        assert_eq!(back.view, crate::ViewMode::Map);
         assert_eq!(back.speed, TimeSpeed::FastForward);
         assert_eq!(back.autosave_days, 7);
     }

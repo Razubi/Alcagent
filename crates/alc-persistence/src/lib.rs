@@ -620,14 +620,14 @@ mod tests {
         let mut world = alc_world::World::new(1);
         world.days_simulated = 3;
 
-        assert!(!manager.autosave_if_due(&world, 7).unwrap());
+        assert!(!manager.autosave_with_engine_if_due(&world, None, 7).unwrap());
         assert!(!Path::new(&dir).join("world.bin").exists());
 
         world.days_simulated = 7;
-        assert!(manager.autosave_if_due(&world, 7).unwrap());
+        assert!(manager.autosave_with_engine_if_due(&world, None, 7).unwrap());
         assert!(Path::new(&dir).join("world.bin").exists());
         // Repeated calls on the same due day must not rewrite the save.
-        assert!(!manager.autosave_if_due(&world, 7).unwrap());
+        assert!(!manager.autosave_with_engine_if_due(&world, None, 7).unwrap());
         let _ = fs::remove_dir_all(&dir);
     }
 

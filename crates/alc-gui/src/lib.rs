@@ -35,5 +35,36 @@ pub mod screens;
 pub mod settings;
 pub mod theme;
 
+use serde::{Deserialize, Serialize};
+
+/// The eleven observation modes, mirroring `alc_ui::ViewMode` so the egui and
+/// ratatui observers stay interchangeable without a compile-time dependency on
+/// the TUI crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ViewMode {
+    InstitutionOverview,
+    Prisoner,
+    Gang,
+    Staff,
+    Warden,
+    Financial,
+    EventTimeline,
+    SocialNetwork,
+    Map,
+    IncidentReports,
+    DecisionAudit,
+}
+
+/// Construction projects offered by the observer's build controls (mirrors
+/// `alc_ui::CONSTRUCTION_KINDS`).
+pub const CONSTRUCTION_KINDS: [alc_world::FacilityKind; 7] = [
+    alc_world::FacilityKind::CellBlock,
+    alc_world::FacilityKind::Dormitory,
+    alc_world::FacilityKind::Medical,
+    alc_world::FacilityKind::Education,
+    alc_world::FacilityKind::Isolation,
+    alc_world::FacilityKind::Visitor,
+    alc_world::FacilityKind::Workshop,
+];
+
 pub use app::{launch, App};
-pub use alc_ui::ViewMode;

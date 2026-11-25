@@ -161,7 +161,7 @@ impl App {
         let settings = settings::Settings::load(&settings_path);
         sim.set_speed(settings.speed);
         let state = ObserverState::from_settings(&settings);
-        let mut app = Self {
+        let app = Self {
             sim,
             state,
             snapshot: None,
@@ -384,19 +384,6 @@ impl App {
         }
     }
 
-    /// Return the cached snapshot, rebuilding only when the engine revision or
-    /// the selected prisoner changed.
-    fn snapshot(&mut self) -> &data::Snapshot {
-        if self.snapshot.is_none()
-            || self.cache_revision != self.revision
-            || self.cache_selection != self.state.selected_prisoner
-        {
-            self.snapshot = Some(data::capture(&self.sim, self.state.selected_prisoner));
-            self.cache_revision = self.revision;
-            self.cache_selection = self.state.selected_prisoner;
-        }
-        self.snapshot.as_ref().expect("snapshot just captured")
-    }
 }
 
 impl eframe::App for App {
@@ -427,7 +414,18 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let snapshot = self.snapshot();
+        // Ensure the cache is current, then borrow only the fields we need so
+        // the immutable snapshot can coexist with mutable observer state.
+        if self.snapshot.is_none()
+            || self.cache_revision != self.revision
+            || self.cache_selection != self.state.selected_prisoner
+        {
+            let selection = self.state.selected_prisoner;
+            self.snapshot = Some(data::capture(&self.sim, selection));
+            self.cache_revision = self.revision;
+            self.cache_selection = selection;
+        }
+        let snapshot = self.snapshot.as_ref().expect("snapshot just captured");
         let mut ctx = panels::RenderCtx {
             snapshot,
             state: &mut self.state,

@@ -393,12 +393,16 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 /// [`Span::width`] so unicode labels count correctly; trailing separators are
 /// dropped first, then the last label is truncated if needed.
 fn fit_spans(mut spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
-    let mut used: usize = spans.iter().map(Span::width).sum();
-    while used > width && spans.len() > 1 {
-        let last = spans.pop().expect("nonempty");
-        used -= last.width();
+    while spans.iter().map(Span::width).sum::<usize>() > width && spans.len() > 1 {
+        spans.pop();
     }
-    let room = width.saturating_sub(used);
+    // Room left in `width` after every span except the last.
+    let rest: usize = spans
+        .iter()
+        .take(spans.len().saturating_sub(1))
+        .map(Span::width)
+        .sum();
+    let room = width.saturating_sub(rest);
     if let Some(last) = spans.last_mut() {
         if last.width() > room {
             *last = Span::styled(truncate(&last.content, room), last.style);
@@ -450,13 +454,10 @@ fn render_tabbar(frame: &mut Frame, area: Rect, active: ViewMode) {
 
     // Choose the status-bar hint by its *measured* width so the row always
     // fits the terminal, not by a hard-coded threshold.
-    let hint = if Line::from(Span::styled(HELP_WIDE, Style::default().fg(Color::DarkGray))).width() <= width {
-        HELP_WIDE
-    } else {
-        HELP_COMPACT
-    };
-    let hint_line = Line::from(Span::styled(hint, Style::default().fg(Color::DarkGray)));
-    frame.render_widget(Paragraph::new(fit_spans(vec![hint_line], width)), rows[1]);
+    let hint_line = Line::from(Span::styled(HELP_WIDE, Style::default().fg(Color::DarkGray)));
+    let hint_text = if hint_line.width() <= width { HELP_WIDE } else { HELP_COMPACT };
+    let hint_span = Span::styled(truncate(hint_text, width), Style::default().fg(Color::DarkGray));
+    frame.render_widget(Paragraph::new(Line::from(vec![hint_span])), rows[1]);
 }
 
 fn render_status(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState, status: &AppStatus) {
@@ -714,7 +715,7 @@ fn render_prisoner(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState)
     let list = List::new(items).block(title_block(title));
     frame.render_widget(list, chunks[0]);
 
-    if let Some(p) = filtered.get(idx).copied() {
+    if let Some(p) = filtered.get(idx) {
         render_prisoner_detail(frame, chunks[1], p, data, ui);
     } else {
         frame.render_widget(
@@ -987,9 +988,9 @@ fn render_gang(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
         chunks[0],
     );
 
-    let Some(g) = filtered.get(idx).copied() else {
+    let Some(g) = filtered.get(idx) else {
         frame.render_widget(
-            Paragraph::new(if q.is_empty() { "Select a gang with ↑/↓." } else { "No gangs match search." })
+            Paragraph::new(if ui.search.is_empty() { "Select a gang with ↑/↓." } else { "No gangs match search." })
                 .block(title_block(" Gang Detail ")),
             chunks[1],
         );
@@ -1129,7 +1130,7 @@ fn render_staff(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
         chunks[0],
     );
 
-    let Some(g) = filtered.get(idx).copied() else {
+    let Some(g) = filtered.get(idx) else {
         frame.render_widget(
             Paragraph::new(if data.guards.is_empty() { "No guards on duty." } else { "No staff match search." })
                 .block(title_block(" Guard Detail ")),
@@ -1766,18 +1767,18 @@ fn render_map(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
     // unit span so pawns still get a cell). Rendering is O(cells) with
     // cols*rows ≈ O(facilities). ---
     let (min_x, max_x, min_y, max_y) = {
-        let mut xs = mf.facility_positions.values().map(|p| p.0);
-        let mut ys = mf.facility_positions.values().map(|p| p.1);
-        let min_x = xs.clone().fold(f32::MAX, f32::min);
-        let max_x = xs.next().map_or(0.0, f32::max);
-        let min_y = ys.clone().fold(f32::MAX, f32::min);
-        let max_y = ys.next().map_or(0.0, f32::max);
-        (
-            if min_x.is_finite() { min_x } else { 0.0 },
-            if max_x.is_finite() { max_x } else { 0.0 },
-            if min_y.is_finite() { min_y } else { 0.0 },
-            if max_y.is_finite() { max_y } else { 0.0 },
-        )
+        let (mut min_x, mut max_x) = (f32::MAX, f32::MIN);
+        let (mut min_y, mut max_y) = (f32::MAX, f32::MIN);
+        for (x, y) in mf.facility_positions.values().copied() {
+            min_x = min_x.min(x);
+            max_x = max_x.max(x);
+            min_y = min_y.min(y);
+            max_y = max_y.max(y);
+        }
+        let norm = |min: f32, max: f32| if min.is_finite() && max.is_finite() && max >= min { (min, max) } else { (0.0, 0.0) };
+        let (min_x, max_x) = norm(min_x, max_x);
+        let (min_y, max_y) = norm(min_y, max_y);
+        (min_x, max_x, min_y, max_y)
     };
     let cols = ((grid_area.width as usize).saturating_sub(2)).clamp(8, 40);
     let rows = ((grid_area.height as usize).saturating_sub(2)).clamp(8, 20);
@@ -1795,7 +1796,7 @@ fn render_map(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
     };
 
     // --- Grid base: facility glyphs (O(facilities)). ---
-    let mut grid = vec![b'·'; cols * rows];
+    let mut grid = vec![b'.'; cols * rows];
     for (id, (x, y)) in &mf.facility_positions {
         let (c, r) = cell_for(*x, *y);
         grid[r * cols + c] = facility_glyph(*id, &data.facilities);
@@ -1948,7 +1949,7 @@ fn render_map(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
     frame.render_widget(
         Paragraph::new(vec![
             plain("Legend:"),
-            plain("  · facility ·  P prisoner  G guard  ! open incident  L locked"),
+            plain("  . empty  P prisoner  G guard  ! open incident  L locked"),
             plain("  C Cell Block · D Dorm · M Medical · K Kitchen · Y Yard · A Admin · E Education · V Visitor · I Isolation · S Staff · W Workshop · R Recreation"),
             plain(format!(
                 "  Edges: {} total · {sight} sightline · {restricted} restricted",
@@ -2575,5 +2576,99 @@ mod tests {
         assert_eq!(truncate("abc", 10), "abc");
         let line = bar_line("Hunger", 2.0, 4);
         assert!(format!("{line:?}").contains('█'));
+    }
+
+    #[test]
+    fn fit_spans_truncates_to_measured_width() {
+        let spans = vec![Span::raw("abcdefgh"), Span::raw("xyz")];
+        let fitted = fit_spans(spans, 4);
+        assert_eq!(fitted.iter().map(Span::width).sum::<usize>(), 4);
+        let one = fit_spans(vec![Span::raw("abcdefgh")], 3);
+        assert_eq!(one.iter().map(Span::width).sum::<usize>(), 3);
+        assert_eq!(fit_spans(vec![Span::raw("")], 5).iter().map(Span::width).sum::<usize>(), 0);
+    }
+
+    #[test]
+    fn map_view_renders_grid_with_pawns_and_legend() {
+        let world = alc_world::World::new(7);
+        let data = view_data_from_world(&world);
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let ui = UiState { mode: ViewMode::Map, ..UiState::new() };
+        terminal
+            .draw(|frame| draw(frame, &data, &ui, &status(false)))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut rendered = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                rendered.push_str(buf[(x, y)].symbol());
+            }
+        }
+        assert!(rendered.contains("Spatial Map"));
+        assert!(rendered.contains("Legend"));
+        assert!(rendered.contains("Pawn Detail"));
+    }
+
+    #[test]
+    fn financial_panels_show_trend_forecast_drivers_and_warnings() {
+        let mut world = alc_world::World::new(13);
+        world.economy.ledger.clear();
+        for i in 0..30u32 {
+            world.economy.ledger.push(alc_economy::LedgerEntry {
+                at_secs: u64::from(i) * 86_400,
+                account: alc_economy::Account::PerCapitaFunding,
+                amount: alc_economy::Money::from_major(i64::from(i) + 1),
+                note: format!("E{i}"),
+            });
+        }
+        let data = view_data_from_world(&world);
+        let mut terminal = Terminal::new(TestBackend::new(140, 45)).unwrap();
+        let ui = UiState { mode: ViewMode::Financial, ..UiState::new() };
+        terminal
+            .draw(|frame| draw(frame, &data, &ui, &status(false)))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut rendered = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                rendered.push_str(buf[(x, y)].symbol());
+            }
+        }
+        // Previously-clipped sections are present now.
+        for needle in [
+            "Trend",
+            "Forecast cash",
+            "Health drivers",
+            "Warnings",
+            "Daily net / forecast",
+            "D29",
+        ] {
+            assert!(rendered.contains(needle), "financial panel missing {needle}");
+        }
+    }
+
+    #[test]
+    fn help_overlay_scrolls_and_fits_at_80x24() {
+        let world = alc_world::World::new(5);
+        let data = view_data_from_world(&world);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut ui = UiState::new();
+        ui.show_help = true;
+        terminal
+            .draw(|frame| draw(frame, &data, &ui, &status(false)))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut rendered = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                rendered.push_str(buf[(x, y)].symbol());
+            }
+        }
+        assert!(rendered.contains("KEYBINDINGS"));
+        // Scroll to the tail; help must still render without overflow.
+        ui.help_scroll = 3;
+        terminal
+            .draw(|frame| draw(frame, &data, &ui, &status(false)))
+            .unwrap();
     }
 }

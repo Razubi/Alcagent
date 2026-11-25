@@ -7,7 +7,7 @@ use crate::{
     map_view,
     panels::{self, RenderCtx},
     theme,
-    ViewMode,
+    ViewMode, CONSTRUCTION_KINDS,
 };
 use eframe::egui::{self, Color32, FontId};
 use std::collections::HashMap;
@@ -29,10 +29,15 @@ pub fn show(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
     }
 }
 
-fn columns(ui: &mut egui::Ui, left: impl FnOnce(&mut egui::Ui), right: impl FnOnce(&mut egui::Ui)) {
+fn columns<'a>(
+    ui: &mut egui::Ui,
+    ctx: &mut RenderCtx<'a>,
+    left: impl FnOnce(&mut egui::Ui, &mut RenderCtx<'a>),
+    right: impl FnOnce(&mut egui::Ui, &mut RenderCtx<'a>),
+) {
     ui.columns(2, |cols| {
-        left(&mut cols[0]);
-        right(&mut cols[1]);
+        left(&mut cols[0], ctx);
+        right(&mut cols[1], ctx);
     });
 }
 
@@ -50,7 +55,8 @@ fn overview(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
     ui.heading("Institution Overview");
     columns(
         ui,
-        |ui| {
+        ctx,
+        |ui, _ctx| {
             panels::section(ui, "Vital signs", |ui| {
                 theme::kv(ui, "Simulation time", obs.at.to_string());
                 theme::kv(ui, "Days simulated", obs.days_simulated.to_string());
@@ -72,9 +78,9 @@ fn overview(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                 }
             });
         },
-        |ui| {
+        |ui, _ctx| {
             panels::section(ui, "Recent events", |ui| {
-                egui::ScrollArea::vertical().id_source("overview_events").max_height(220.0).show(ui, |ui| {
+                egui::ScrollArea::vertical().id_salt("overview_events").max_height(220.0).show(ui, |ui| {
                     for event in snap.events.iter().rev().take(40) {
                         ui.add(egui::Label::new(
                             egui::RichText::new(format!(
@@ -132,14 +138,15 @@ fn prisoner(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
     let q = ctx.state.search.to_lowercase();
     columns(
         ui,
-        |ui| {
+        ctx,
+        |ui, ctx| {
             ui.add(egui::TextEdit::singleline(&mut ctx.state.search).hint_text("Search prisoners"));
             let list: Vec<_> = snap
                 .prisoners
                 .iter()
                 .filter(|p| q.is_empty() || p.name.to_lowercase().contains(&q) || p.id.raw().to_string().contains(&q))
                 .collect();
-            egui::ScrollArea::vertical().id_source("prisoner_list").show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("prisoner_list").show(ui, |ui| {
                 for p in &list {
                     let selected = ctx.state.selected_prisoner == Some(p.id);
                     if ui.selectable_label(
@@ -151,7 +158,7 @@ fn prisoner(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                 }
             });
         },
-        |ui| {
+        |ui, ctx| {
             let Some(id) = ctx.state.selected_prisoner else {
                 ui.label("Select a prisoner to inspect their profile, needs, rehab and schedule.");
                 return;
@@ -160,7 +167,7 @@ fn prisoner(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                 ui.label("Selected prisoner is no longer in custody.");
                 return;
             };
-            egui::ScrollArea::vertical().id_source("prisoner_detail").show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("prisoner_detail").show(ui, |ui| {
                 ui.heading(data::short_truncate(&p.name, 32));
                 panels::section(ui, "Profile", |ui| {
                     theme::kv(ui, "ID / Age", format!("{} / {}", p.id.raw(), p.age));
@@ -244,7 +251,7 @@ fn prisoner(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                             .find(|p| p.id == id)
                             .is_some_and(|p| p.skills.contains_key(&key));
                         if !enrolled && ui.button("Enroll").clicked() {
-                            ctx.emit(Command::EnrollRehab { prisoner: id, key });
+                            ctx.emit(Command::EnrollRehab { prisoner: id, key: key.clone() });
                         }
                         if enrolled && ui.button("Drop").clicked() {
                             ctx.emit(Command::DropRehab { prisoner: id, key });
@@ -265,7 +272,7 @@ fn prisoner(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                         ctx.emit(Command::GrantParole(id));
                     }
                     if ui.button("Deny").clicked() {
-                        ctx.emit(Command::DenyParole(id, "institutional conduct"));
+                        ctx.emit(Command::DenyParole(id, "institutional conduct".to_string()));
                     }
                 });
                 panels::section(ui, "Contraband cases", |ui| {
@@ -299,9 +306,10 @@ fn gang(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
     let name_map = names(snap);
     columns(
         ui,
-        |ui| {
+        ctx,
+        |ui, ctx| {
             let q = ctx.state.search.to_lowercase();
-            egui::ScrollArea::vertical().id_source("gang_list").show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("gang_list").show(ui, |ui| {
                 for g in &snap.gangs {
                     if !q.is_empty() && !g.name.to_lowercase().contains(&q) && !g.id.to_string().contains(&q) {
                         continue;
@@ -313,13 +321,13 @@ fn gang(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                 }
             });
         },
-        |ui| {
+        |ui, ctx| {
             let Some(id) = ctx.state.selected_gang else {
                 ui.label("Select a gang to inspect its hierarchy and relations.");
                 return;
             };
             let Some(g) = snap.gangs.iter().find(|g| g.id == id) else { return };
-            egui::ScrollArea::vertical().id_source("gang_detail").show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("gang_detail").show(ui, |ui| {
                 ui.heading(&g.name);
                 theme::kv(ui, "Leader", g.leader.map_or_else(|| "none".into(), |l| name_map.get(&l.raw()).cloned().unwrap_or_else(|| format!("prisoner #{}", l.raw()))));
                 theme::kv(ui, "Members", g.members.len().to_string());
@@ -358,9 +366,10 @@ fn staff(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
     let snap = ctx.snapshot;
     columns(
         ui,
-        |ui| {
+        ctx,
+        |ui, ctx| {
             let q = ctx.state.search.to_lowercase();
-            egui::ScrollArea::vertical().id_source("staff_list").show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("staff_list").show(ui, |ui| {
                 for g in &snap.guards {
                     if !q.is_empty() && !g.name.to_lowercase().contains(&q) && !g.id.to_string().contains(&q) {
                         continue;
@@ -372,13 +381,13 @@ fn staff(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                 }
             });
         },
-        |ui| {
+        |ui, ctx| {
             let Some(id) = ctx.state.selected_guard else {
                 ui.label("Select a guard to inspect their post, condition and duty log.");
                 return;
             };
             let Some(g) = snap.guards.iter().find(|g| g.id == id) else { return };
-            egui::ScrollArea::vertical().id_source("staff_detail").show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("staff_detail").show(ui, |ui| {
                 ui.heading(&g.name);
                 theme::kv(ui, "Rank / Post", format!("{:?} / {:?}", g.rank, g.post));
                 theme::kv(ui, "Authority / Shift", format!("{:?} / {}", g.authority, g.shift));
@@ -410,7 +419,8 @@ fn warden(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
     let snap = ctx.snapshot;
     columns(
         ui,
-        |ui| {
+        ctx,
+        |ui, ctx| {
             let w = &snap.warden;
             ui.heading(&w.name);
             theme::kv(ui, "Philosophy", &w.philosophy);
@@ -443,7 +453,7 @@ fn warden(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                 if ui.button("Negotiate with representatives").clicked() { ctx.emit(Command::WardenAction(alc_warden::WardenAction::NegotiateWithRepresentatives)); }
             });
         },
-        |ui| {
+        |ui, ctx| {
             panels::section(ui, "Policy controls", |ui| {
                 ui.horizontal(|ui| {
                     for policy in [sumo::Policy::Normal, sumo::Policy::Enhanced, sumo::Policy::Lockdown] {
@@ -478,9 +488,9 @@ fn warden(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
             });
             panels::section(ui, "Construction", |ui| {
                 egui::ComboBox::from_label("Facility")
-                    .selected_text(alc_ui::CONSTRUCTION_KINDS[ctx.state.construction_kind_index].display())
+                    .selected_text(CONSTRUCTION_KINDS[ctx.state.construction_kind_index].display())
                     .show_ui(ui, |ui| {
-                        for (i, kind) in alc_ui::CONSTRUCTION_KINDS.iter().enumerate() {
+                        for (i, kind) in CONSTRUCTION_KINDS.iter().enumerate() {
                             ui.selectable_value(&mut ctx.state.construction_kind_index, i, kind.display());
                         }
                     });
@@ -492,12 +502,12 @@ fn warden(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                 });
                 if ui.button("Queue construction").clicked() {
                     ctx.emit(Command::EnqueueConstruction {
-                        kind: alc_ui::CONSTRUCTION_KINDS[ctx.state.construction_kind_index],
+                        kind: CONSTRUCTION_KINDS[ctx.state.construction_kind_index],
                         wing: ctx.state.build_wing,
                         capacity: ctx.state.build_capacity,
                     });
                 }
-                egui::ScrollArea::vertical().id_source("construction_queue").max_height(200.0).show(ui, |ui| {
+                egui::ScrollArea::vertical().id_salt("construction_queue").max_height(200.0).show(ui, |ui| {
                     for p in &snap.construction {
                         ui.horizontal(|ui| {
                             ui.label(format!("#{} {} W{} {}/{}d ({:?})", p.id, p.kind.display(), p.wing, p.progress_days, p.total_days, p.status));
@@ -523,7 +533,8 @@ fn financial(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
     ui.heading("Financial Overview");
     columns(
         ui,
-        |ui| {
+        ctx,
+        |ui, _ctx| {
             panels::section(ui, "Treasury", |ui| {
                 theme::kv(ui, "Cash on hand", format!("${:.2}", b.cash_major));
                 theme::kv(ui, "Health", format!("{:.0}%", b.health * 100.0));
@@ -548,7 +559,7 @@ fn financial(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                 theme::kv(ui, "Ledger entries", snap.economy.ledger.len().to_string());
             });
         },
-        |ui| {
+        |ui, _ctx| {
             panels::section(ui, "Budget by account (30d)", |ui| {
                 egui::Grid::new("budget_lines").striped(true).show(ui, |ui| {
                     ui.label("Account"); ui.label("In"); ui.label("Out"); ui.label("Net"); ui.end_row();
@@ -562,7 +573,7 @@ fn financial(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                 });
             });
             panels::section(ui, "Recent ledger", |ui| {
-                egui::ScrollArea::vertical().id_source("ledger").max_height(260.0).show(ui, |ui| {
+                egui::ScrollArea::vertical().id_salt("ledger").max_height(260.0).show(ui, |ui| {
                     for entry in snap.economy.ledger.iter().rev().take(30) {
                         ui.add(egui::Label::new(egui::RichText::new(format!(
                             "t={} {:?} {:+.2} — {}",
@@ -584,10 +595,11 @@ fn timeline(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
     let snap = ctx.snapshot;
     columns(
         ui,
-        |ui| {
+        ctx,
+        |ui, ctx| {
             ui.add(egui::TextEdit::singleline(&mut ctx.state.event_kind_filter).hint_text("Filter by kind or text"));
             let filter = ctx.state.event_kind_filter.to_lowercase();
-            egui::ScrollArea::vertical().id_source("timeline_list").show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("timeline_list").show(ui, |ui| {
                 for event in snap.events.iter().rev() {
                     let kind = format!("{:?}", event.kind);
                     if !filter.is_empty() && !kind.to_lowercase().contains(&filter) && !event.summary.to_lowercase().contains(&filter) {
@@ -600,7 +612,7 @@ fn timeline(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                 }
             });
         },
-        |ui| {
+        |ui, ctx| {
             if let Some(id) = ctx.state.selected_event {
                 if let Some(event) = snap.events.iter().find(|e| e.id == id) {
                     ui.heading("Event detail");
@@ -673,7 +685,7 @@ fn social_network(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
         ui.label("Social edges");
         ui.label(format!("{} edges · {} prisoners", snap.social_edges.len(), n));
     });
-    egui::ScrollArea::vertical().id_source("social_edges").max_height(180.0).show(ui, |ui| {
+    egui::ScrollArea::vertical().id_salt("social_edges").max_height(180.0).show(ui, |ui| {
         let name_map = names(snap);
         let q = ctx.state.search.to_lowercase();
         for edge in snap.social_edges.iter().take(200) {
@@ -703,8 +715,9 @@ fn incidents(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
     let name_map = names(snap);
     columns(
         ui,
-        |ui| {
-            egui::ScrollArea::vertical().id_source("incident_list").show(ui, |ui| {
+        ctx,
+        |ui, ctx| {
+            egui::ScrollArea::vertical().id_salt("incident_list").show(ui, |ui| {
                 for record in snap.incidents.iter().rev() {
                     if record.severity < ctx.state.incident_min_severity { continue; }
                     if ctx.state.incident_open_only && record.resolved { continue; }
@@ -716,7 +729,7 @@ fn incidents(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                 if snap.incidents.is_empty() { ui.label("No structured incidents recorded yet."); }
             });
         },
-        |ui| {
+        |ui, ctx| {
             if let Some(id) = ctx.state.selected_incident {
                 if let Some(record) = snap.incidents.iter().find(|r| r.id == id) {
                     ui.heading("Incident detail");
@@ -750,8 +763,9 @@ fn audit(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
     let filter = ctx.state.decision_validation_filter.clone();
     columns(
         ui,
-        |ui| {
-            egui::ScrollArea::vertical().id_source("audit_list").show(ui, |ui| {
+        ctx,
+        |ui, ctx| {
+            egui::ScrollArea::vertical().id_salt("audit_list").show(ui, |ui| {
                 for (index, record) in snap.decision_audit.iter().enumerate().rev() {
                     if let Some(f) = &filter {
                         if !record.validation.eq_ignore_ascii_case(f) { continue; }
@@ -764,7 +778,7 @@ fn audit(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                 if snap.decision_audit.is_empty() { ui.label("No decisions audited yet."); }
             });
         },
-        |ui| {
+        |ui, ctx| {
             if let Some(index) = ctx.state.selected_decision {
                 if let Some(record) = snap.decision_audit.get(index) {
                     ui.heading("Decision detail");

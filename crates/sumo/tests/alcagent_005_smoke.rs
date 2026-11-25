@@ -455,7 +455,6 @@ fn construction_queue_cancel_and_failure_paths() {
 fn policy_and_decision_audit_consistency_smoke() {
     let mut sim = Sim::new(0x0500_000B);
     let pid = sim.world().prisoners[0].id;
-    let peer = sim.world().prisoners[1].id;
 
     let before = sim.decision_audit_log().len();
     sim.set_policy(Policy::Enhanced);

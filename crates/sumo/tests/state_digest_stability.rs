@@ -6,7 +6,6 @@
 //! public digest API through `sumo::state_digest` and `Sim`.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use sumo::state_digest::{compute_full_state_digest, compute_state_digest, compute_world_digest};
 use sumo::{PolicyMode, Sim};

@@ -10,7 +10,7 @@
 //! [`alc_ui::views::truncate`].
 
 use crate::theme;
-use alc_core::{PrisonerId, SimTime};
+use alc_core::PrisonerId;
 use alc_events::{EventKind, WorldEvent};
 use alc_guard::{AuthorityLevel, Guard, GuardRank, PostType};
 use alc_prisoner::{
@@ -148,7 +148,6 @@ pub enum PolicyChangeKind {
 }
 
 impl PolicyChangeKind {
-    #[must_use]
     pub const ALL: [PolicyChangeKind; 8] = [
         PolicyChangeKind::SecurityUp,
         PolicyChangeKind::SecurityDown,
@@ -349,7 +348,7 @@ pub fn schedule_policy(world: &World) -> SchedulePolicy {
 /// (wrapper around the engine's public `current_block`).
 #[must_use]
 pub fn current_schedule_block(
-    schedule: &[ResolvedBlock],
+    schedule: &alc_prisoner::ResolvedSchedule,
     minute_of_day: u16,
 ) -> Option<&ResolvedBlock> {
     current_block(schedule, minute_of_day)
@@ -405,7 +404,10 @@ pub fn stats_dashboard_rows(stats: &sumo::Stats) -> Vec<(&'static str, String)> 
 /// Number and cap `sumo::Sim::leader_board(n)` output: `(rank, name, reputation)`.
 #[must_use]
 pub fn leaderboard_table<'a>(lb: &'a [(String, f32)], n: usize) -> Vec<(u32, &'a str, f32)> {
-    lb.iter()
+    let mut sorted: Vec<&'a (String, f32)> = lb.iter().collect();
+    sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    sorted
+        .into_iter()
         .take(n)
         .enumerate()
         .map(|(i, (name, reputation))| (i as u32 + 1, name.as_str(), *reputation))
@@ -467,12 +469,24 @@ pub fn need_rows(needs: &Needs) -> Vec<(&'static str, f32)> {
 
 #[must_use]
 pub fn short_truncate(s: &str, max: usize) -> String {
-    alc_ui::views::truncate(s, max)
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    }
 }
 
 #[must_use]
 pub fn short_class(c: Classification) -> &'static str {
-    alc_ui::views::class_short(c)
+    match c {
+        Classification::Minimum => "MIN",
+        Classification::Low => "LOW",
+        Classification::Medium => "MED",
+        Classification::High => "HIGH",
+        Classification::Maximum => "MAX",
+    }
 }
 
 #[must_use]
@@ -707,7 +721,7 @@ pub fn incident_node(location: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alc_core::TimeSpeed;
+    use alc_core::{SimTime, TimeSpeed};
     use alc_world::Policies;
 
     fn sim(seed: u64) -> sumo::Sim {
@@ -727,7 +741,9 @@ mod tests {
             WorldEvent::new(6, SimTime::EPOCH, EventKind::EscapeSucceeded, "e"),
             WorldEvent::new(7, SimTime::EPOCH, EventKind::ContrabandFound, "c"),
             WorldEvent::new(8, SimTime::EPOCH, EventKind::StaffMisconduct, "m"),
-            WorldEvent::new(9, SimTime::EPOCH, EventKind::PolicyChange, "p"),
+            WorldEvent::new(9, SimTime::EPOCH, EventKind::Investigation, "i"),
+            WorldEvent::new(10, SimTime::EPOCH, EventKind::Rumor, "r"),
+            WorldEvent::new(11, SimTime::EPOCH, EventKind::FamilyCorrespondence, "fc"),
         ];
         let rows = incident_report_rows(&events);
         let count_of = |kind: IncidentKind| rows.iter().find(|r| r.kind == kind).map(|r| r.count);
@@ -743,7 +759,7 @@ mod tests {
         // Most frequent first: Fights (2) leads.
         assert_eq!(rows[0].kind, IncidentKind::Fight);
         assert_eq!(rows[0].count, 2);
-        assert!(rows.last().unwrap().kind == IncidentKind::Other);
+        assert_eq!(count_of(IncidentKind::Other), Some(2));
     }
 
     #[test]
@@ -760,12 +776,12 @@ mod tests {
         live_feed_append(&mut feed, &[], LIVE_FEED_CAP);
         assert_eq!(feed.len(), 2);
 
-        // Cap: append 2 then 1 with cap 3 — the oldest is evicted.
+        // Cap: append 2 then 1 with cap 2 — the oldest is evicted.
         let mut feed2 = VecDeque::new();
-        live_feed_append(&mut feed2, &events, 3);
+        live_feed_append(&mut feed2, &events, 2);
         let third = WorldEvent::new(3, SimTime::EPOCH, EventKind::Threat, "t");
-        live_feed_append(&mut feed2, std::slice::from_ref(&third), 3);
-        assert_eq!(feed2.len(), 3);
+        live_feed_append(&mut feed2, std::slice::from_ref(&third), 2);
+        assert_eq!(feed2.len(), 2);
         assert_eq!(feed2.front().map(|e| e.id), Some(2));
         assert_eq!(feed2.back().map(|e| e.id), Some(3));
     }
@@ -821,7 +837,7 @@ mod tests {
         let rows = daily_schedule_rows(world);
         assert_eq!(rows.len(), world.prisoners.len());
         assert!(!rows.is_empty());
-        let minute = world.time.minute_of_day();
+        let minute = world.time.minute_of_day() as u16;
         for row in &rows {
             assert!(!row.name.is_empty());
             assert!(!row.resolved.is_empty(), "empty schedule for {}", row.name);
@@ -932,7 +948,7 @@ mod tests {
         let pan = egui::vec2(0.0, 0.0);
         let before = screen_to_world(anchor, zoom, pan);
         let (new_zoom, new_pan) = zoom_at(anchor, zoom, pan, 1.5, 0.25, 4.0);
-        let after = screen_to_world(world_to_screen(anchor, new_zoom, new_pan), new_zoom, new_pan);
+        let after = screen_to_world(anchor, new_zoom, new_pan);
         assert!((new_zoom - 1.5).abs() < 1e-6);
         assert!((after.0 - before.0).abs() < 1e-4);
         assert!((after.1 - before.1).abs() < 1e-4);

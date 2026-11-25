@@ -6,7 +6,6 @@
 
 use alc_agents::DecisionAction;
 use alc_core::FacilityId;
-use alc_events::EventKind;
 use alc_world::World;
 use crate::{EngineState, Sim, Policy};
 use std::collections::HashSet;

@@ -8,7 +8,6 @@ description = "egui GUI observer for the Alcagent prison simulation (the interac
 
 [dependencies]
 alc-core = { workspace = true }
-alc-ui = { workspace = true }
 alc-world = { workspace = true }
 alc-social = { workspace = true }
 alc-economy = { workspace = true }

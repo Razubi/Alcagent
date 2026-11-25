@@ -70,7 +70,7 @@ pub fn section(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) 
 /// Draw the persistent top toolbar: status readout, view tabs, playback
 /// controls and save/load path controls.
 pub fn toolbar(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
-    egui::TopBottomPanel::top("alc_gui_toolbar").show(ui, |ui| {
+    egui::Panel::top("alc_gui_toolbar").show(ui, |ui| {
         let obs = &ctx.snapshot.observation;
         ui.horizontal_wrapped(|ui| {
             ui.add(egui::Label::new(

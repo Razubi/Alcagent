@@ -754,31 +754,6 @@ fn mirror_conflict_incidents(sim: &mut Sim, events: &[WorldEvent]) {
     }
 }
 
-/// First actor of an event that corresponds to a known prisoner.
-fn id_of_first_actor(event: &WorldEvent, world: &World) -> PrisonerId {
-    event
-        .actors
-        .iter()
-        .copied()
-        .find(|raw| world.prisoners.iter().any(|p| p.id.raw() == *raw))
-        .map(PrisonerId)
-        .unwrap_or_else(|| world.prisoners.first().map(|p| p.id).unwrap_or(PrisonerId(0)))
-}
-
-/// Whether an event kind represents a conflict incident worth mirroring.
-fn is_conflict_kind(kind: EventKind) -> bool {
-    matches!(
-        kind,
-        EventKind::Fight
-            | EventKind::Argument
-            | EventKind::Threat
-            | EventKind::Theft
-            | EventKind::GangClash
-            | EventKind::Protests
-            | EventKind::MedicalEmergency
-    )
-}
-
 /// Coarse severity mapping for mirrored conflict incidents.
 fn severity_for(kind: EventKind) -> f32 {
     match kind {
@@ -881,12 +856,6 @@ pub(crate) fn validation_context(world: &World, id: PrisonerId) -> ValidationCon
         last_decision: world.current_decisions.get(&id).cloned(),
         now_secs: world.time.as_secs(),
     }
-}
-
-/// Resolve the prisoner's current facility id from the world movement map.
-/// Returns `None` when the prisoner has no recorded location.
-fn current_facility(world: &World, id: PrisonerId) -> Option<u64> {
-    world.prisoner_location.get(&id).map(|f| f.0)
 }
 
 /// Engine-side validation rules (Directive §19 world-state / authority layers).
@@ -1105,7 +1074,7 @@ fn derive_post_release_outcomes(
     (employment, housing, violation, return_to_custody)
 }
 
-fn record_escape_post_release(world: &mut World, prisoner: &alc_world::Prisoner) {
+fn record_escape_post_release(world: &mut World, prisoner: &alc_prisoner::Prisoner) {
     let outcome_seed = RngStream::new(
         world.seed,
         prisoner.id.raw() ^ (world.days_simulated << 12) ^ 0x0E5C_A9E1,
@@ -1194,13 +1163,12 @@ fn escape_events(world: &mut World, p: PrisonerId) -> Vec<WorldEvent> {
     if outcome == EscapeOutcome::SuccessfulEscape {
         record_escape_post_release(world, &prisoner);
         // Purge gang membership with disband events, matching world escape path.
-        let mut disbanded = 0usize;
         for gang in &mut world.gangs {
             gang.lose(p);
         }
         let before = world.gangs.len();
         world.gangs.retain(|g| !g.members.is_empty());
-        disbanded = before.saturating_sub(world.gangs.len());
+        let disbanded = before.saturating_sub(world.gangs.len());
         for _ in 0..disbanded {
             world.events.emit(WorldEvent::new(
                 0,

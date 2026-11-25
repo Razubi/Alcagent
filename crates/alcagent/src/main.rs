@@ -57,8 +57,8 @@ enum Cmd {
 }
 
 /// Adapts the engine (`sumo::Sim`) to the UI's `SimDriver` trait. Implemented
-/// here — not in `alc-ui` — because `sumo` already depends on `alc-ui` and a
-/// direct `alc-ui -> sumo` dependency would be a cycle.
+/// here — not in `alc-ui` — because `alc-ui` already depends on `sumo`; putting
+/// this adapter in `alc-ui` would create a crate cycle.
 struct EngineDriver(sumo::Sim);
 
 impl SimDriver for EngineDriver {
@@ -174,47 +174,54 @@ fn launch_tui(seed: u64, speed: u32, load: Option<&std::path::Path>, save_dir: &
     )
 }
 
-fn run_headless(days: u64, seed: u64, load: Option<&std::path::Path>, save_dir: &std::path::Path, autosave_days: u64) -> anyhow::Result<()> {
+fn run_headless(
+    days: u64,
+    seed: u64,
+    load: Option<&std::path::Path>,
+    save_dir: &std::path::Path,
+    autosave_days: u64,
+) -> anyhow::Result<()> {
     let mut sim = load_or_new(seed, load)?;
     sim.set_speed(TimeSpeed::Extreme);
     if autosave_days > 0 {
         sim.enable_autosave(save_dir.to_path_buf(), autosave_days);
     }
 
+    let start_day = sim.world.days_simulated;
     let start = std::time::Instant::now();
-    let target_day = sim.world.days_simulated + days;
-    while sim.world.days_simulated < target_day {
-        sim.tick();
-        let _ = sim.maybe_autosave();
-    }
-    if let Err(e) = sim.save(save_dir) {
-        return Err(anyhow::anyhow!("failed to save simulation to {}: {e}", save_dir.display()));
-    }
+    let ticks = sim.run_days(days);
     let elapsed = start.elapsed();
+    let progressed_days = sim.world.days_simulated.saturating_sub(start_day);
+    if days > 0 && progressed_days == 0 {
+        return Err(anyhow::anyhow!(
+            "headless run made no progress after {ticks} ticks at day {}",
+            sim.world.days_simulated
+        ));
+    }
+    if let Some(err) = sim.last_autosave_error() {
+        eprintln!("autosave warning: {err}");
+    }
+    sim.save(save_dir)
+        .map_err(|e| anyhow::anyhow!("failed to save simulation to {}: {e}", save_dir.display()))?;
 
-    let world = &sim.world;
     println!("=== Alcagent headless run ===");
-    println!("Loaded from:   {}", load.map(|d| d.display().to_string()).unwrap_or_else(|| format!("new world (seed {:#x})", world.seed)));
-    println!("Seed:            {:#x}", world.seed);
-    println!("Sim time:        {}", world.time);
-    println!("Days simulated:  {}", world.days_simulated);
-    println!("Population:      {}", world.population());
-    println!("Capacity:        {}", world.capacity());
-    println!("Guards:          {}", world.guards.len());
-    println!("Facilities:      {}", world.facilities.len());
-    println!("Cash (major):    {:.2}", world.economy.cash.as_major());
-    println!("Events logged:   {}", world.events.len());
+    println!(
+        "Loaded from:   {}",
+        load.map(|d| d.display().to_string())
+            .unwrap_or_else(|| format!("new world (seed {:#x})", sim.world.seed))
+    );
     println!("Save dir:        {}", save_dir.display());
     println!("Real elapsed:    {:.2?}", elapsed);
-    println!(
-        "Ticks/sec:       {:.0}",
-        world.days_simulated as f64 / elapsed.as_secs_f64().max(0.001)
-    );
+    println!("Ticks:           {ticks}");
+    println!("Requested days:  {days}");
+    println!("Progressed days: {progressed_days}");
+    println!();
+    print!("{}", sim.report());
     println!();
     println!("Recent events (last 10):");
-    let all: Vec<&alc_events::WorldEvent> = world.events.recent().collect();
+    let all: Vec<&alc_events::WorldEvent> = sim.world.events.recent().collect();
     for e in all.iter().rev().take(10) {
-        println!("  [{}] {} — {}", e.at, format!("{:?}", e.kind), e.summary);
+        println!("  [{}] {:?} — {}", e.at, e.kind, e.summary);
     }
     Ok(())
 }

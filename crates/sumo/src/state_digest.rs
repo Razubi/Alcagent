@@ -58,10 +58,6 @@ impl StableHasher {
             self.write_byte(byte);
         }
     }
-
-    fn finish_u64(self) -> u64 {
-        self.state
-    }
 }
 
 impl Hasher for StableHasher {
@@ -508,12 +504,12 @@ mod tests {
     fn stable_hasher_matches_fnv1a_known_vector() {
         // FNV-1a 64-bit of the empty byte string is the offset basis.
         let h = StableHasher::new();
-        assert_eq!(h.finish_u64(), FNV_OFFSET_BASIS);
+        assert_eq!(h.finish(), FNV_OFFSET_BASIS);
 
         // FNV-1a 64-bit of "a" is 0xaf63dc4c8601ec8c.
         let mut h = StableHasher::new();
         h.write_byte(b'a');
-        assert_eq!(h.finish_u64(), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(h.finish(), 0xaf63_dc4c_8601_ec8c);
     }
 
     #[test]
