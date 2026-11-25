@@ -301,7 +301,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         Line::from(Span::styled("Decisions (Decision view)", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
         Line::from("  d/D         Cycle decision validation filter"),
         Line::from(""),
-        Line::from(Span::styled("Press ? or h to close this help.", Style::default().fg(Color::DarkGray))),
+        Line::from(Span::styled("Press ? to close this help.", Style::default().fg(Color::DarkGray))),
     ];
     let block = Block::default()
         .title(" Help ")
