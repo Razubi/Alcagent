@@ -51,6 +51,9 @@ pub struct UiState {
     pub selected_gang: Option<u64>,
     pub selected_guard: Option<u64>,
     pub selected_incident: Option<u64>,
+    /// Unique key of the decision-audit row in view. The key is built as
+    /// `"<row-index>|<time>|<actor>|<action>"` so two different decisions can
+    /// never collide and the detail panel follows the cursor.
     pub selected_decision: Option<String>,
     pub selected_construction: Option<u64>,
     pub selected_rehab: Option<u64>,
@@ -75,6 +78,10 @@ pub struct UiState {
     pub decision_validation_filter: Option<String>,
     /// Show the help overlay with all keybindings.
     pub show_help: bool,
+    /// Scroll offset for the (modal) help overlay; kept separate from the
+    /// shared entity cursor so help navigation never moves entity selection.
+    pub help_scroll: u16,
+    /// Shared entity cursor (`scroll`): index into the active view's list.
     pub scroll: u16,
 }
 
@@ -100,6 +107,7 @@ impl UiState {
             incident_filter: sumo::incidents::IncidentFilter::all(),
             decision_validation_filter: None,
             show_help: false,
+            help_scroll: 0,
             scroll: 0,
         }
     }

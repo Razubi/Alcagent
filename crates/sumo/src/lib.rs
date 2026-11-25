@@ -2099,8 +2099,20 @@ impl Sim {
     // --- 4.2 Events ---
 
     /// Public engine event emission.
+    ///
+    /// Conflict-kind events are mirrored into the engine incident log and
+    /// structured sidecar so observers see them consistently regardless of
+    /// which path emitted them.
     pub fn emit_event(&mut self, e: WorldEvent) {
-        self.world.events.emit(e);
+        let at = self.world.time;
+        let mut ev = e;
+        if ev.at.secs == 0 {
+            ev.at = at;
+        }
+        let id = self.world.events.emit(ev.clone());
+        let mut emitted = ev;
+        emitted.id = id;
+        self.mirror_conflict_event_to_engine_log(&emitted);
     }
 
     // --- 4.3 Guard duty ---

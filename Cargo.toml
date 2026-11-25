@@ -11,6 +11,7 @@ members = [
   "crates/alc-events",
   "crates/alc-persistence",
   "crates/alc-ui",
+  "crates/alc-gui",
   "crates/alc-testing",
   "crates/alcagent",
   "crates/sumo",

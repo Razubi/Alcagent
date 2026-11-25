@@ -11,13 +11,20 @@ use ratatui::prelude::*;
 use ratatui::widgets::*;
 use std::collections::HashMap;
 use sumo::{
-    EconomySummary, FacilitySummary, GangSummary, GuardSummary, Observation, PrisonerSummary,
-    SocialEdge, WardenSummary, WorldEvent,
+    EconomySummary, FacilitySummary, GangSummary, GuardSummary, MapFrame, Observation,
+    PrisonerSummary, SocialEdge, WardenSummary, WorldEvent,
 };
 
 /// Bundled data the views need for rendering.
 pub struct ViewData {
     pub observation: Observation,
+    /// Live map snapshot (pawns/facilities/edges) for the spatial map view.
+    pub map_frame: MapFrame,
+    /// True world totals (unfiltered by the observer search); used by titles
+    /// that report both visible and total counts.
+    pub total_prisoners: usize,
+    pub total_gangs: usize,
+    pub total_guards: usize,
     pub prisoners: Vec<PrisonerSummary>,
     pub gangs: Vec<GangSummary>,
     pub guards: Vec<GuardSummary>,
@@ -65,11 +72,12 @@ const ALL_MODES: [ViewMode; 11] = [
     ViewMode::DecisionAudit,
 ];
 
-/// Status-bar help text. Kept as constants so tests can assert that the hints
-/// stay in sync with the keys handled in `app::App::handle_key`.
-pub const HELP_WIDE: &str =
-    " │ ↑↓ select · 1-9,0,A view · SPACE pause · +/- speed · S save · Ctrl-L load · / search · Tab pin · n notes · V auto-pause · N/E/K policy · L/U lock · c/C/x/X/> build (Warden) · t/r/R rehab · f/F contraband · m/o filter · ? help · q quit";
-pub const HELP_COMPACT: &str = " │ ↑↓ 1-9,0,A SPC +/- S Ctrl-L / Tab n V c/C t/r/R f/F m/o ? q";
+/// Full status-bar help text. Measured at render time; tests assert it stays
+/// in sync with the keys handled in `app::App::handle_key`.
+pub const HELP_WIDE: &str = " ←↑↓→ select · 1-9,0,A views · SPACE pause · +/- speed · S save · Ctrl-L load · / search · Ctrl-W clear query · Tab pin · n notes · V auto-pause · N/E/K policy bands · p policy mode · L/U lock · x/X lockdown (non-Warden) · Ctrl-R resolve critical · c/C/u/U/x/X/> build (Warden) · t/r/R rehab · f/F contraband · m/o filters · d/D decision filter · ? help · q quit";
+/// Compact status-bar help used when the terminal is too narrow for
+/// [`HELP_WIDE`] (measured by [`Line::width`]).
+pub const HELP_COMPACT: &str = " ↑↓ 1-9,0,A SPC +/- S Ctrl-L / Tab n V c/C u/U x/X N/E/K p ? q";
 
 /// Map a `1`-`9`, `0`, `-` key press to its observation mode.
 pub fn mode_from_index(index: usize) -> Option<ViewMode> {
@@ -250,64 +258,64 @@ pub fn draw(frame: &mut Frame, data: &ViewData, ui: &UiState, status: &AppStatus
         render_observer_overlay(frame, frame.area(), ui);
     }
     if ui.show_help {
-        render_help_overlay(frame, frame.area());
+        render_help_overlay(frame, frame.area(), ui);
     }
 }
 
-fn render_help_overlay(frame: &mut Frame, area: Rect) {
-    let help_text = vec![
+/// Build the scrollable help body as titled sections. Split into its own
+/// function so render code and tests share the facts being displayed.
+fn help_body() -> Vec<Line<'static>> {
+    let title = |s: &str| Line::from(Span::styled(format!("— {s} "), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+    let entry = |s: &str| Line::from(format!("  {s}"));
+    vec![
         Line::from(Span::styled("=== KEYBINDINGS ===", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))),
         Line::from(""),
-        Line::from(Span::styled("Navigation", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
-        Line::from("  1-9,0,A     Switch views (1=Overview 2=Prisoner 3=Gang 4=Staff 5=Warden 6=Financial 7=Timeline 8=Network 9=Map 0=Incidents A=Decisions)"),
-        Line::from("  j/k,arrows  Scroll lists"),
-        Line::from("  q/Esc/Ctrl-C Quit"),
+        title("Navigation"),
+        entry("1-9,0,A Switch views (2=Prisoner 3=Gang 4=Staff 5=Warden 6=Financial 7=Timeline 8=Network 9=Map 0=Incidents A=Decisions)"),
+        entry("↑↓,h,l,j,k Scroll lists (h/l work in the help overlay too)"),
+        entry("q,Esc,Ctrl-C Quit"),
         Line::from(""),
-        Line::from(Span::styled("Simulation", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
-        Line::from("  SPACE       Pause/resume"),
-        Line::from("  +/-         Speed up/down"),
-        Line::from("  S           Save"),
-        Line::from("  Ctrl-L      Quick load"),
+        title("Simulation"),
+        entry("SPACE Pause/resume · +/- Speed · S Save · Ctrl-L Quick load"),
         Line::from(""),
-        Line::from(Span::styled("Observer", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
-        Line::from("  /           Search (type, Backspace, Enter/Esc to finish)"),
-        Line::from("  Tab         Pin/unpin selected entity"),
-        Line::from("  n           Toggle observer feed (notices/pins)"),
-        Line::from("  V           Toggle pause-on-critical"),
+        title("Observer"),
+        entry("/ Search · Ctrl-W Clear query · Tab Pin entity · n Notes feed · V Auto-pause on critical"),
+        entry("Ctrl-R Resolve selected/newest open critical incident"),
+        entry("Ctrl-C Quit · Ctrl-L Quick load (also works while searching)"),
         Line::from(""),
-        Line::from(Span::styled("Policy Controls", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
-        Line::from("  N/E/K       Policy mode cycle"),
-        Line::from("  L/U/x       Lockdown"),
-        Line::from("  p           Policy mode"),
-        Line::from("  [/] ,/. ;/' Policy sliders"),
-        Line::from("  b           Toggle intake pause"),
+        title("Policy"),
+        entry("N/E/K Policy bands (Normal / Enhanced / Lockdown)"),
+        entry("p Policy mode (Council / Shadow / Deterministic)"),
+        entry("L/U Lock / unlock; x/X Toggle lockdown (outside Warden view)"),
+        entry("[ ] , . Security/privileges sliders · ; ' Rehab funding"),
         Line::from(""),
-        Line::from(Span::styled("Construction (Warden view)", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
-        Line::from("  c/C         Cycle build kind / queue project"),
-        Line::from("  x/X         Cancel / mark selected project failed"),
-        Line::from("  >           Advance selected project by 1 day"),
+        title("Construction (Warden view)"),
+        entry("c Cycle build kind · C Queue project · u/U Select project · x Cancel · X Fail · > Advance"),
         Line::from(""),
-        Line::from(Span::styled("Rehab (Prisoner/Warden views)", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
-        Line::from("  t/T         Cycle rehab program"),
-        Line::from("  r           Enroll in selected program"),
-        Line::from("  R           Drop from program"),
+        title("Rehab (Prisoner/Warden views)"),
+        entry("t Cycle program · r Enroll selected · R Drop from program"),
         Line::from(""),
-        Line::from(Span::styled("Incidents (Incident view)", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
-        Line::from("  f           Cycle contraband case"),
-        Line::from("  F           Resolve selected case"),
-        Line::from("  m/M         Cycle incident severity filter"),
-        Line::from("  o/O         Cycle incident resolved filter"),
+        title("Incidents (Incident view)"),
+        entry("f Next case · F Resolve selected · m/M Severity filter · o/O Resolved filter"),
         Line::from(""),
-        Line::from(Span::styled("Decisions (Decision view)", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
-        Line::from("  d/D         Cycle decision validation filter"),
+        title("Decisions (Decision view)"),
+        entry("d/D Decision validation filter"),
         Line::from(""),
-        Line::from(Span::styled("Press ? to close this help.", Style::default().fg(Color::DarkGray))),
-    ];
+        Line::from(Span::styled("↑/↓ (or j/k) scrolls the help overlay itself.", Style::default().fg(Color::DarkGray))),
+    ]
+}
+
+fn render_help_overlay(frame: &mut Frame, area: Rect, ui: &UiState) {
+    let body = help_body();
+    let visible = area.height.saturating_sub(3).max(1) as usize;
+    let max_scroll = body.len().saturating_sub(visible).min(u16::MAX as usize) as u16;
+    let scroll = ui.help_scroll.min(max_scroll);
+    let lines: Vec<Line> = body.into_iter().skip(scroll as usize).collect();
     let block = Block::default()
-        .title(" Help ")
+        .title(" Help (↑/↓ scrolls) ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Yellow));
-    let paragraph = Paragraph::new(help_text).block(block).wrap(Wrap { trim: false });
+    let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
     let area = centered_rect(80, 80, area);
     frame.render_widget(Clear, area);
     frame.render_widget(paragraph, area);
@@ -381,51 +389,74 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
     ]).split(popup_layout[1])[1]
 }
 
+/// Shrink a span vector so its measured total fits `width`. Measured with
+/// [`Span::width`] so unicode labels count correctly; trailing separators are
+/// dropped first, then the last label is truncated if needed.
+fn fit_spans(mut spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
+    let mut used: usize = spans.iter().map(Span::width).sum();
+    while used > width && spans.len() > 1 {
+        let last = spans.pop().expect("nonempty");
+        used -= last.width();
+    }
+    let room = width.saturating_sub(used);
+    if let Some(last) = spans.last_mut() {
+        if last.width() > room {
+            *last = Span::styled(truncate(&last.content, room), last.style);
+        }
+    }
+    spans
+}
+
 fn render_tabbar(frame: &mut Frame, area: Rect, active: ViewMode) {
     // `area` is two rows tall; row 0 holds the tabs, row 1 holds a persistent
     // control hint. Keeping the hint out of the status bar means it is never
     // clipped by the population / finance readouts on narrow terminals.
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(area);
     let tabs_area = rows[0];
+    let width = tabs_area.width as usize;
     let short = [
         "1 Ovw", "2 Pris", "3 Gang", "4 Staff", "5 Ward", "6 Fin", "7 Evts", "8 Net", "9 Map", "0 Inc", "A Aud",
     ];
-    let compact = tabs_area.width < 140;
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    for (i, mode) in ALL_MODES.iter().enumerate() {
-        let is_active = *mode == active;
-        let style = if is_active {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-        let key = match i { 9 => "0".to_string(), 10 => "A".to_string(), _ => format!("{}", i + 1) };
-        let label = if compact {
-            short[i].to_string()
-        } else {
-            format!(" {} {} ", key, mode_name(*mode))
-        };
-        spans.push(Span::styled(label, style));
-        spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
-    }
-    let widget = Paragraph::new(Line::from(spans));
-    frame.render_widget(widget, tabs_area);
-
-    let hint = if tabs_area.width < 110 {
-        HELP_COMPACT
-    } else {
-        HELP_WIDE
+    let build = |compact: bool| -> Vec<Span<'static>> {
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        for (i, mode) in ALL_MODES.iter().enumerate() {
+            let is_active = *mode == active;
+            let style = if is_active {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            let key = match i {
+                9 => "0".to_string(),
+                10 => "A".to_string(),
+                _ => format!("{}", i + 1),
+            };
+            let label = if compact {
+                short[i].to_string()
+            } else {
+                format!(" {} {} ", key, mode_name(*mode))
+            };
+            spans.push(Span::styled(label, style));
+            spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
+        }
+        spans
     };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            hint,
-            Style::default().fg(Color::DarkGray),
-        ))),
-        rows[1],
-    );
+    // Prefer the full labels when they measure in; fall back to short ones.
+    let spans = fit_spans(build(false), width);
+    frame.render_widget(Paragraph::new(Line::from(spans)), tabs_area);
+
+    // Choose the status-bar hint by its *measured* width so the row always
+    // fits the terminal, not by a hard-coded threshold.
+    let hint = if Line::from(Span::styled(HELP_WIDE, Style::default().fg(Color::DarkGray))).width() <= width {
+        HELP_WIDE
+    } else {
+        HELP_COMPACT
+    };
+    let hint_line = Line::from(Span::styled(hint, Style::default().fg(Color::DarkGray)));
+    frame.render_widget(Paragraph::new(fit_spans(vec![hint_line], width)), rows[1]);
 }
 
 fn render_status(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState, status: &AppStatus) {
