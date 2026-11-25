@@ -69,6 +69,20 @@ impl FacilityKind {
     }
 }
 
+/// Construction project lifecycle status (0.05).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConstructionStatus {
+    Queued,
+    InProgress,
+    Completed,
+    Cancelled,
+    Failed,
+}
+
+impl Default for ConstructionStatus {
+    fn default() -> Self { ConstructionStatus::Queued }
+}
+
 /// A queued construction project (0.05 lifecycle).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConstructionProject {
@@ -88,7 +102,24 @@ pub struct ConstructionProject {
     pub cost: f32,
     /// Day enqueued.
     pub started_day: u64,
+    /// Lifecycle status.
+    #[serde(default)]
+    pub status: ConstructionStatus,
+    /// Reason for cancellation/failure, if any.
+    #[serde(default)]
+    pub terminal_reason: Option<String>,
+    /// Whether staffing prerequisite is considered met for this project.
+    #[serde(default = "default_true")]
+    pub staff_allocated: bool,
+    /// Whether materials/funding prerequisite is considered met.
+    #[serde(default = "default_true")]
+    pub materials_ready: bool,
+    /// Whether facility prerequisites are met (e.g. admin/space exists).
+    #[serde(default = "default_true")]
+    pub prereqs_met: bool,
 }
+
+fn default_true() -> bool { true }
 
 /// Basic sentence info attached to a post-release record.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -142,12 +173,33 @@ pub struct RehabProgramRecord {
     pub progress_sum: f32,
     pub completed: bool,
     pub dropped: bool,
+    /// Days the prisoner attended/made progress in this program.
+    #[serde(default)]
+    pub attendance_days: u32,
+    /// Last day attendance/progress was recorded.
+    #[serde(default)]
+    pub last_attended_day: Option<u64>,
+    /// Terminal failure reason, if dropped/failed.
+    #[serde(default)]
+    pub failure_reason: Option<RehabFailureReason>,
 }
 
 impl RehabProgramRecord {
     fn new(program: alc_social::RehabProgram, day: u64) -> Self {
-        Self { program, enrolled_day: day, progress_days: 0, progress_sum: 0.0, completed: false, dropped: false }
+        Self {
+            program,
+            enrolled_day: day,
+            progress_days: 0,
+            progress_sum: 0.0,
+            completed: false,
+            dropped: false,
+            attendance_days: 0,
+            last_attended_day: None,
+            failure_reason: None,
+        }
     }
+
+    fn is_active(&self) -> bool { !self.completed && !self.dropped }
 }
 
 /// Institutional policies (subset, extensible).
@@ -248,6 +300,11 @@ pub struct World {
     #[serde(default)]
     pub contraband_state: HashMap<PrisonerId, PrisonerContrabandState>,
 
+    /// Contraband case resolution timestamps (case id -> sim time). Persisted with
+    /// serde default for 0.05 lifecycle/audit coherence; engine may also track.
+    #[serde(default)]
+    pub resolved_contraband_at: std::collections::BTreeMap<u64, SimTime>,
+
     /// Explicit per-program rehabilitation enrollment/progress records.
     #[serde(default)]
     pub rehab_records: HashMap<PrisonerId, Vec<RehabProgramRecord>>,
@@ -294,6 +351,7 @@ impl World {
             post_release_records: Vec::new(),
             next_post_release_id: 1,
             contraband_state: HashMap::new(),
+            resolved_contraband_at: std::collections::BTreeMap::new(),
             rehab_records: HashMap::new(),
             last_transfer_day: 0,
         };
@@ -1301,13 +1359,19 @@ impl World {
             RehabProgram::AddictionRecovery,
             RehabProgram::AngerManagement,
         ];
-        // Policy tie-in (Directive §14): the funding multiplier scales the
-        // daily progress step — 0.2 (the ReduceExpenses minimum) stalls
-        // programs, higher multipliers speed them up.
+        // Policy tie-in (Directive §14): funding multiplier scales daily progress.
         let multiplier = self.policies.rehab_funding_multiplier.clamp(0.0, 10.0);
         let day = self.days_simulated;
         let dt = 60u64;
         let dt_eff = (dt as f32 * multiplier).round() as u64;
+
+        // Simple deterministic capacity: based on education/workshop/medical facilities, min 8.
+        let cap_facilities: usize = self.facilities.iter()
+            .filter(|f| matches!(f.kind, FacilityKind::Education | FacilityKind::Workshop | FacilityKind::Medical))
+            .map(|f| (f.capacity.max(1) / 4) as usize)
+            .sum();
+        let rehab_capacity = cap_facilities.max(8);
+
         let mut events = Vec::new();
 
         for i in 0..self.prisoners.len() {
@@ -1334,45 +1398,79 @@ impl World {
                 desperation: self.prisoners[i].needs.desperation(),
             };
 
-            // Auto-enroll willing prisoners in a suitable program when not
-            // enrolled in any (skills keys or existing records).
+            // Sync pre-existing skill enrollments into explicit records.
+            for program in programs {
+                if state.skills.contains_key(program.key()) {
+                    let has_record = self.rehab_records.get(&pid).is_some_and(|recs| recs.iter().any(|r| r.program == program));
+                    if !has_record {
+                        self.rehab_records.entry(pid).or_default().push(RehabProgramRecord::new(program, day));
+                    }
+                }
+            }
+
+            // Disciplinary removal: mark active records as failed.
+            if state.disciplinary_status {
+                if let Some(recs) = self.rehab_records.get_mut(&pid) {
+                    for rec in recs.iter_mut().filter(|r| r.is_active()) {
+                        rec.dropped = true;
+                        rec.failure_reason = Some(RehabFailureReason::DisciplinaryRemoval);
+                        state.skills.remove(rec.program.key());
+                        self.events.emit_rehab_failure(self.time, pid.raw(), rec.program.key(), RehabFailureReason::DisciplinaryRemoval);
+                    }
+                }
+            }
+
             let enrolled_any = programs.iter().any(|pr| {
                 state.skills.contains_key(pr.key())
-                    || self.rehab_records.get(&pid)
-                        .is_some_and(|recs| recs.iter().any(|r| r.program == *pr && !r.completed))
+                    || self.rehab_records.get(&pid).is_some_and(|recs| recs.iter().any(|r| r.program == *pr && r.is_active()))
             });
-            if !enrolled_any && !state.disciplinary_status && state.rehab_motivation > 0.45 {
-                // Pick a program based on dominant need/trait.
+            let current_active = self.rehab_records.values()
+                .map(|recs| recs.iter().filter(|r| r.is_active()).count())
+                .sum::<usize>();
+            let has_capacity = current_active < rehab_capacity;
+
+            if !enrolled_any && !state.disciplinary_status && state.rehab_motivation > 0.45 && has_capacity {
                 let program = if state.aggression > 0.6 { RehabProgram::AngerManagement }
                     else if state.mental_health < 0.5 { RehabProgram::Counseling }
                     else if state.purpose_need > 0.6 { RehabProgram::Education }
                     else { RehabProgram::Vocational };
                 if enroll_in_program(&mut state, program) {
-                    self.rehab_records
-                        .entry(pid)
-                        .or_default()
-                        .push(RehabProgramRecord::new(program, day));
+                    self.rehab_records.entry(pid).or_default().push(RehabProgramRecord::new(program, day));
                     events.push(WorldEvent::new(0, self.time, EventKind::ProgramEnrolled,
-                        format!("{name} enrolled in {program:?}")).with_actor(pid.raw()));
+                        format!("{name} enrolled in {program:?}"))
+                        .with_actor(pid.raw())
+                        .with_cause(format!("eligibility met; capacity {current_active}/{rehab_capacity}")));
                 }
+            } else if !enrolled_any && !state.disciplinary_status && state.rehab_motivation > 0.45 && !has_capacity {
+                events.push(WorldEvent::new(0, self.time, EventKind::RehabilitationFailure,
+                    format!("{name} rehab enrollment deferred: no capacity ({current_active}/{rehab_capacity})"))
+                    .with_actor(pid.raw())
+                    .with_cause("eligibility met but rehab capacity exhausted"));
             }
 
-            // Explicit per-program progress with records.
             for program in programs {
                 if !state.skills.contains_key(program.key()) { continue; }
-                let has_record = self.rehab_records.get(&pid).is_some_and(|recs| {
-                    recs.iter().any(|r| r.program == program && !r.completed && !r.dropped)
-                });
+                let has_record = self.rehab_records.get(&pid).is_some_and(|recs| recs.iter().any(|r| r.program == program));
                 if !has_record {
-                    // Migration: enrollments predate explicit records.
                     self.rehab_records.entry(pid).or_default().push(RehabProgramRecord::new(program, day));
                 }
+
+                let terminal = self.rehab_records.get(&pid)
+                    .and_then(|recs| recs.iter().find(|r| r.program == program))
+                    .map(|r| r.completed || r.dropped);
+                if terminal == Some(true) {
+                    state.skills.remove(program.key());
+                    continue;
+                }
+
                 match apply_program_progress(&mut state, program, dt_eff) {
                     RehabOutcome::Progress(delta) if delta > 0.0 => {
                         if let Some(rec) = self.rehab_records.get_mut(&pid)
-                            .and_then(|recs| recs.iter_mut().find(|r| r.program == program && !r.completed && !r.dropped))
+                            .and_then(|recs| recs.iter_mut().find(|r| r.program == program && r.is_active()))
                         {
                             rec.progress_days += 1;
+                            rec.attendance_days += 1;
+                            rec.last_attended_day = Some(day);
                             rec.progress_sum += delta;
                         }
                         let progress = state.skills.get(program.key()).copied().unwrap_or(0.0);
@@ -1381,24 +1479,44 @@ impl World {
                             .with_actor(pid.raw())
                             .with_cause(format!("rehab funding multiplier {multiplier:.2}")));
                     }
-                    RehabOutcome::Progress(_) => {}
+                    RehabOutcome::Progress(_) => {
+                        if let Some(rec) = self.rehab_records.get_mut(&pid)
+                            .and_then(|recs| recs.iter_mut().find(|r| r.program == program && r.is_active()))
+                        {
+                            let idle_days = day.saturating_sub(rec.last_attended_day.unwrap_or(rec.enrolled_day));
+                            if idle_days > 21 && rec.attendance_days < 2 {
+                                rec.dropped = true;
+                                rec.failure_reason = Some(RehabFailureReason::InsufficientEngagement);
+                                state.skills.remove(program.key());
+                                self.events.emit_rehab_failure(self.time, pid.raw(), program.key(), RehabFailureReason::InsufficientEngagement);
+                            }
+                        }
+                    }
                     RehabOutcome::Completed => {
                         if let Some(rec) = self.rehab_records.get_mut(&pid)
-                            .and_then(|recs| recs.iter_mut().find(|r| r.program == program && !r.completed))
+                            .and_then(|recs| recs.iter_mut().find(|r| r.program == program && !r.dropped))
                         {
                             rec.completed = true;
+                            rec.failure_reason = Some(RehabFailureReason::ProgramCompleted);
+                            rec.last_attended_day = Some(day);
                         }
                         events.push(WorldEvent::new(0, self.time, EventKind::RehabilitationSuccess,
                             format!("{name} completed {program:?}")).with_actor(pid.raw()));
+                        self.events.emit_rehab_failure(self.time, pid.raw(), program.key(), RehabFailureReason::ProgramCompleted);
                     }
                     RehabOutcome::Dropped => {
+                        let reason = if state.disciplinary_status {
+                            RehabFailureReason::DisciplinaryRemoval
+                        } else {
+                            RehabFailureReason::DroppedOut
+                        };
                         if let Some(rec) = self.rehab_records.get_mut(&pid)
                             .and_then(|recs| recs.iter_mut().find(|r| r.program == program && !r.completed && !r.dropped))
                         {
                             rec.dropped = true;
+                            rec.failure_reason = Some(reason);
                         }
-                        self.events.emit_rehab_failure(
-                            self.time, pid.raw(), program.key(), RehabFailureReason::DroppedOut);
+                        self.events.emit_rehab_failure(self.time, pid.raw(), program.key(), reason);
                     }
                     RehabOutcome::NoEnrollment => {}
                 }
@@ -1465,9 +1583,9 @@ impl World {
     }
 
     /// Record a guard discovery of contraband on a prisoner: applies
-    /// discipline/reputation/safety effects, adds the item to the prisoner's
-    /// world-owned inventory, sets the flags_confiscated flag and emits a
-    /// clear `ContrabandFound` event (0.05 lifecycle).
+    /// discipline/reputation/safety effects, records the item in world-owned
+    /// inventory/state, sets confiscation flags, and emits consistent
+    /// ContrabandFound + ContrabandConfiscated events (0.05 lifecycle).
     fn record_contraband_discovery(&mut self, found: alc_social::ContrabandFound) {
         let holder = found.holder;
         if let Some(p) = self.prisoners.iter_mut().find(|p| p.id == holder) {
@@ -1482,11 +1600,22 @@ impl World {
         st.discovered_count += 1;
         st.flagged_days += 1;
         let inv_count = st.inventory.get(&found.item).copied().unwrap_or(0);
-        self.events.emit(WorldEvent::new(0, self.time, EventKind::ContrabandFound,
+
+        let found_ev = WorldEvent::new(0, self.time, EventKind::ContrabandFound,
             format!("Guard {} found {:?} on prisoner {} [flags: true; {} {:?} in inventory; severity {:.2}]",
                 found.guard.raw(), found.item, holder.raw(), inv_count, found.item, found.severity))
             .with_actor(holder.raw())
-            .with_cause(format!("discovery by guard {}", found.guard.raw())));
+            .with_cause(format!("discovery by guard {}", found.guard.raw()));
+        self.history.push(found_ev.clone());
+        self.events.emit(found_ev);
+
+        let conf_ev = WorldEvent::new(0, self.time, EventKind::ContrabandConfiscated,
+            format!("Contraband confiscated: {:?} from prisoner {} by guard {}",
+                found.item, holder.raw(), found.guard.raw()))
+            .with_actor(holder.raw())
+            .with_cause("confiscation following discovery");
+        self.history.push(conf_ev.clone());
+        self.events.emit(conf_ev);
     }
 
     fn contraband_state_entry(&mut self, id: PrisonerId) -> &mut PrisonerContrabandState {
@@ -1511,23 +1640,84 @@ impl World {
 
     fn construction_step(&mut self) {
         if self.construction_queue.is_empty() { return; }
+
+        // Evaluate prerequisites/staff/materials deterministically by project id order.
+        let staff_available = self.staff_coverage() >= 0.2 || self.guards.len() >= 2;
+        let materials_available = self.economy.cash.0 > -50_000_00; // not catastrophically insolvent
+        let has_admin = self.facilities.iter().any(|f| matches!(f.kind, FacilityKind::Admin));
+
         let mut completed: Vec<ConstructionProject> = Vec::new();
+        let mut cancelled: Vec<(u64, String, FacilityKind)> = Vec::new();
+        let mut failed: Vec<(u64, String, FacilityKind)> = Vec::new();
+
         for p in &mut self.construction_queue {
-            p.progress_days = p.progress_days.saturating_add(1);
+            if matches!(p.status, ConstructionStatus::Completed | ConstructionStatus::Cancelled | ConstructionStatus::Failed) {
+                continue;
+            }
+            // Prerequisites: admin required for non-admin builds; wing must be plausible.
+            p.prereqs_met = has_admin || matches!(p.kind, FacilityKind::Admin);
+            p.staff_allocated = staff_available;
+            p.materials_ready = materials_available;
+
+            if !p.prereqs_met {
+                p.status = ConstructionStatus::Failed;
+                p.terminal_reason = Some("missing prerequisite: admin facility".to_string());
+                failed.push((p.id, p.terminal_reason.clone().unwrap_or_default(), p.kind));
+                continue;
+            }
+            if !p.materials_ready && p.progress_days == 0 && self.days_simulated.saturating_sub(p.started_day) > 7 {
+                p.status = ConstructionStatus::Cancelled;
+                p.terminal_reason = Some("materials/funding unavailable".to_string());
+                cancelled.push((p.id, p.terminal_reason.clone().unwrap_or_default(), p.kind));
+                continue;
+            }
+            if !p.staff_allocated && self.days_simulated.saturating_sub(p.started_day) > 14 && p.progress_days < p.total_days / 2 {
+                p.status = ConstructionStatus::Failed;
+                p.terminal_reason = Some("insufficient staff allocation".to_string());
+                failed.push((p.id, p.terminal_reason.clone().unwrap_or_default(), p.kind));
+                continue;
+            }
+
+            p.status = ConstructionStatus::InProgress;
+            // Progress only when staff/materials are available; deterministic stall otherwise.
+            if p.staff_allocated && p.materials_ready {
+                p.progress_days = p.progress_days.saturating_add(1);
+            }
             if p.progress_days >= p.total_days {
+                p.status = ConstructionStatus::Completed;
                 completed.push(p.clone());
             }
         }
-        if completed.is_empty() { return; }
-        self.construction_queue.retain(|p| p.progress_days < p.total_days);
+
+        for (id, reason, kind) in cancelled {
+            let ev = WorldEvent::new(0, self.time, EventKind::ConstructionCancelled,
+                format!("Construction cancelled: {} (project {}) - {}", kind.display(), id, reason))
+                .with_cause(reason.clone());
+            self.history.push(ev.clone());
+            self.events.emit(ev);
+        }
+        for (id, reason, kind) in failed {
+            let ev = WorldEvent::new(0, self.time, EventKind::ConstructionFailed,
+                format!("Construction failed: {} (project {}) - {}", kind.display(), id, reason))
+                .with_cause(reason.clone());
+            self.history.push(ev.clone());
+            self.events.emit(ev);
+        }
         for proj in completed {
             let id = self.add_facility(proj.kind, proj.wing, proj.capacity);
-            self.events.emit(
-                WorldEvent::new(0, self.time, EventKind::ConstructionComplete,
-                    format!("Construction complete: {} (facility {})", proj.kind.display(), id.0))
-                    .with_cause(format!("project {} completed after {} days", proj.id, proj.total_days)),
-            );
+            let ev = WorldEvent::new(0, self.time, EventKind::ConstructionComplete,
+                format!("Construction complete: {} (facility {})", proj.kind.display(), id.0))
+                .with_cause(format!("project {} completed after {} days", proj.id, proj.total_days));
+            self.history.push(ev.clone());
+            self.events.emit(ev);
         }
+
+        // Keep terminal projects for auditability; prune only very old terminal entries to avoid unbounded growth.
+        let cutoff = self.days_simulated.saturating_sub(365);
+        self.construction_queue.retain(|p| {
+            matches!(p.status, ConstructionStatus::Queued | ConstructionStatus::InProgress)
+                || p.started_day >= cutoff
+        });
     }
 
     /// Public entry point for expansion queueing (0.05 lifecycle: makes the
@@ -1544,12 +1734,98 @@ impl World {
         let cost = (capacity as f32 * 50.0) + (total_days as f32 * 200.0);
         // Charge upfront if possible; still allow construction (debt pressure is part of sim).
         let _ = self.economy.spend(self.time.as_secs(), alc_economy::Money::from_major(cost as i64), alc_economy::Account::Construction, format!("Construction: {}", kind.display()));
-        let proj = ConstructionProject { id, kind, wing, capacity, total_days, progress_days: 0, cost, started_day: self.days_simulated };
+        let proj = ConstructionProject {
+            id, kind, wing, capacity, total_days, progress_days: 0, cost, started_day: self.days_simulated,
+            status: ConstructionStatus::Queued,
+            terminal_reason: None,
+            staff_allocated: self.staff_coverage() >= 0.2 || self.guards.len() >= 2,
+            materials_ready: self.economy.cash.0 > -50_000_00,
+            prereqs_met: self.facilities.iter().any(|f| matches!(f.kind, FacilityKind::Admin)) || matches!(kind, FacilityKind::Admin),
+        };
         self.events.emit(WorldEvent::new(0, self.time, EventKind::Expansion,
             format!("Construction started: {} ({} days, ${:.0})", kind.display(), total_days, cost))
             .with_cause(format!("project {id}")));
         self.construction_queue.push(proj);
         id
+    }
+
+    /// Cancel an active construction project. Emits ConstructionCancelled and keeps
+    /// the terminal record in queue history for auditability.
+    pub fn cancel_construction(&mut self, project_id: u64, reason: impl Into<String>) -> bool {
+        let reason = reason.into();
+        let mut found = None;
+        for p in &mut self.construction_queue {
+            if p.id == project_id && matches!(p.status, ConstructionStatus::Queued | ConstructionStatus::InProgress) {
+                p.status = ConstructionStatus::Cancelled;
+                p.terminal_reason = Some(reason.clone());
+                found = Some(p.kind);
+                break;
+            }
+        }
+        if let Some(kind) = found {
+            let ev = WorldEvent::new(0, self.time, EventKind::ConstructionCancelled,
+                format!("Construction cancelled: {} (project {}) - {}", kind.display(), project_id, reason))
+                .with_cause(reason);
+            self.history.push(ev.clone());
+            self.events.emit(ev);
+            return true;
+        }
+        false
+    }
+
+    /// Mark a construction project as failed (world-side lifecycle API for engine delegation).
+    pub fn fail_construction(&mut self, project_id: u64, reason: impl Into<String>) -> bool {
+        let reason = reason.into();
+        let mut found = None;
+        for p in &mut self.construction_queue {
+            if p.id == project_id && matches!(p.status, ConstructionStatus::Queued | ConstructionStatus::InProgress) {
+                p.status = ConstructionStatus::Failed;
+                p.terminal_reason = Some(reason.clone());
+                found = Some(p.kind);
+                break;
+            }
+        }
+        if let Some(kind) = found {
+            let ev = WorldEvent::new(0, self.time, EventKind::ConstructionFailed,
+                format!("Construction failed: {} (project {}) - {}", kind.display(), project_id, reason))
+                .with_cause(reason);
+            self.history.push(ev.clone());
+            self.events.emit(ev);
+            return true;
+        }
+        false
+    }
+
+    /// Advance a construction project by `days` (world-side lifecycle API for engine delegation).
+    /// Returns true if the project advanced or completed.
+    pub fn advance_construction(&mut self, project_id: u64, days: u32) -> bool {
+        let days = days.max(1);
+        let mut completed_proj: Option<ConstructionProject> = None;
+        for p in &mut self.construction_queue {
+            if p.id == project_id && matches!(p.status, ConstructionStatus::Queued | ConstructionStatus::InProgress) {
+                p.status = ConstructionStatus::InProgress;
+                p.progress_days = p.progress_days.saturating_add(days);
+                if p.progress_days >= p.total_days {
+                    p.status = ConstructionStatus::Completed;
+                    completed_proj = Some(p.clone());
+                }
+                break;
+            }
+        }
+        if let Some(proj) = completed_proj {
+            let id = self.add_facility(proj.kind, proj.wing, proj.capacity);
+            let ev = WorldEvent::new(0, self.time, EventKind::ConstructionComplete,
+                format!("Construction complete: {} (facility {})", proj.kind.display(), id.0))
+                .with_cause(format!("project {} completed after {} days", proj.id, proj.total_days));
+            self.history.push(ev.clone());
+            self.events.emit(ev);
+        }
+        self.construction_queue.iter().any(|p| p.id == project_id)
+    }
+
+    /// Record contraband case resolution timestamp for persistence/audit coherence.
+    pub fn resolve_contraband_case(&mut self, case_id: u64, at: SimTime) {
+        self.resolved_contraband_at.entry(case_id).or_insert(at);
     }
 
     /// Auditable policy mutation: emits a `PolicyChange` event (and history

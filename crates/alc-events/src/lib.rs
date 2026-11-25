@@ -26,6 +26,8 @@ pub enum EventKind {
     PostRelease,
     // Construction
     ConstructionComplete,
+    ConstructionCancelled,
+    ConstructionFailed,
     // Social
     RelationshipShift,
     GangFormed,
@@ -72,6 +74,8 @@ pub enum EventKind {
     // saved worlds stay stable).
     Dialogue,
     Interaction,
+    // 0.05 lifecycle additions (append-only for bincode stability).
+    ContrabandConfiscated,
 }
 
 /// A recorded world event.
@@ -222,6 +226,22 @@ impl EventBus {
     pub fn emit_construction_complete(&mut self, at: SimTime, facility: &str) -> u64 {
         let e = WorldEvent::new(1, at, EventKind::ConstructionComplete, format!("Construction complete: {}", facility))
             .with_cause(format!("Construction of {} completed", facility))
+            .with_confidence(1.0);
+        self.emit(e)
+    }
+
+    /// Emit a construction cancelled event.
+    pub fn emit_construction_cancelled(&mut self, at: SimTime, facility: &str, reason: &str) -> u64 {
+        let e = WorldEvent::new(1, at, EventKind::ConstructionCancelled, format!("Construction cancelled: {} ({})", facility, reason))
+            .with_cause(reason.to_string())
+            .with_confidence(1.0);
+        self.emit(e)
+    }
+
+    /// Emit a construction failed event.
+    pub fn emit_construction_failed(&mut self, at: SimTime, facility: &str, reason: &str) -> u64 {
+        let e = WorldEvent::new(1, at, EventKind::ConstructionFailed, format!("Construction failed: {} ({})", facility, reason))
+            .with_cause(reason.to_string())
             .with_confidence(1.0);
         self.emit(e)
     }

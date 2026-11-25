@@ -46,6 +46,8 @@ pub struct UiState {
     pub search: String,
     /// Declarative incident query (0.05); [`UiState::filter`] is the accessor.
     pub incident_filter: sumo::incidents::IncidentFilter,
+    /// Optional decision validation filter: "accepted", "repaired", "rejected", or None.
+    pub decision_validation_filter: Option<String>,
     pub scroll: u16,
 }
 
@@ -63,6 +65,7 @@ impl UiState {
             selected_contraband: None,
             search: String::new(),
             incident_filter: sumo::incidents::IncidentFilter::all(),
+            decision_validation_filter: None,
             scroll: 0,
         }
     }
@@ -90,6 +93,35 @@ impl UiState {
     /// Replace the declarative incident filter.
     pub fn set_filter(&mut self, filter: sumo::incidents::IncidentFilter) {
         self.incident_filter = filter;
+    }
+
+    /// Cycle incident minimum severity filter: all -> high(0.40) -> critical(0.75) -> all.
+    pub fn cycle_incident_min_severity(&mut self) {
+        let next = match self.incident_filter.min_severity {
+            None => Some(0.40),
+            Some(s) if s < 0.74 => Some(0.75),
+            _ => None,
+        };
+        self.incident_filter.min_severity = next;
+    }
+
+    /// Cycle incident resolved filter: all -> open only -> resolved only -> all.
+    pub fn cycle_incident_resolved(&mut self) {
+        self.incident_filter.resolved = match self.incident_filter.resolved {
+            None => Some(false),
+            Some(false) => Some(true),
+            Some(true) => None,
+        };
+    }
+
+    /// Cycle decision validation filter: all -> accepted -> repaired -> rejected -> all.
+    pub fn cycle_decision_validation_filter(&mut self) {
+        self.decision_validation_filter = match self.decision_validation_filter.as_deref() {
+            None => Some("accepted".to_string()),
+            Some("accepted") => Some("repaired".to_string()),
+            Some("repaired") => Some("rejected".to_string()),
+            _ => None,
+        };
     }
 }
 

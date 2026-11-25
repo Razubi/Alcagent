@@ -405,6 +405,26 @@ pub fn invariant_audit_and_lifecycle_state_sane(sim: &Sim) -> bool {
     invariant_incident_sidecar_consistent(sim)
         && invariant_post_release_ids_valid(sim)
         && invariant_construction_queue_sane(sim.world())
+        && invariant_contraband_resolution_state_sane(sim)
+}
+
+/// Invariant 0.05: contraband resolution state must be consistent and bounded.
+///
+/// Resolved case IDs are engine-state only. Timestamps, when present, must
+/// correspond to resolved cases and all maps must remain bounded.
+pub fn invariant_contraband_resolution_state_sane(sim: &Sim) -> bool {
+    let resolved = &sim.engine_state.resolved_contraband_cases;
+    let at = &sim.engine_state.resolved_contraband_at;
+    if resolved.len() > MAX_LOG_ENTRIES || at.len() > MAX_LOG_ENTRIES {
+        return false;
+    }
+    // Every timestamped resolution must be marked resolved.
+    for id in at.keys() {
+        if !resolved.contains(id) {
+            return false;
+        }
+    }
+    true
 }
 
 /// Invariant 7: the construction queue must contain only sane pending work.
@@ -437,9 +457,16 @@ pub fn invariant_construction_queue_sane(world: &World) -> bool {
                 project.id, project.progress_days, project.total_days
             ));
         }
-        if project.progress_days >= project.total_days {
+        let terminal = matches!(project.status, alc_world::ConstructionStatus::Completed | alc_world::ConstructionStatus::Cancelled | alc_world::ConstructionStatus::Failed);
+        if !terminal && project.progress_days >= project.total_days {
             violations.push(format!(
-                "completed construction project {} (progress {} >= total {}) lingers in queue",
+                "non-terminal construction project {} has progress {} >= total {}",
+                project.id, project.progress_days, project.total_days
+            ));
+        }
+        if matches!(project.status, alc_world::ConstructionStatus::Completed) && project.progress_days < project.total_days {
+            violations.push(format!(
+                "completed construction project {} has progress {} < total {}",
                 project.id, project.progress_days, project.total_days
             ));
         }
@@ -541,6 +568,11 @@ mod tests {
             progress_days: 3,
             cost: 2_500.0,
             started_day: 0,
+            status: alc_world::ConstructionStatus::InProgress,
+            terminal_reason: None,
+            staff_allocated: true,
+            materials_ready: true,
+            prereqs_met: true,
         }
     }
 

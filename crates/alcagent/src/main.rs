@@ -110,6 +110,11 @@ impl SimDriver for EngineDriver {
     fn drop_rehab(&mut self, prisoner_id: u64, program_key: &str) -> bool { self.0.drop_rehab_by_key(alc_core::PrisonerId(prisoner_id), program_key) }
     fn rehab_overview(&self) -> sumo::RehabOverview { self.0.rehab_overview() }
     fn contraband_cases(&self) -> Vec<sumo::ContrabandCaseSummary> { self.0.contraband_summaries() }
+    fn resolve_contraband_case(&mut self, case_id: u64) -> bool { self.0.resolve_contraband_case(case_id) }
+    fn resolve_incident(&mut self, incident_id: u64) -> bool { self.0.resolve_incident(incident_id) }
+    fn cancel_construction(&mut self, project_id: u64, reason: &str) -> bool { self.0.cancel_construction(project_id, reason) }
+    fn fail_construction(&mut self, project_id: u64, reason: &str) -> bool { self.0.fail_construction(project_id, reason) }
+    fn advance_construction(&mut self, project_id: u64, days: u32) -> bool { self.0.advance_construction(project_id, days) }
     fn contraband_inventory(&self) -> Vec<sumo::ContrabandInventorySummary> { self.0.contraband_inventory() }
     fn schedule_timeline(&self, prisoner_id: u64) -> Option<sumo::ScheduleTimeline> { self.0.schedule_timeline(alc_core::PrisonerId(prisoner_id)) }
     fn budget_snapshot(&self) -> sumo::BudgetSnapshot { self.0.budget_snapshot() }

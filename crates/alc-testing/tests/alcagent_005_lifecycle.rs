@@ -37,9 +37,15 @@ fn construction_queue_progression_completes_and_retires() {
         }
     }
 
-    assert!(
-        !world.construction_queue.iter().any(|p| p.id == project_id),
-        "completed construction project must leave the queue"
+    let completed = world
+        .construction_queue
+        .iter()
+        .find(|p| p.id == project_id)
+        .expect("completed construction project should remain in audit queue");
+    assert_eq!(
+        completed.status,
+        alc_world::ConstructionStatus::Completed,
+        "completed construction project must reach Completed status"
     );
     assert!(
         violations.is_empty(),
@@ -84,4 +90,54 @@ fn lifecycle_state_blocks_keep_invariants_clean() {
         violations.is_empty(),
         "0.05 lifecycle state blocks must keep harness invariants clean: {violations:?}"
     );
+}
+
+/// Construction cancel/failure APIs should produce terminal queue records and
+/// keep harness invariants clean.
+#[test]
+fn construction_cancel_and_failure_keep_invariants_clean() {
+    use alc_events::EventKind;
+    use alc_world::ConstructionStatus;
+
+    let mut world = World::new(0x0500_1003);
+    world.speed = TimeSpeed::Extreme;
+
+    // Cancel path.
+    let project_id = world.enqueue_construction(FacilityKind::Medical, 1, 20);
+    assert!(world.cancel_construction(project_id, "test cancel"));
+    let cancelled = world
+        .construction_queue
+        .iter()
+        .find(|p| p.id == project_id)
+        .expect("cancelled project retained for audit");
+    assert_eq!(cancelled.status, ConstructionStatus::Cancelled);
+    assert_eq!(cancelled.terminal_reason.as_deref(), Some("test cancel"));
+    assert!(
+        world.history.iter().any(|e| e.kind == EventKind::ConstructionCancelled),
+        "cancel should emit ConstructionCancelled"
+    );
+
+    // Failure path: missing admin prerequisite for non-admin build.
+    let mut world = World::new(0x0500_1004);
+    world.speed = TimeSpeed::Extreme;
+    world.facilities.retain(|f| f.kind != FacilityKind::Admin);
+    let failed_id = world.enqueue_construction(FacilityKind::Education, 1, 20);
+    let target_days = world.days_simulated + 2;
+    let mut violations = Vec::new();
+    while world.days_simulated < target_days {
+        alc_testing::tick_once(&mut world);
+    }
+    let failed = world
+        .construction_queue
+        .iter()
+        .find(|p| p.id == failed_id)
+        .expect("failed project retained for audit");
+    assert_eq!(failed.status, ConstructionStatus::Failed);
+    assert!(failed.terminal_reason.as_deref().unwrap_or_default().contains("admin"));
+    assert!(
+        world.history.iter().any(|e| e.kind == EventKind::ConstructionFailed),
+        "missing prerequisite should emit ConstructionFailed"
+    );
+    check_world_invariants(&world, &mut violations);
+    assert!(violations.is_empty(), "construction failure path tripped invariants: {violations:?}");
 }

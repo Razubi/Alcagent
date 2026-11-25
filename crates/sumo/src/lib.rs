@@ -226,6 +226,10 @@ pub struct EngineState {
     pub decision_audit: Vec<DecisionAuditRecord>,
     /// Contraband case IDs manually resolved by observer/control (0.05).
     pub resolved_contraband_cases: std::collections::BTreeSet<u64>,
+    /// Engine-only resolution timestamps for contraband cases (not persisted in
+    /// alc-persistence format; coordinated persistence change required to keep
+    /// across save/load).
+    pub resolved_contraband_at: std::collections::BTreeMap<u64, SimTime>,
     /// Post-release tracking (R4: released prisoner outcomes).
     pub post_release: HashMap<alc_core::PrisonerId, bool>,
     /// Policy and lockdown state (H1: policy management).
@@ -246,6 +250,7 @@ impl Default for EngineState {
             decision_log: Vec::new(),
             decision_audit: Vec::new(),
             resolved_contraband_cases: std::collections::BTreeSet::new(),
+            resolved_contraband_at: std::collections::BTreeMap::new(),
             post_release: std::collections::HashMap::new(),
             policy_state: PolicyState::default(),
             policy_mode: PolicyMode::Deterministic,
@@ -343,6 +348,7 @@ impl EngineState {
                 reason: r.reason,
             }).collect(),
             resolved_contraband_cases: persist.resolved_contraband_cases.into_iter().collect(),
+            resolved_contraband_at: std::collections::BTreeMap::new(), // engine-only, not persisted
             post_release: persist.post_release.into_iter().map(|(k, v)| (PrisonerId(k), v)).collect(),
             policy_state: PolicyState {
                 policy: policy_from_persist(persist.policy_state.policy),
@@ -495,6 +501,26 @@ impl Sim {
         self.trim_engine_logs();
     }
 
+    /// Record a control/observer mutation in the decision audit log (0.05).
+    pub fn audit_control(
+        &mut self,
+        actor: impl Into<String>,
+        action: impl Into<String>,
+        summary: impl Into<String>,
+        validation: impl Into<String>,
+        reason: impl Into<String>,
+    ) {
+        self.record_decision_audit(DecisionAuditRecord {
+            time: self.world.time,
+            actor: actor.into(),
+            source: "control".to_string(),
+            action: action.into(),
+            summary: summary.into(),
+            validation: validation.into(),
+            reason: reason.into(),
+        });
+    }
+
     /// Access post_release from engine_state.
     pub fn post_release(&self) -> &HashMap<alc_core::PrisonerId, bool> {
         &self.engine_state.post_release
@@ -522,7 +548,18 @@ impl Sim {
 
     /// Set policy_mode in engine_state.
     pub fn set_policy_mode(&mut self, mode: PolicyMode) {
+        let old = self.engine_state.policy_mode;
+        if old == mode {
+            return;
+        }
         self.engine_state.policy_mode = mode;
+        self.audit_control(
+            "system",
+            "SetPolicyMode",
+            format!("Policy mode {:?} -> {:?}", old, mode),
+            "accepted",
+            "observer/control policy mode change",
+        );
     }
 
     
@@ -608,6 +645,8 @@ impl Sim {
                     | EventKind::Death
                     | EventKind::TransferOut
                     | EventKind::ConstructionComplete
+                    | EventKind::ConstructionCancelled
+                    | EventKind::ConstructionFailed
             ) {
                 continue;
             }
@@ -667,6 +706,27 @@ impl Sim {
         if self.engine_state.decision_audit.len() > MAX {
             let excess = self.engine_state.decision_audit.len() - MAX;
             self.engine_state.decision_audit.drain(..excess);
+        }
+        if self.engine_state.resolved_contraband_cases.len() > MAX {
+            // Keep highest ids (most recent) when trimming.
+            while self.engine_state.resolved_contraband_cases.len() > MAX {
+                if let Some(first) = self.engine_state.resolved_contraband_cases.iter().next().copied() {
+                    self.engine_state.resolved_contraband_cases.remove(&first);
+                    self.engine_state.resolved_contraband_at.remove(&first);
+                } else {
+                    break;
+                }
+            }
+        }
+        if self.engine_state.resolved_contraband_at.len() > MAX {
+            while self.engine_state.resolved_contraband_at.len() > MAX {
+                if let Some(first) = self.engine_state.resolved_contraband_at.keys().next().copied() {
+                    self.engine_state.resolved_contraband_at.remove(&first);
+                    self.engine_state.resolved_contraband_cases.remove(&first);
+                } else {
+                    break;
+                }
+            }
         }
     }
 
@@ -1046,6 +1106,87 @@ impl Sim {
         }).collect()
     }
 
+    /// Queue a construction project through the world API (observer/control, 0.05).
+    ///
+    /// Returns the project id. Emits construction start through the world and
+    /// records a decision-audit entry.
+    pub fn enqueue_construction(&mut self, kind: alc_world::FacilityKind, wing: u32, capacity: u32) -> u64 {
+        let id = self.world.enqueue_construction(kind, wing, capacity);
+        self.audit_control(
+            "warden/control",
+            "EnqueueConstruction",
+            format!("Queued construction {:?} wing={} cap={} (project {})", kind, wing, capacity, id),
+            "accepted",
+            "delegated to World::enqueue_construction",
+        );
+        id
+    }
+
+    /// Advance a queued construction project by `days` (observer/control, 0.05).
+    ///
+    /// Engine-side queue management: world has no direct advance API, so Sim
+    /// mutates the authoritative world queue and finalizes completion using the
+    /// same completion effects as `World::construction_step` (add facility +
+    /// ConstructionComplete event). Returns `true` if the project existed.
+    pub fn advance_construction(&mut self, project_id: u64, days: u32) -> bool {
+        if days == 0 {
+            self.audit_control("observer/control", "AdvanceConstruction", format!("Construction project {project_id} advance ignored"), "rejected", "days must be > 0");
+            return false;
+        }
+        let before = self.world.events.recent().map(|e| e.id).max().unwrap_or(0);
+        let proj = self.world.construction_queue.iter().find(|p| p.id == project_id).cloned();
+        let Some(proj) = proj else {
+            self.audit_control("observer/control", "AdvanceConstruction", format!("Construction project {project_id} not found"), "rejected", "unknown construction project");
+            return false;
+        };
+        let prev_progress = proj.progress_days;
+        let total = proj.total_days;
+        let ok = self.world.advance_construction(project_id, days);
+        self.pump_events_into_engine_log(before);
+        let after_progress = self.world.construction_queue.iter().find(|p| p.id == project_id).map(|p| p.progress_days).unwrap_or(total);
+        let completed = ok && self.world.construction_queue.iter().all(|p| p.id != project_id);
+        self.audit_control(
+            "observer/control",
+            "AdvanceConstruction",
+            format!("Construction project {project_id} advanced {prev_progress}->{after_progress}/{total}{}", if completed { " (completed)" } else { "" }),
+            if ok { "accepted" } else { "rejected" },
+            if ok { "world construction lifecycle" } else { "project not advanceable" },
+        );
+        ok
+    }
+
+    /// Cancel a queued construction project (observer/control, 0.05).
+    pub fn cancel_construction(&mut self, project_id: u64, reason: impl Into<String>) -> bool {
+        let reason = reason.into();
+        let before = self.world.events.recent().map(|e| e.id).max().unwrap_or(0);
+        let ok = self.world.cancel_construction(project_id, reason.clone());
+        self.pump_events_into_engine_log(before);
+        self.audit_control(
+            "observer/control",
+            "CancelConstruction",
+            format!("Construction project {project_id} {}", if ok { "cancelled" } else { "not cancelled" }),
+            if ok { "accepted" } else { "rejected" },
+            if ok { reason } else { "unknown or terminal construction project".to_string() },
+        );
+        ok
+    }
+
+    /// Mark a queued construction project as failed (observer/control, 0.05).
+    pub fn fail_construction(&mut self, project_id: u64, reason: impl Into<String>) -> bool {
+        let reason = reason.into();
+        let before = self.world.events.recent().map(|e| e.id).max().unwrap_or(0);
+        let ok = self.world.fail_construction(project_id, reason.clone());
+        self.pump_events_into_engine_log(before);
+        self.audit_control(
+            "observer/control",
+            "FailConstruction",
+            format!("Construction project {project_id} {}", if ok { "failed" } else { "not failed" }),
+            if ok { "accepted" } else { "rejected" },
+            if ok { reason } else { "unknown or terminal construction project".to_string() },
+        );
+        ok
+    }
+
     // ---------------------------------------------------------------------
     // 0.05 observer/control DTOs
     // ---------------------------------------------------------------------
@@ -1250,6 +1391,7 @@ impl Sim {
                 .as_deref()
                 .map(contraband_severity_for_label)
                 .unwrap_or(0.5);
+            let resolved = self.engine_state.resolved_contraband_cases.contains(&event.id);
             cases.push(ContrabandCaseSummary {
                 case_id: event.id,
                 at: event.at,
@@ -1259,7 +1401,8 @@ impl Sim {
                 severity,
                 summary: event.summary.clone(),
                 causes: event.causes.clone(),
-                resolved: self.engine_state.resolved_contraband_cases.contains(&event.id),
+                resolved,
+                resolved_at: self.engine_state.resolved_contraband_at.get(&event.id).copied(),
             });
         }
         cases.sort_by_key(|c| c.case_id);
@@ -1267,8 +1410,33 @@ impl Sim {
     }
 
     /// Mark a contraband case resolved (observer/control, 0.05).
+    ///
+    /// Returns `true` when the case was newly resolved. Records a decision-audit
+    /// entry and an engine-only resolution timestamp (not persisted unless the
+    /// persistence format is coordinated).
     pub fn resolve_contraband_case(&mut self, case_id: u64) -> bool {
-        self.engine_state.resolved_contraband_cases.insert(case_id)
+        let inserted = self.engine_state.resolved_contraband_cases.insert(case_id);
+        if !inserted {
+            self.audit_control(
+                "observer/control",
+                "ResolveContrabandCase",
+                format!("Contraband case {case_id} already resolved"),
+                "rejected",
+                "case already resolved",
+            );
+            return false;
+        }
+        let at = self.world.time;
+        self.engine_state.resolved_contraband_at.insert(case_id, at);
+        self.world.resolve_contraband_case(case_id, at);
+        self.audit_control(
+            "observer/control",
+            "ResolveContrabandCase",
+            format!("Contraband case {case_id} marked resolved"),
+            "accepted",
+            "contraband case resolution",
+        );
+        true
     }
 
     /// Contraband inventory rollup by item category (0.05).
@@ -1574,6 +1742,9 @@ impl Sim {
                 progress_sum: 0.0,
                 completed: false,
                 dropped: false,
+                attendance_days: 0,
+                last_attended_day: None,
+                failure_reason: None,
             });
         }
         let event = WorldEvent::new(
@@ -1585,6 +1756,13 @@ impl Sim {
         .with_actor(prisoner_id.raw())
         .with_cause("manual rehabilitation enrollment");
         self.emit_event(event);
+        self.audit_control(
+            "observer/control",
+            "EnrollRehab",
+            format!("Prisoner {} enrolled in {:?}", prisoner_id.raw(), program),
+            "accepted",
+            "rehab enrollment control",
+        );
         true
     }
 
@@ -1633,29 +1811,59 @@ impl Sim {
         .with_actor(prisoner_id.raw())
         .with_cause("manual removal by observer");
         self.emit_event(event);
+        self.audit_control(
+            "observer/control",
+            "DropRehab",
+            format!("Prisoner {} removed from {:?}", prisoner_id.raw(), program),
+            "accepted",
+            "rehab removal control",
+        );
         true
     }
 
-    /// Mark a structured sidecar incident resolved (observer control, 0.05).
+    /// Mark a structured sidecar incident resolved (observer/control, 0.05).
     ///
     /// Validated: returns `false` for an unknown id or an already-resolved
-    /// incident. Resolution persists with the sidecar incident and emits an
-    /// `Investigation` event for the audit trail.
+    /// incident. Resolution persists with the sidecar incident, emits an
+    /// `Investigation` event, and records a decision-audit entry.
     pub fn resolve_incident(&mut self, incident_id: u64) -> bool {
         let at = self.world.time;
-        let Some(incident) = self
+        let (kind, already_resolved) = {
+            let Some(incident) = self
+                .engine_state
+                .incident_sidecar
+                .iter()
+                .find(|inc| inc.id == incident_id)
+            else {
+                self.audit_control(
+                    "observer/control",
+                    "ResolveIncident",
+                    format!("Incident {incident_id} not found"),
+                    "rejected",
+                    "unknown incident id",
+                );
+                return false;
+            };
+            (incident.kind, incident.resolved)
+        };
+        if already_resolved {
+            self.audit_control(
+                "observer/control",
+                "ResolveIncident",
+                format!("Incident {incident_id} ({kind:?}) already resolved"),
+                "rejected",
+                "incident already resolved",
+            );
+            return false;
+        }
+        if let Some(incident) = self
             .engine_state
             .incident_sidecar
             .iter_mut()
             .find(|inc| inc.id == incident_id)
-        else {
-            return false;
-        };
-        if incident.resolved {
-            return false;
+        {
+            incident.resolved = true;
         }
-        incident.resolved = true;
-        let kind = incident.kind;
         let event = WorldEvent::new(
             0,
             at,
@@ -1664,6 +1872,13 @@ impl Sim {
         )
         .with_cause("incident resolution by observer");
         self.emit_event(event);
+        self.audit_control(
+            "observer/control",
+            "ResolveIncident",
+            format!("Incident {incident_id} ({kind:?}) marked resolved"),
+            "accepted",
+            "structured sidecar incident resolved by observer/control",
+        );
         true
     }
 
@@ -1705,6 +1920,19 @@ impl Sim {
             if has_reintegration_plan { "yes" } else { "no" }
         ));
         self.emit_event(event);
+        self.audit_control(
+            "observer/control",
+            "RecordPostRelease",
+            format!(
+                "Prisoner {} post-release recorded ({} risk {:.2}, plan {})",
+                prisoner_id.raw(),
+                release_type,
+                risk,
+                if has_reintegration_plan { "yes" } else { "no" }
+            ),
+            "accepted",
+            "post-release outcome recorded in engine ledger",
+        );
         true
     }
 
@@ -1741,11 +1969,31 @@ impl Sim {
 
     /// Enable autosave: write the world every `interval_days` simulated days.
     pub fn enable_autosave(&mut self, dir: impl Into<PathBuf>, interval_days: u64) {
-        self.engine_state.autosave = Some(AutosaveScheduler::new(dir, interval_days));
+        let dir = dir.into();
+        self.engine_state.autosave = Some(AutosaveScheduler::new(dir.clone(), interval_days));
+        self.audit_control(
+            "observer/control",
+            "EnableAutosave",
+            format!("Autosave enabled every {} day(s) at {}", interval_days, dir.display()),
+            "accepted",
+            "autosave scheduler configured",
+        );
     }
 
     /// Disable autosave.
-    pub fn disable_autosave(&mut self) { self.engine_state.autosave = None; }
+    pub fn disable_autosave(&mut self) {
+        if self.engine_state.autosave.is_none() {
+            return;
+        }
+        self.engine_state.autosave = None;
+        self.audit_control(
+            "observer/control",
+            "DisableAutosave",
+            "Autosave disabled".to_string(),
+            "accepted",
+            "autosave scheduler cleared",
+        );
+    }
 
     /// Save when the autosave interval has elapsed. Returns true when written.
     pub fn maybe_autosave(&mut self) -> Result<bool, SaveError> {
@@ -1881,7 +2129,15 @@ impl Sim {
     /// Marks a released prisoner's reintegration status. Returns the previous
     /// status if the prisoner was already tracked.
     pub fn set_post_release(&mut self, prisoner: alc_core::PrisonerId, success: bool) -> Option<bool> {
-        self.engine_state.post_release.insert(prisoner, success)
+        let prev = self.engine_state.post_release.insert(prisoner, success);
+        self.audit_control(
+            "observer/control",
+            "SetPostRelease",
+            format!("Prisoner {} post-release success={}", prisoner.raw(), success),
+            "accepted",
+            "post-release status updated",
+        );
+        prev
     }
 
     /// Get the post-release status for a prisoner.
@@ -1933,6 +2189,13 @@ impl Sim {
                 EventKind::PolicyChange,
                 format!("Policy changed to {:?}", policy),
             ));
+            self.audit_control(
+                "warden/control",
+                "SetPolicy",
+                format!("Policy changed to {:?}", policy),
+                "accepted",
+                "applied to engine_state and world.policies",
+            );
         }
     }
 
@@ -1963,6 +2226,13 @@ impl Sim {
                 EventKind::PolicyChange,
                 format!("Lockdown {} to {:?}", if lockdown { "enabled" } else { "disabled" }, self.engine_state.policy_state.policy),
             ));
+            self.audit_control(
+                "warden/control",
+                "SetLockdown",
+                format!("Lockdown {}", if lockdown { "enabled" } else { "disabled" }),
+                "accepted",
+                "applied to engine_state and world.policies",
+            );
         }
     }
 
@@ -1988,6 +2258,13 @@ impl Sim {
         self.engine_state.policy_state.last_changed = self.world.time;
         self.emit_event(WorldEvent::new(0, self.world.time, EventKind::PolicyChange,
             format!("Security level {:.0}% -> {:.0}%", old * 100.0, level * 100.0)));
+        self.audit_control(
+            "warden/control",
+            "SetSecurityLevel",
+            format!("Security level {:.2} -> {:.2}", old, level),
+            "accepted",
+            "world.policies.security_level updated; policy band synced",
+        );
     }
 
     /// Set privileges level (0.0-1.0) with validation and event feedback.
@@ -1999,6 +2276,13 @@ impl Sim {
         self.engine_state.policy_state.last_changed = self.world.time;
         self.emit_event(WorldEvent::new(0, self.world.time, EventKind::PolicyChange,
             format!("Privileges {:.0}% -> {:.0}%", old * 100.0, level * 100.0)));
+        self.audit_control(
+            "warden/control",
+            "SetPrivilegesLevel",
+            format!("Privileges {:.2} -> {:.2}", old, level),
+            "accepted",
+            "world.policies.privileges_level updated",
+        );
     }
 
     /// Set rehabilitation funding multiplier (0.0-2.0) with validation and event feedback.
@@ -2010,6 +2294,13 @@ impl Sim {
         self.engine_state.policy_state.last_changed = self.world.time;
         self.emit_event(WorldEvent::new(0, self.world.time, EventKind::PolicyChange,
             format!("Rehab funding {:.2}x -> {:.2}x", old, multiplier)));
+        self.audit_control(
+            "warden/control",
+            "SetRehabFunding",
+            format!("Rehab funding {:.2} -> {:.2}", old, multiplier),
+            "accepted",
+            "world.policies.rehab_funding_multiplier updated",
+        );
     }
 
     /// Manually pause or resume intake (0.05 policy control).
@@ -2019,6 +2310,13 @@ impl Sim {
         self.engine_state.policy_state.last_changed = self.world.time;
         self.emit_event(WorldEvent::new(0, self.world.time, EventKind::PolicyChange,
             format!("Intake {}", if paused { "paused" } else { "resumed" })));
+        self.audit_control(
+            "warden/control",
+            "SetIntakePaused",
+            format!("Intake {}", if paused { "paused" } else { "resumed" }),
+            "accepted",
+            "world.policies.intake_paused updated",
+        );
     }
 
     /// Sync policy band/engine security from world security while preserving fine-grained value.
@@ -2217,7 +2515,15 @@ impl Sim {
             WorldEvent::new(0, self.world.time, EventKind::ParoleHearing, format!("Parole hearing scheduled for prisoner {}", id.raw()))
                 .with_actor(id.raw()),
         );
-        self.world.events.recent().last().map(|e| e.id)
+        let event_id = self.world.events.recent().last().map(|e| e.id);
+        self.audit_control(
+            "observer/control",
+            "StartParoleHearing",
+            format!("Parole hearing scheduled for prisoner {}", id.raw()),
+            "accepted",
+            "parole hearing scheduled",
+        );
+        event_id
     }
 
     /// Grant parole (§15 step 10); returns the new event id.
@@ -2235,7 +2541,15 @@ impl Sim {
         self.world.events.emit(
             WorldEvent::new(0, self.world.time, EventKind::ParoleGranted, format!("Parole granted to prisoner {}", id.raw())).with_actor(id.raw()),
         );
-        self.world.events.recent().last().map(|e| e.id)
+        let event_id = self.world.events.recent().last().map(|e| e.id);
+        self.audit_control(
+            "observer/control",
+            "GrantParole",
+            format!("Parole granted to prisoner {}", id.raw()),
+            "accepted",
+            "parole granted by engine control",
+        );
+        event_id
     }
 
     /// Deny parole (§15); returns the new event id.
@@ -2247,10 +2561,19 @@ impl Sim {
             return None;
         }
         self.engine_state.parole.set(id, ParoleStatus::Denied, self.world.time);
+        let reason = reason.into();
         self.world.events.emit(
-            WorldEvent::new(0, self.world.time, EventKind::ParoleDenied, format!("Parole denied for prisoner {}: {}", id.raw(), reason.into())).with_actor(id.raw()),
+            WorldEvent::new(0, self.world.time, EventKind::ParoleDenied, format!("Parole denied for prisoner {}: {}", id.raw(), reason)).with_actor(id.raw()),
         );
-        self.world.events.recent().last().map(|e| e.id)
+        let event_id = self.world.events.recent().last().map(|e| e.id);
+        self.audit_control(
+            "observer/control",
+            "DenyParole",
+            format!("Parole denied for prisoner {}", id.raw()),
+            "accepted",
+            reason,
+        );
+        event_id
     }
 
     /// Get the parole status for a prisoner.
@@ -2681,8 +3004,11 @@ pub struct ContrabandCaseSummary {
     pub summary: String,
     /// Original causal notes.
     pub causes: Vec<String>,
-    /// Always `false` until a real case store can carry disposition state.
+    /// Resolved by observer/control (engine-state; persisted only when store exists).
     pub resolved: bool,
+    /// Engine-only resolution timestamp; not persisted across save/load.
+    #[serde(default)]
+    pub resolved_at: Option<SimTime>,
 }
 
 /// Contraband inventory rollup by item category (0.05).

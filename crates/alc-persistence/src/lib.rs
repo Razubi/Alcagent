@@ -794,4 +794,77 @@ mod tests {
         assert!(err.to_string().contains("too short"));
         assert!(matches!(err, SaveError::Deserialize { version: None, .. }));
     }
+
+    #[test]
+    fn world_lifecycle_state_round_trips_through_save_manager() {
+        let dir = unique_dir("lifecycle-roundtrip");
+        let manager = SaveManager::new(&dir);
+        let mut world = alc_world::World::new(0xA1C_05);
+
+        // Construction lifecycle
+        let pid = world.enqueue_construction(alc_world::FacilityKind::Education, 1, 20);
+        assert!(pid > 0);
+        if let Some(p) = world.construction_queue.first_mut() {
+            p.status = alc_world::ConstructionStatus::InProgress;
+            p.progress_days = 2;
+            p.staff_allocated = true;
+            p.materials_ready = true;
+            p.prereqs_met = true;
+        }
+
+        // Post-release / rehab / contraband records
+        if let Some(prisoner) = world.prisoners.first().cloned() {
+            let pid_u64 = prisoner.id;
+            world.post_release_records.push(alc_world::PostReleaseRecord {
+                id: world.next_post_release_id,
+                prisoner_id: pid_u64.raw(),
+                name: prisoner.name.clone(),
+                reason: "transfer".to_string(),
+                day: 3,
+                sentence_info: alc_world::PostReleaseSentenceInfo {
+                    sentence_days: prisoner.sentence_days,
+                    sentence_served_days: prisoner.sentence_served_days,
+                    classification: prisoner.classification,
+                    escape_motivation_at_exit: 0.1,
+                },
+                outcome_seed: 42,
+            });
+            world.next_post_release_id += 1;
+            world.rehab_records.entry(pid_u64).or_default().push(alc_world::RehabProgramRecord {
+                program: alc_social::RehabProgram::Education,
+                enrolled_day: 1,
+                progress_days: 2,
+                progress_sum: 0.2,
+                completed: false,
+                dropped: false,
+                attendance_days: 2,
+                last_attended_day: Some(2),
+                failure_reason: None,
+            });
+            world.contraband_state.entry(pid_u64).or_default().flags_confiscated = true;
+        world.resolve_contraband_case(77, alc_core::SimTime::from_secs(3600));
+        }
+
+        manager.save(&world).unwrap();
+        let loaded = manager.load().unwrap();
+
+        assert_eq!(loaded.construction_queue.len(), world.construction_queue.len());
+        let lp = &loaded.construction_queue[0];
+        assert_eq!(lp.id, pid);
+        assert_eq!(lp.status, alc_world::ConstructionStatus::InProgress);
+        assert_eq!(lp.progress_days, 2);
+        assert!(lp.staff_allocated && lp.materials_ready && lp.prereqs_met);
+
+        assert_eq!(loaded.post_release_records.len(), world.post_release_records.len());
+        assert_eq!(loaded.post_release_records[0].reason, "transfer");
+        assert_eq!(loaded.next_post_release_id, world.next_post_release_id);
+
+        let loaded_rehab: usize = loaded.rehab_records.values().map(|v| v.len()).sum();
+        let world_rehab: usize = world.rehab_records.values().map(|v| v.len()).sum();
+        assert_eq!(loaded_rehab, world_rehab);
+        assert!(loaded.contraband_state.values().any(|s| s.flags_confiscated));
+        assert_eq!(loaded.resolved_contraband_at.get(&77).copied(), Some(alc_core::SimTime::from_secs(3600)));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

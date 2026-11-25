@@ -119,6 +119,17 @@ pub trait SimDriver {
     fn contraband_cases(&self) -> Vec<sumo::ContrabandCaseSummary>;
     /// Contraband inventory rollup by item category (0.05).
     fn contraband_inventory(&self) -> Vec<sumo::ContrabandInventorySummary>;
+    /// Resolve a contraband case by case id. Returns true if state changed.
+    /// Default no-op keeps the trait backward-compatible when the driver has no case store.
+    fn resolve_contraband_case(&mut self, _case_id: u64) -> bool { false }
+    /// Resolve a structured incident by id (0.05 control).
+    fn resolve_incident(&mut self, _incident_id: u64) -> bool { false }
+    /// Cancel a construction project (0.05 control).
+    fn cancel_construction(&mut self, _project_id: u64, _reason: &str) -> bool { false }
+    /// Mark a construction project failed (0.05 control).
+    fn fail_construction(&mut self, _project_id: u64, _reason: &str) -> bool { false }
+    /// Advance a construction project by days (0.05 control).
+    fn advance_construction(&mut self, _project_id: u64, _days: u32) -> bool { false }
     /// Resolved daily schedule timeline for a prisoner (0.05).
     fn schedule_timeline(&self, prisoner_id: u64) -> Option<sumo::ScheduleTimeline>;
     /// Budget snapshot over the trailing 30 days (0.05).
@@ -322,19 +333,25 @@ impl App {
     }
 
     /// Decision audit entries for the decision view, narrowed by the current
-    /// search query (actor / source / action / summary substring match).
+    /// search query (actor / source / action / summary substring match) and
+    /// optional validation filter.
     fn visible_decisions(&self) -> Vec<sumo::DecisionAuditRecord> {
         let all = self.driver.decision_audit_log().to_vec();
         let q = self.ui.query().trim().to_lowercase();
-        if q.is_empty() {
-            return all;
-        }
+        let vf = self.ui.decision_validation_filter.as_deref();
         all.into_iter()
             .filter(|d| {
-                d.actor.to_lowercase().contains(&q)
+                let q_ok = q.is_empty()
+                    || d.actor.to_lowercase().contains(&q)
                     || d.source.to_lowercase().contains(&q)
                     || d.action.to_lowercase().contains(&q)
-                    || d.summary.to_lowercase().contains(&q)
+                    || d.summary.to_lowercase().contains(&q);
+                let v_ok = match vf {
+                    None => true,
+                    Some("repaired") => d.validation.starts_with("repaired"),
+                    Some(v) => d.validation == v,
+                };
+                q_ok && v_ok
             })
             .collect()
     }
@@ -392,6 +409,8 @@ impl App {
             paused: self.paused,
             ticks_per_second: self.ticks_per_second,
             status_msg: self.status_msg.clone(),
+            save_dir: self.save_dir.display().to_string(),
+            autosave_days: self.autosave_days,
         };
         let obs = self.driver.observation();
         // Lists are filtered through [`App::visible_*`] so the search query in
@@ -416,6 +435,7 @@ impl App {
             policy: self.driver.policy_summary(),
             post_release_records: self.driver.post_release_records(),
             rehab_summaries: self.driver.rehab_summaries(),
+            rehab_program_catalog: self.driver.rehab_program_catalog(),
             rehab_overview: self.driver.rehab_overview(),
             contraband_cases: self.driver.contraband_cases(),
             contraband_inventory: self.driver.contraband_inventory(),
@@ -463,6 +483,14 @@ impl App {
         self.ui.selected_guard = guards.get(idx).map(|g| g.id);
         if matches!(self.ui.mode, ViewMode::IncidentReports) {
             self.ui.selected_incident = incidents.get(idx).map(|r| r.id);
+            let cases = self.driver.contraband_cases();
+            let current = self.ui.selected_contraband;
+            let still_valid = current.is_some_and(|id| cases.iter().any(|c| c.case_id == id));
+            self.ui.selected_contraband = if still_valid {
+                current
+            } else {
+                cases.first().map(|c| c.case_id)
+            };
         }
         if matches!(self.ui.mode, ViewMode::DecisionAudit) {
             self.ui.selected_decision = decisions.get(idx).map(|d| format!("{}|{}", d.actor, d.action));
@@ -585,25 +613,125 @@ impl App {
                 self.ui.mode = ViewMode::DecisionAudit;
                 self.ui.scroll = 0;
             }
-            KeyCode::Char('r') => {
-                if let Some(pid) = self.ui.selected_prisoner {
-                    let enrolled: Vec<String> = self.driver.rehab_summaries().into_iter().filter(|r| r.prisoner_id.raw() == pid).map(|r| r.program_key).collect();
-                    if let Some(prog) = self.driver.rehab_program_catalog().into_iter().find(|p| !enrolled.iter().any(|k| k == &p.key)) {
-                        let ok = self.driver.enroll_rehab(pid, &prog.key);
-                        self.notify(if ok { format!("Enrolled P{pid} in {}", prog.name) } else { format!("Enroll failed for P{pid}") });
+            KeyCode::Char('t') | KeyCode::Char('T') => {
+                if matches!(self.ui.mode, ViewMode::Prisoner | ViewMode::Warden) {
+                    let catalog = self.driver.rehab_program_catalog();
+                    if catalog.is_empty() {
+                        self.notify("No rehab programs available");
                     } else {
-                        self.notify(format!("P{pid} already enrolled in all programs"));
+                        let next = self
+                            .ui
+                            .selected_rehab
+                            .map(|i| (i as usize + 1) % catalog.len() as usize)
+                            .unwrap_or(0);
+                        self.ui.selected_rehab = Some(next as u64);
+                        if let Some(p) = catalog.get(next) {
+                            self.notify(format!("Selected rehab program: {}", p.name));
+                        }
+                    }
+                }
+            }
+            KeyCode::Char('r') => {
+                if matches!(self.ui.mode, ViewMode::Prisoner | ViewMode::Warden) {
+                    if let Some(pid) = self.ui.selected_prisoner {
+                        let catalog = self.driver.rehab_program_catalog();
+                        let idx = self.ui.selected_rehab.unwrap_or(0) as usize;
+                        if let Some(prog) = catalog.get(idx).or_else(|| catalog.first()) {
+                            self.ui.selected_rehab = Some(catalog.iter().position(|p| p.key == prog.key).unwrap_or(0) as u64);
+                            let ok = self.driver.enroll_rehab(pid, &prog.key);
+                            self.notify(if ok { format!("Enrolled P{pid} in {}", prog.name) } else { format!("Enroll failed for P{pid} ({})", prog.name) });
+                        } else {
+                            self.notify("No rehab programs available");
+                        }
+                    } else {
+                        self.notify("Select a prisoner to enroll in rehab");
                     }
                 }
             }
             KeyCode::Char('R') => {
-                if let Some(pid) = self.ui.selected_prisoner {
-                    if let Some(row) = self.driver.rehab_summaries().into_iter().find(|r| r.prisoner_id.raw() == pid) {
-                        let ok = self.driver.drop_rehab(pid, &row.program_key);
-                        self.notify(if ok { format!("Dropped P{pid} from {}", row.program) } else { format!("Drop failed for P{pid}") });
+                if matches!(self.ui.mode, ViewMode::Prisoner | ViewMode::Warden) {
+                    if let Some(pid) = self.ui.selected_prisoner {
+                        let catalog = self.driver.rehab_program_catalog();
+                        let idx = self.ui.selected_rehab.unwrap_or(0) as usize;
+                        let selected_key = catalog.get(idx).map(|p| p.key.clone());
+                        let rows: Vec<_> = self.driver.rehab_summaries().into_iter().filter(|r| r.prisoner_id.raw() == pid).collect();
+                        let target = selected_key
+                            .as_ref()
+                            .and_then(|k| rows.iter().find(|r| &r.program_key == k))
+                            .or_else(|| rows.first());
+                        if let Some(row) = target {
+                            let ok = self.driver.drop_rehab(pid, &row.program_key);
+                            self.notify(if ok { format!("Dropped P{pid} from {}", row.program) } else { format!("Drop failed for P{pid} ({})", row.program) });
+                        } else {
+                            self.notify(format!("P{pid} has no active rehab enrollment"));
+                        }
                     } else {
-                        self.notify(format!("P{pid} has no active rehab enrollment"));
+                        self.notify("Select a prisoner to drop from rehab");
                     }
+                }
+            }
+            KeyCode::Char('f') => {
+                if matches!(self.ui.mode, ViewMode::IncidentReports) {
+                    let cases = self.driver.contraband_cases();
+                    if cases.is_empty() {
+                        self.ui.selected_contraband = None;
+                        self.notify("No contraband cases");
+                    } else {
+                        let cur = self.ui.selected_contraband;
+                        let idx = cur.and_then(|id| cases.iter().position(|c| c.case_id == id)).unwrap_or(0);
+                        let next = (idx + 1) % cases.len();
+                        self.ui.selected_contraband = Some(cases[next].case_id);
+                        self.notify(format!("Selected contraband case #{}", cases[next].case_id));
+                    }
+                }
+            }
+            KeyCode::Char('F') => {
+                if matches!(self.ui.mode, ViewMode::IncidentReports) {
+                    if let Some(case_id) = self.ui.selected_contraband {
+                        let ok = self.driver.resolve_contraband_case(case_id);
+                        self.notify(if ok {
+                            format!("Resolved contraband case #{case_id}")
+                        } else {
+                            format!("Contraband case #{case_id} already resolved / unavailable")
+                        });
+                    } else {
+                        self.notify("No contraband case selected");
+                    }
+                }
+            }
+            KeyCode::Char('m') | KeyCode::Char('M') => {
+                if matches!(self.ui.mode, ViewMode::IncidentReports) {
+                    self.ui.cycle_incident_min_severity();
+                    let msg = match self.ui.filter().min_severity {
+                        None => "Incident severity filter: all".to_string(),
+                        Some(s) if s >= 0.74 => "Incident severity filter: critical (>=75%)".to_string(),
+                        Some(_) => "Incident severity filter: high+ (>=40%)".to_string(),
+                    };
+                    self.ui.scroll = 0;
+                    self.notify(msg);
+                }
+            }
+            KeyCode::Char('o') | KeyCode::Char('O') => {
+                if matches!(self.ui.mode, ViewMode::IncidentReports) {
+                    self.ui.cycle_incident_resolved();
+                    let msg = match self.ui.filter().resolved {
+                        None => "Incident status filter: all".to_string(),
+                        Some(false) => "Incident status filter: open only".to_string(),
+                        Some(true) => "Incident status filter: resolved only".to_string(),
+                    };
+                    self.ui.scroll = 0;
+                    self.notify(msg);
+                }
+            }
+            KeyCode::Char('d') | KeyCode::Char('D') => {
+                if matches!(self.ui.mode, ViewMode::DecisionAudit) {
+                    self.ui.cycle_decision_validation_filter();
+                    let msg = match self.ui.decision_validation_filter.as_deref() {
+                        None => "Decision filter: all".to_string(),
+                        Some(v) => format!("Decision filter: {v}"),
+                    };
+                    self.ui.scroll = 0;
+                    self.notify(msg);
                 }
             }
             KeyCode::Up | KeyCode::Left | KeyCode::Char('k' | 'h') => {
@@ -670,6 +798,7 @@ mod tests {
         sim: sumo::Sim,
         ticks: u32,
         lockdown: bool,
+        autosave_enables: Vec<(std::path::PathBuf, u64)>,
     }
 
     impl SimDriver for MockDriver {
@@ -700,7 +829,10 @@ mod tests {
         fn set_rehab_funding(&mut self, multiplier: f32) { self.sim.set_rehab_funding(multiplier); }
         fn set_intake_paused(&mut self, paused: bool) { self.sim.set_intake_paused(paused); }
         fn save(&self, _dir: &std::path::Path) -> Result<(), String> { Ok(()) }
-        fn enable_autosave(&mut self, dir: std::path::PathBuf, interval_days: u64) { self.sim.enable_autosave(dir, interval_days); }
+        fn enable_autosave(&mut self, dir: std::path::PathBuf, interval_days: u64) {
+            self.autosave_enables.push((dir.clone(), interval_days));
+            self.sim.enable_autosave(dir, interval_days);
+        }
         fn maybe_autosave(&mut self) -> Result<bool, String> { self.sim.maybe_autosave().map_err(|e| e.to_string()) }
         fn incident_log(&self) -> Vec<sumo::WorldEvent> { self.sim.incident_log() }
         fn incident_records(&self) -> Vec<sumo::IncidentRecord> { self.sim.incident_records() }
@@ -729,7 +861,12 @@ mod tests {
 
     fn app() -> App {
         App::new(
-            Box::new(MockDriver { sim: sumo::Sim::new(7), ticks: 0, lockdown: false }),
+            Box::new(MockDriver {
+                sim: sumo::Sim::new(7),
+                ticks: 0,
+                lockdown: false,
+                autosave_enables: Vec::new(),
+            }),
             TuiOptions::default(),
         )
     }
