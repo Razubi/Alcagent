@@ -26,6 +26,8 @@ docs/
 | [`sumo/SUMO_ENGINE.md`](sumo/SUMO_ENGINE.md) | Engine product & system design |
 | [`sumo/SUMO_API.md`](sumo/SUMO_API.md) | Complete API reference with examples and gotchas |
 | [`sumo/sumo-engine-research.md`](sumo/sumo-engine-research.md) | Deep research: architecture, GUI, determinism, backlog, questions |
+| [`sumo/world-expansion-plan.md`](sumo/world-expansion-plan.md) | **v0.5 plan: living town + prison coupling, GUI rewrite, roadmap** |
+| [`sumo/sumo-gui-and-support-plan.md`](sumo/sumo-gui-and-support-plan.md) | sumo GUI shell & long-term support annex |
 
 The canonical, maintained engine docs (including engine-owned internal design/Reports) also
 live in the standalone repository at `../sumo/docs/`.
