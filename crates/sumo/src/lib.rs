@@ -97,6 +97,7 @@ pub struct Sim {
     /// Engine persistence state (S0: save/load, logs, policy mode).
     /// This is the SINGLE SOURCE OF TRUTH for all engine-side state.
     pub engine_state: EngineState,
+    last_autosave_error: Option<String>,
 }
 
 impl Sim {
@@ -107,6 +108,7 @@ impl Sim {
             world: World::new(seed),
             speed: TimeSpeed::Paused,
             engine_state: EngineState::default(),
+            last_autosave_error: None,
         }
     }
 
@@ -168,6 +170,11 @@ impl Sim {
     /// Record a structured decision audit entry.
     pub fn record_decision_audit(&mut self, record: DecisionAuditRecord) {
         self.engine_state.decision_audit.push(record);
+        let max = crate::invariants::MAX_LOG_ENTRIES;
+        if self.engine_state.decision_audit.len() > max {
+            let excess = self.engine_state.decision_audit.len() - max;
+            self.engine_state.decision_audit.drain(..excess);
+        }
         self.trim_engine_logs();
     }
 
@@ -286,7 +293,9 @@ impl Sim {
         if history.last().map(|&(_, p)| p) != Some(pop) {
             history.push((self.world.time, pop));
         }
-        let _ = self.maybe_autosave();
+        if let Err(e) = self.maybe_autosave() {
+            tracing::warn!(error = %e, "autosave failed");
+        }
     }
 
     /// Copy newly-emitted conflict events into the engine incident log and
@@ -295,7 +304,6 @@ impl Sim {
     /// are derived from the event's `causes` and from prior incidents sharing a
     /// participant or kind — no self-referential placeholders.
     fn pump_events_into_engine_log(&mut self, after_id: u64) {
-        use alc_events::EventKind;
         let new: Vec<WorldEvent> = self
             .world
             .events
@@ -303,56 +311,82 @@ impl Sim {
             .filter(|e| e.id > after_id)
             .cloned()
             .collect();
-        for event in new {
-            if !matches!(
-                event.kind,
-                EventKind::Fight
-                    | EventKind::Argument
-                    | EventKind::Threat
-                    | EventKind::Theft
-                    | EventKind::GangClash
-                    | EventKind::Protests
-                    | EventKind::PropertyDamage
-                    | EventKind::MedicalEmergency
-                    | EventKind::EscapeAttempt
-                    | EventKind::EscapePrevented
-                    | EventKind::EscapeSucceeded
-                    | EventKind::ContrabandFound
-                    | EventKind::Death
-                    | EventKind::TransferOut
-                    | EventKind::ConstructionComplete
-                    | EventKind::ConstructionCancelled
-                    | EventKind::ConstructionFailed
-            ) {
-                continue;
-            }
-            let id = self
-                .engine_state
-                .incident_sidecar
-                .iter()
-                .map(|inc| inc.id)
-                .max()
-                .unwrap_or(0)
-                + 1;
-            let severity = match event.kind {
-                EventKind::Fight | EventKind::GangClash | EventKind::EscapeSucceeded | EventKind::Death => 0.9,
-                EventKind::EscapeAttempt | EventKind::MedicalEmergency | EventKind::TransferOut => 0.7,
-                EventKind::Threat | EventKind::Theft | EventKind::ContrabandFound => 0.6,
-                EventKind::ConstructionComplete => 0.2,
-                _ => 0.4,
-            };
-            let location = format!("facility {}", event.actors.first().copied().unwrap_or(0));
-            let known_prisoners: Vec<alc_core::PrisonerId> =
-                self.world.prisoners.iter().map(|p| p.id).collect();
-            // Avoid cloning the whole bounded sidecar per event (O(n^2) on long
-            // runs): pass a read-only view; the helper only scans by reference.
-            let prior = &self.engine_state.incident_sidecar[..];
-            let incident = incidents::incident_from_world_event(
-                &event, id, prior, &known_prisoners, severity, location,
-            );
-            self.engine_state.incident_sidecar.push(incident);
-            self.engine_state.incidents.push(event);
+        for event in &new {
+            self.mirror_conflict_event_to_engine_log(event);
         }
+    }
+
+    fn is_engine_mirrored_kind(kind: alc_events::EventKind) -> bool {
+        use alc_events::EventKind;
+        matches!(
+            kind,
+            EventKind::Fight
+                | EventKind::Argument
+                | EventKind::Threat
+                | EventKind::Theft
+                | EventKind::GangClash
+                | EventKind::Protests
+                | EventKind::PropertyDamage
+                | EventKind::MedicalEmergency
+                | EventKind::EscapeAttempt
+                | EventKind::EscapePrevented
+                | EventKind::EscapeSucceeded
+                | EventKind::ContrabandFound
+                | EventKind::Death
+                | EventKind::TransferOut
+                | EventKind::ConstructionComplete
+                | EventKind::ConstructionCancelled
+                | EventKind::ConstructionFailed
+        )
+    }
+
+    /// Mirror one conflict/incident-kind event into engine incident stores with
+    /// dedupe by world event id. Public emission and tick pumping both route
+    /// here so mirrored kinds are consistently recorded.
+    pub(crate) fn mirror_conflict_event_to_engine_log(&mut self, event: &WorldEvent) {
+        if !Self::is_engine_mirrored_kind(event.kind) {
+            return;
+        }
+        if self.engine_state.incidents.iter().any(|e| e.id == event.id) {
+            return;
+        }
+        let next_id = self
+            .engine_state
+            .incident_sidecar
+            .iter()
+            .map(|inc| inc.id)
+            .max()
+            .unwrap_or(0)
+            .max(self.engine_state.incident_sidecar.len() as u64)
+            + 1;
+        let severity = match event.kind {
+            alc_events::EventKind::Fight
+            | alc_events::EventKind::GangClash
+            | alc_events::EventKind::EscapeSucceeded
+            | alc_events::EventKind::Death => 0.9,
+            alc_events::EventKind::EscapeAttempt
+            | alc_events::EventKind::MedicalEmergency
+            | alc_events::EventKind::TransferOut => 0.7,
+            alc_events::EventKind::Threat
+            | alc_events::EventKind::Theft
+            | alc_events::EventKind::ContrabandFound => 0.6,
+            alc_events::EventKind::ConstructionComplete => 0.2,
+            _ => 0.4,
+        };
+        let location = format!("facility {}", event.actors.first().copied().unwrap_or(0));
+        let known_prisoners: Vec<alc_core::PrisonerId> =
+            self.world.prisoners.iter().map(|p| p.id).collect();
+        let prior = &self.engine_state.incident_sidecar[..];
+        let incident = incidents::incident_from_world_event(
+            event,
+            next_id,
+            prior,
+            &known_prisoners,
+            severity,
+            location,
+        );
+        self.engine_state.incident_sidecar.push(incident);
+        self.engine_state.incidents.push(event.clone());
         self.trim_engine_logs();
     }
 
@@ -385,6 +419,9 @@ impl Sim {
                 }
                 if inc.consequence.is_some() && !live.contains(&inc.consequence.unwrap()) {
                     inc.consequence = None;
+                }
+                if !inc.causal_chain.is_empty() {
+                    inc.causal_chain.retain(|link| !link.is_incident || live.contains(&link.source_id));
                 }
             }
         }
@@ -1651,10 +1688,14 @@ impl Sim {
         let manager = SaveManager::new(&dir);
         let (world, engine_state) = manager.load_with_engine()?;
 
+        let speed = world.speed;
         Ok(Sim {
             world,
-            speed: TimeSpeed::Paused,
-            engine_state: engine_state.map(|es| EngineState::from_persistence(es, &dir)).unwrap_or_default(),
+            speed,
+            engine_state: engine_state
+                .map(|es| EngineState::from_persistence(es, &dir))
+                .unwrap_or_default(),
+            last_autosave_error: None,
         })
     }
 
@@ -1686,6 +1727,11 @@ impl Sim {
         );
     }
 
+    /// Last autosave/save error surfaced by tick or manual autosave.
+    pub fn last_autosave_error(&self) -> Option<&str> {
+        self.last_autosave_error.as_deref()
+    }
+
     /// Save when the autosave interval has elapsed. Returns true when written.
     pub fn maybe_autosave(&mut self) -> Result<bool, SaveError> {
         let (due, dir) = match &self.engine_state.autosave {
@@ -1695,11 +1741,19 @@ impl Sim {
         if !due {
             return Ok(false);
         }
-        self.save(&dir)?;
-        if let Some(a) = &mut self.engine_state.autosave {
-            a.mark_saved(self.world.days_simulated);
+        match self.save(&dir) {
+            Ok(()) => {
+                self.last_autosave_error = None;
+                if let Some(a) = &mut self.engine_state.autosave {
+                    a.mark_saved(self.world.days_simulated);
+                }
+                Ok(true)
+            }
+            Err(e) => {
+                self.last_autosave_error = Some(e.to_string());
+                Err(e)
+            }
         }
-        Ok(true)
     }
 
     /// Engine invariants: population ≤ capacity, integral non-negative money, unique entity ids,

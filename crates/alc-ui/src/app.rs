@@ -182,6 +182,10 @@ pub struct App {
     save_dir: std::path::PathBuf,
     autosave_days: u64,
     status_msg: Option<String>,
+    /// Incident ids already seen by the auto-pause-on-critical logic this
+    /// session; a *new* critical id pauses the sim, so resuming (`SPACE`)
+    /// works instead of re-pausing forever.
+    seen_critical: Vec<u64>,
 }
 
 impl App {
@@ -195,6 +199,7 @@ impl App {
             save_dir: opts.save_dir,
             autosave_days: opts.autosave_days,
             status_msg: None,
+            seen_critical: Vec::new(),
         };
         // The engine starts paused by default; mirror our playback state.
         let engine_speed = if app.paused {
@@ -335,9 +340,19 @@ impl App {
     }
 
     /// Incident records for the incident view, honoring the declarative
-    /// [`UiState`] filter through the driver.
+    /// [`UiState`] filter through the driver *and* the free-text query.
     fn visible_incidents(&self) -> Vec<sumo::IncidentRecord> {
-        self.driver.incident_records_filtered(self.ui.filter())
+        let q = self.ui.query().trim().to_lowercase();
+        self.driver
+            .incident_records_filtered(self.ui.filter())
+            .into_iter()
+            .filter(|r| {
+                q.is_empty()
+                    || r.kind.to_lowercase().contains(&q)
+                    || r.location.to_lowercase().contains(&q)
+                    || r.disposition.to_lowercase().contains(&q)
+            })
+            .collect()
     }
 
     /// Decision audit entries for the decision view, narrowed by the current
@@ -426,25 +441,24 @@ impl App {
         Ok(())
     }
 
-    fn render(&self, frame: &mut Frame) {
-        let status = AppStatus {
-            paused: self.paused,
-            ticks_per_second: self.ticks_per_second,
-            status_msg: self.status_msg.clone(),
-            save_dir: self.save_dir.display().to_string(),
-            autosave_days: self.autosave_days,
-        };
-        let obs = self.driver.observation();
-        // Lists are filtered through [`App::visible_*`] so the search query in
-        // [`UiState`] narrows exactly what the (read-only) views render.
-        let prisoners = self.visible_prisoners();
-        let gangs = self.visible_gangs();
-        let guards = self.visible_guards();
-        let data = views::ViewData {
-            observation: obs,
-            prisoners,
-            gangs,
-            guards,
+    /// Assemble the read-only [`views::ViewData`] bundle the renderers use.
+    /// `map_frame` is fetched once per frame through the driver (no raw
+    /// `World` access — see the [`SimDriver`] docs); true totals come from the
+    /// driver unfiltered by the observer search so view titles can show both
+    /// visible and total counts.
+    fn build_view_data(&self) -> views::ViewData {
+        views::ViewData {
+            observation: self.driver.observation(),
+            map_frame: self.driver.map_frame(),
+            total_prisoners: self.driver.prisoners().len(),
+            total_gangs: self.driver.gangs().len(),
+            total_guards: self.driver.guards().len(),
+            // Lists are filtered through [`App::visible_*`] so the search
+            // query in [`UiState`] narrows exactly what the (read-only) views
+            // render.
+            prisoners: self.visible_prisoners(),
+            gangs: self.visible_gangs(),
+            guards: self.visible_guards(),
             warden: self.driver.warden(),
             economy: self.driver.economy(),
             social_edges: self.driver.social_edges(),
@@ -463,7 +477,18 @@ impl App {
             contraband_inventory: self.driver.contraband_inventory(),
             budget_snapshot: self.driver.budget_snapshot(),
             selected_schedule: self.ui.selected_prisoner.and_then(|id| self.driver.schedule_timeline(id)),
+        }
+    }
+
+    fn render(&self, frame: &mut Frame) {
+        let status = AppStatus {
+            paused: self.paused,
+            ticks_per_second: self.ticks_per_second,
+            status_msg: self.status_msg.clone(),
+            save_dir: self.save_dir.display().to_string(),
+            autosave_days: self.autosave_days,
         };
+        let data = self.build_view_data();
         views::draw(frame, &data, &self.ui, &status);
     }
 

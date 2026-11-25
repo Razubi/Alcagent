@@ -720,6 +720,9 @@ pub fn deliver(sim: &mut Sim, id: PrisonerId, decision: Decision) -> DecisionOut
         return outcome;
     }
     let events = apply(&mut sim.world, id, &result);
+    if events.iter().any(|e| e.kind == EventKind::EscapeSucceeded) {
+        sim.engine_state.post_release.insert(id, false);
+    }
     let validation = match &result {
         ValidationResult::Repaired(_) => "repaired".to_string(),
         ValidationResult::Accepted(_) => "accepted".to_string(),
@@ -743,51 +746,11 @@ pub fn deliver(sim: &mut Sim, id: PrisonerId, decision: Decision) -> DecisionOut
     DecisionOutcome { agent: id, decision, result, applied: true }
 }
 
-/// Mirror conflict events produced by a delivered decision into the engine's
-/// incident log and sidecar (R1/R6). Only conflict-kind events are mirrored;
-/// routine social/rumor events remain on the world event bus only.
+/// Mirror conflict/incident-kind events produced by a delivered decision into
+/// the engine's incident log and sidecar. Deduped by world event id.
 fn mirror_conflict_incidents(sim: &mut Sim, events: &[WorldEvent]) {
-    use crate::incidents::incident_from_world_event;
-
-    // Derive the next id from the highest existing sidecar id (at least the
-    // length, so an empty sidecar starts at 1). Using max+1 rather than
-    // len+1 avoids collisions after loading a save whose incident ids were
-    // assigned by the lead's tick pump and then compacted/re-indexed.
-    let mut next_id = sim
-        .incident_sidecar()
-        .iter()
-        .map(|inc| inc.id)
-        .max()
-        .unwrap_or(0)
-        .max(sim.incident_sidecar().len() as u64)
-        + 1;
-    let known_prisoners: Vec<PrisonerId> =
-        sim.world.prisoners.iter().map(|p| p.id).collect();
     for event in events {
-        if !is_conflict_kind(event.kind) {
-            continue;
-        }
-        let id = next_id;
-        next_id += 1;
-
-        sim.record_incident(event.clone());
-
-        let location = current_facility(&sim.world, id_of_first_actor(event, &sim.world))
-            .map(|fid| format!("facility {fid}"))
-            .unwrap_or_else(|| "unknown facility".to_string());
-
-        // Snapshot the current sidecar so this incident can link to a real
-        // prior cause instead of a self-referential placeholder.
-        let prior: Vec<_> = sim.incident_sidecar().to_vec();
-        let incident = incident_from_world_event(
-            event,
-            id,
-            &prior,
-            &known_prisoners,
-            severity_for(event.kind),
-            location,
-        );
-        sim.record_sidecar_incident(incident);
+        sim.mirror_conflict_event_to_engine_log(event);
     }
 }
 
@@ -1102,11 +1065,9 @@ fn ev(at: SimTime, kind: EventKind, summary: String, actors: Vec<u64>) -> WorldE
 /// Resolve a fight into world effects and an event (Directive §8).
 fn fight_events(world: &mut World, a: PrisonerId, b: PrisonerId) -> Vec<WorldEvent> {
     let Some(pa) = world.prisoners.iter().find(|p| p.id == a).cloned() else { return Vec::new() };
-    if !world.prisoners.iter().any(|p| p.id == b) {
-        return Vec::new();
-    }
+    let Some(pb) = world.prisoners.iter().find(|p| p.id == b).cloned() else { return Vec::new() };
     let mut rng = RngStream::new(world.seed, world.time.secs);
-    let tension = 0.5 + (pa.traits.aggression + pa.traits.aggression) * 0.15;
+    let tension = 0.5 + (pa.traits.aggression + pb.traits.aggression) * 0.15;
     let outcome =
         resolve_conflict(&mut rng, tension, 0.15, pa.aggression_modifier(), pa.traits.discipline, 0.1);
     let _effects = apply_outcome(&mut world.social, &mut world.gangs, &[a, b], outcome, 0.6, None);
@@ -1125,12 +1086,105 @@ fn fight_events(world: &mut World, a: PrisonerId, b: PrisonerId) -> Vec<WorldEve
     }
 }
 
+fn derive_post_release_outcomes(
+    seed: u64,
+    prisoner_id: u64,
+    reason: &str,
+    sentence_days: u32,
+    served_days: u32,
+    rehab_progress: f32,
+) -> (bool, bool, bool, bool) {
+    let mut rng = RngStream::new(seed, prisoner_id ^ 0x9E37_79B9_7F4A_7C15);
+    let served_fraction = (served_days as f32 / sentence_days.max(1) as f32).clamp(0.0, 1.0);
+    let stability = (served_fraction * 0.55 + rehab_progress.clamp(0.0, 1.0) * 0.45).clamp(0.0, 0.95);
+    let penalty = if reason == "escape" { 0.3 } else { 0.0 };
+    let employment = rng.chance((stability * 0.85 + 0.05).min(0.95) as f64);
+    let housing = rng.chance((stability * 0.8 + 0.1).min(0.95) as f64);
+    let violation = rng.chance((0.32 - stability * 0.27 + penalty).clamp(0.02, 0.9) as f64);
+    let return_to_custody = violation && rng.chance(0.55);
+    (employment, housing, violation, return_to_custody)
+}
+
+fn record_escape_post_release(world: &mut World, prisoner: &alc_world::Prisoner) {
+    let outcome_seed = RngStream::new(
+        world.seed,
+        prisoner.id.raw() ^ (world.days_simulated << 12) ^ 0x0E5C_A9E1,
+    )
+    .next_u64();
+    let rehab_progress = world
+        .rehab_records
+        .get(&prisoner.id)
+        .map(|records| {
+            let done = records.iter().filter(|r| r.completed).count() as f32;
+            let attended: u32 = records.iter().map(|r| r.attendance_days).sum();
+            (done * 0.6 + (attended.min(180) as f32 / 180.0) * 0.4).clamp(0.0, 1.0)
+        })
+        .unwrap_or(0.0);
+    let (employment, housing, violation, return_to_custody) = derive_post_release_outcomes(
+        outcome_seed,
+        prisoner.id.raw(),
+        "escape",
+        prisoner.sentence_days,
+        prisoner.sentence_served_days,
+        rehab_progress,
+    );
+    let rec = alc_world::PostReleaseRecord {
+        id: world.next_post_release_id,
+        prisoner_id: prisoner.id.raw(),
+        name: prisoner.name.clone(),
+        reason: "escape".to_string(),
+        day: world.days_simulated,
+        sentence_info: alc_world::PostReleaseSentenceInfo {
+            sentence_days: prisoner.sentence_days,
+            sentence_served_days: prisoner.sentence_served_days,
+            classification: prisoner.classification,
+            escape_motivation_at_exit: prisoner.escape_motivation(),
+        },
+        outcome_seed,
+        employment,
+        housing,
+        violation,
+        return_to_custody,
+    };
+    world.post_release_outcomes.push(alc_world::PostReleaseOutcomeRecord {
+        id: world.next_post_release_id,
+        post_release_id: rec.id,
+        prisoner_id: prisoner.id.raw(),
+        name: prisoner.name.clone(),
+        day: world.days_simulated,
+        outcome_seed,
+        employment,
+        housing,
+        violation,
+        return_to_custody,
+    });
+    world.next_post_release_id += 1;
+    world.post_release_records.push(rec);
+    let ev = WorldEvent::new(
+        0,
+        world.time,
+        EventKind::Release,
+        format!("Prisoner {} left the institution: escape", prisoner.id.raw()),
+    )
+    .with_actor(prisoner.id.raw())
+    .with_cause("lifecycle: post-release record");
+    world.history.push(ev.clone());
+    world.events.emit(ev);
+}
+
 /// Resolve an escape attempt into world consequences and an event (Directive §16).
 fn escape_events(world: &mut World, p: PrisonerId) -> Vec<WorldEvent> {
-    let Some(prisoner) = world.prisoners.iter().find(|x| x.id == p).cloned() else { return Vec::new() };
+    let Some(prisoner) = world.prisoners.iter().find(|x| x.id == p).cloned() else {
+        return Vec::new();
+    };
     let mut rng = RngStream::new(world.seed, world.time.secs);
-    let outcome =
-        resolve_escape_attempt(&mut rng, prisoner.escape_motivation(), world.policies.security_level, 0.5, 0.2);
+    let outcome = resolve_escape_attempt(
+        &mut rng,
+        prisoner.escape_motivation(),
+        world.policies.security_level,
+        0.5,
+        0.2,
+    );
     let consequences = apply_escape_consequences(outcome, world.policies.security_level, &[p]);
     let kind = match outcome {
         EscapeOutcome::SuccessfulEscape => EventKind::EscapeSucceeded,
@@ -1138,9 +1192,24 @@ fn escape_events(world: &mut World, p: PrisonerId) -> Vec<WorldEvent> {
         _ => EventKind::EscapeAttempt,
     };
     if outcome == EscapeOutcome::SuccessfulEscape {
-        // B6: the engine path must remove an escaped prisoner just like the
-        // world's daily escape sweep does, and prune all runtime maps so the
-        // pawn-location invariant stays clean.
+        record_escape_post_release(world, &prisoner);
+        // Purge gang membership with disband events, matching world escape path.
+        let mut disbanded = 0usize;
+        for gang in &mut world.gangs {
+            gang.lose(p);
+        }
+        let before = world.gangs.len();
+        world.gangs.retain(|g| !g.members.is_empty());
+        disbanded = before.saturating_sub(world.gangs.len());
+        for _ in 0..disbanded {
+            world.events.emit(WorldEvent::new(
+                0,
+                world.time,
+                EventKind::GangDisbanded,
+                "Gang dissolved after losing all members",
+            ));
+        }
+
         world.prisoners.retain(|x| x.id != p);
         world.prisoner_location.remove(&p);
         world.current_activity.remove(&p);
@@ -1148,15 +1217,20 @@ fn escape_events(world: &mut World, p: PrisonerId) -> Vec<WorldEvent> {
         let live: std::collections::HashSet<alc_core::PrisonerId> =
             world.prisoners.iter().map(|x| x.id).collect();
         world.social.retain(&live);
-        for gang in &mut world.gangs {
-            gang.lose(p);
-        }
-        world.gangs.retain(|g| !g.members.is_empty());
+        world.rehab_records.remove(&p);
+        world.contraband_state.remove(&p);
         // Mirror institutional consequences from the world's escape path.
-        world.policies.security_level = (world.policies.security_level + consequences.security_level_delta).clamp(0.0, 1.0);
+        world.policies.security_level = (world.policies.security_level
+            + consequences.security_level_delta)
+            .clamp(0.0, 1.0);
         if consequences.lockdown_recommended {
             world.policies.lockdown = true;
         }
     }
-    vec![ev(world.time, kind, format!("escape attempt outcome: {outcome:?}"), vec![p.raw()])]
+    vec![ev(
+        world.time,
+        kind,
+        format!("escape attempt outcome: {outcome:?}"),
+        vec![p.raw()],
+    )]
 }

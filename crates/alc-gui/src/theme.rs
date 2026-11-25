@@ -99,7 +99,7 @@ pub fn metric_bar(ui: &mut egui::Ui, label: &str, value: f32, good: bool) {
 /// Render a compact "key: value" line, with the key muted.
 pub fn kv(ui: &mut egui::Ui, key: &str, value: impl Into<egui::WidgetText>) {
     ui.horizontal(|ui| {
-        ui.add(egui::Label::new(egui::RichText::new(key).color(MUTED)).wrap(false));
+        ui.add(egui::Label::new(egui::RichText::new(key).color(MUTED)));
         ui.label(value);
     });
 }

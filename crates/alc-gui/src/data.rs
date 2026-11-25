@@ -491,6 +491,7 @@ pub fn name_map(world: &World) -> HashMap<PrisonerId, String> {
 /// box never re-clones the prison population.
 #[derive(Debug, Clone)]
 pub struct Snapshot {
+    pub speed: alc_core::TimeSpeed,
     pub observation: sumo::Observation,
     pub stats: Stats,
     pub prisoners: Vec<PrisonerSummary>,
@@ -508,6 +509,7 @@ pub struct Snapshot {
     pub budget: BudgetSnapshot,
     pub rehab: RehabOverview,
     pub rehab_catalog: Vec<RehabProgramInfo>,
+    pub rehab_rows: Vec<sumo::RehabEnrollmentSummary>,
     pub contraband: Vec<sumo::ContrabandCaseSummary>,
     pub post_release: Vec<PostReleaseSummary>,
     pub map: MapFrame,
@@ -554,7 +556,9 @@ pub fn capture(sim: &sumo::Sim, selected_prisoner: Option<PrisonerId>) -> Snapsh
         }
     }
 
-    let events: Vec<sumo::WorldEvent> = sim.events().recent().rev().take(300).cloned().collect();
+    let mut events: Vec<sumo::WorldEvent> = sim.events().recent().cloned().collect();
+    events.reverse();
+    events.truncate(300);
     let selected_agent = selected_prisoner.and_then(|id| sim.agent_observation(id));
     let selected_schedule = selected_prisoner.and_then(|id| sim.schedule_timeline(id));
     let selected_parole = selected_prisoner
@@ -562,6 +566,7 @@ pub fn capture(sim: &sumo::Sim, selected_prisoner: Option<PrisonerId>) -> Snapsh
         .map(|status| format!("{status:?}"));
 
     Snapshot {
+        speed: sim.speed(),
         observation: sim.observation(),
         stats: sim.stats_since(sumo::SimTime::EPOCH),
         prisoners: sim.prisoners(),
@@ -579,6 +584,7 @@ pub fn capture(sim: &sumo::Sim, selected_prisoner: Option<PrisonerId>) -> Snapsh
         budget: sim.budget_snapshot(),
         rehab: sim.rehab_overview(),
         rehab_catalog: sim.rehab_program_catalog(),
+        rehab_rows: sim.rehab_summaries(),
         contraband: sim.contraband_summaries(),
         post_release: sim.post_release_records(),
         map,

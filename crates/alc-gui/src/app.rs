@@ -71,8 +71,9 @@ pub struct ObserverState {
     pub selected_gang: Option<u64>,
     pub selected_guard: Option<u64>,
     pub selected_incident: Option<u64>,
+    pub selected_event: Option<u64>,
     pub selected_contraband: Option<u64>,
-    pub selected_decision: Option<String>,
+    pub selected_decision: Option<usize>,
     pub selected_facility: Option<u64>,
     pub construction_kind_index: usize,
     pub rehab_program_index: usize,
@@ -99,6 +100,7 @@ impl ObserverState {
             selected_gang: None,
             selected_guard: None,
             selected_incident: None,
+            selected_event: None,
             selected_contraband: None,
             selected_decision: None,
             selected_facility: None,
@@ -171,8 +173,6 @@ impl App {
             tick_debt: 0.0,
             settings_path,
         };
-        let speed = app.state.view; // view restored from settings; speed below
-        let _ = speed;
         app
     }
 
@@ -191,6 +191,10 @@ impl App {
         use Command::*;
         let mut persist = false;
         match command {
+            SetView(view) => {
+                self.state.view = view;
+                persist = true;
+            }
             SetSpeed(speed) => {
                 self.sim.set_speed(speed);
                 self.state.status = Some(format!("Playback: {speed:?}"));
@@ -438,9 +442,6 @@ impl eframe::App for App {
         }
     }
 
-    fn on_exit(&mut self) {
-        self.state.to_settings(self.sim.speed()).save(&self.settings_path);
-    }
 }
 
 /// Launch the native observer window with a fresh simulation from `seed`.

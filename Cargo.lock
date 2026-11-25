@@ -210,6 +210,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "alc-gui"
+version = "0.1.0"
+dependencies = [
+ "alc-core",
+ "alc-economy",
+ "alc-events",
+ "alc-guard",
+ "alc-prisoner",
+ "alc-social",
+ "alc-ui",
+ "alc-warden",
+ "alc-world",
+ "eframe",
+ "egui",
+ "serde",
+ "serde_json",
+ "sumo",
+]
+
+[[package]]
 name = "alc-persistence"
 version = "0.1.0"
 dependencies = [

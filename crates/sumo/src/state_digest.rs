@@ -169,6 +169,29 @@ pub fn compute_state_digest(engine_state: &EngineState) -> u64 {
         hash_decision(dec, &mut hasher);
     }
 
+    // Decision audit (Vec, append order is meaningful)
+    for rec in &engine_state.decision_audit {
+        rec.time.secs.hash(&mut hasher);
+        rec.actor.hash(&mut hasher);
+        rec.source.hash(&mut hasher);
+        rec.action.hash(&mut hasher);
+        rec.summary.hash(&mut hasher);
+        rec.validation.hash(&mut hasher);
+        rec.reason.hash(&mut hasher);
+        rec.rationale.hash(&mut hasher);
+        rec.repair_reason.hash(&mut hasher);
+        format!("{:?}", rec.outcome).hash(&mut hasher);
+    }
+
+    // Resolved contraband maps (deterministic ordering)
+    for case_id in &engine_state.resolved_contraband_cases {
+        case_id.hash(&mut hasher);
+    }
+    for (case_id, at) in &engine_state.resolved_contraband_at {
+        case_id.hash(&mut hasher);
+        at.secs.hash(&mut hasher);
+    }
+
     // Post-release tracking (sorted by key for a reproducible digest)
     let mut post_release: Vec<_> = engine_state.post_release.iter().collect();
     post_release.sort_by_key(|(pid, _)| pid.raw());
@@ -360,6 +383,106 @@ pub fn compute_world_digest(world: &alc_world::World) -> u64 {
     for (gid, fid) in guard_locs {
         gid.0.hash(&mut hasher);
         fid.0.hash(&mut hasher);
+    }
+
+    // Construction queue (order is meaningful)
+    for p in &world.construction_queue {
+        p.id.hash(&mut hasher);
+        format!("{:?}", p.kind).hash(&mut hasher);
+        p.wing.hash(&mut hasher);
+        p.capacity.hash(&mut hasher);
+        p.total_days.hash(&mut hasher);
+        p.progress_days.hash(&mut hasher);
+        p.cost.to_bits().hash(&mut hasher);
+        p.started_day.hash(&mut hasher);
+        format!("{:?}", p.status).hash(&mut hasher);
+        p.terminal_reason.hash(&mut hasher);
+        p.staff_allocated.hash(&mut hasher);
+        p.materials_ready.hash(&mut hasher);
+        p.prereqs_met.hash(&mut hasher);
+    }
+
+    // Contraband cases (deterministic by case id)
+    let mut contraband_cases: Vec<_> = world.contraband_cases.iter().collect();
+    contraband_cases.sort_by_key(|c| c.case_id);
+    for c in contraband_cases {
+        c.case_id.hash(&mut hasher);
+        c.discovered_at.secs.hash(&mut hasher);
+        c.discovering_guard.0.hash(&mut hasher);
+        c.holder.0.hash(&mut hasher);
+        format!("{:?}", c.item).hash(&mut hasher);
+        c.severity.to_bits().hash(&mut hasher);
+        format!("{:?}", c.disposition).hash(&mut hasher);
+        format!("{:?}", c.disciplinary_action).hash(&mut hasher);
+        c.summary.hash(&mut hasher);
+    }
+
+    // Contraband state (sorted by prisoner id)
+    let mut contraband_state: Vec<_> = world.contraband_state.iter().collect();
+    contraband_state.sort_by_key(|(pid, _)| pid.0);
+    for (pid, st) in contraband_state {
+        pid.0.hash(&mut hasher);
+        st.flags_confiscated.hash(&mut hasher);
+        st.flagged_days.hash(&mut hasher);
+        st.discovered_count.hash(&mut hasher);
+        let mut inv: Vec<_> = st.inventory.iter().collect();
+        inv.sort_by_key(|(k, _)| format!("{:?}", k));
+        for (item, count) in inv {
+            format!("{:?}", item).hash(&mut hasher);
+            count.hash(&mut hasher);
+        }
+    }
+
+    // Rehab records (sorted by prisoner id; record order preserved)
+    let mut rehab: Vec<_> = world.rehab_records.iter().collect();
+    rehab.sort_by_key(|(pid, _)| pid.0);
+    for (pid, records) in rehab {
+        pid.0.hash(&mut hasher);
+        for r in records {
+            format!("{:?}", r.program).hash(&mut hasher);
+            r.enrolled_day.hash(&mut hasher);
+            r.progress_days.hash(&mut hasher);
+            r.progress_sum.to_bits().hash(&mut hasher);
+            r.completed.hash(&mut hasher);
+            r.dropped.hash(&mut hasher);
+            r.attendance_days.hash(&mut hasher);
+            r.last_attended_day.hash(&mut hasher);
+            format!("{:?}", r.failure_reason).hash(&mut hasher);
+        }
+    }
+
+    // Post-release records/outcomes (deterministic by id)
+    let mut post_release_records: Vec<_> = world.post_release_records.iter().collect();
+    post_release_records.sort_by_key(|r| r.id);
+    for r in post_release_records {
+        r.id.hash(&mut hasher);
+        r.prisoner_id.hash(&mut hasher);
+        r.name.hash(&mut hasher);
+        r.reason.hash(&mut hasher);
+        r.day.hash(&mut hasher);
+        r.sentence_info.sentence_days.hash(&mut hasher);
+        r.sentence_info.sentence_served_days.hash(&mut hasher);
+        format!("{:?}", r.sentence_info.classification).hash(&mut hasher);
+        r.sentence_info.escape_motivation_at_exit.to_bits().hash(&mut hasher);
+        r.outcome_seed.hash(&mut hasher);
+        r.employment.hash(&mut hasher);
+        r.housing.hash(&mut hasher);
+        r.violation.hash(&mut hasher);
+        r.return_to_custody.hash(&mut hasher);
+    }
+    let mut post_release_outcomes: Vec<_> = world.post_release_outcomes.iter().collect();
+    post_release_outcomes.sort_by_key(|r| r.id);
+    for r in post_release_outcomes {
+        r.id.hash(&mut hasher);
+        r.post_release_id.hash(&mut hasher);
+        r.prisoner_id.hash(&mut hasher);
+        r.name.hash(&mut hasher);
+        r.day.hash(&mut hasher);
+        r.outcome_seed.hash(&mut hasher);
+        r.employment.hash(&mut hasher);
+        r.housing.hash(&mut hasher);
+        r.violation.hash(&mut hasher);
+        r.return_to_custody.hash(&mut hasher);
     }
 
     hasher.finish()
