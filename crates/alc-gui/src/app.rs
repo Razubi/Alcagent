@@ -73,7 +73,8 @@ pub struct ObserverState {
     pub selected_incident: Option<u64>,
     pub selected_event: Option<u64>,
     pub selected_contraband: Option<u64>,
-    pub selected_decision: Option<usize>,
+    /// Stable content key of the selected audit row (survives log trimming).
+    pub selected_decision: Option<String>,
     pub selected_facility: Option<u64>,
     pub construction_kind_index: usize,
     pub rehab_program_index: usize,

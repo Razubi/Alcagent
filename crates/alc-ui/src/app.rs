@@ -313,6 +313,9 @@ impl App {
         self.ui.search.clear();
         self.ui.search_active = false;
         self.ui.notifications.clear();
+        // Content-derived keys cannot be revalidated against a different save.
+        self.ui.selected_decision = None;
+        self.ui.selected_incident = None;
     }
 
     /// Re-clamp cached entity selections after the world changed under the
@@ -382,7 +385,8 @@ impl App {
     /// [`UiState`] filter through the driver *and* the free-text query.
     fn visible_incidents(&self) -> Vec<sumo::IncidentRecord> {
         let q = self.ui.query().trim().to_lowercase();
-        self.driver
+        let mut records: Vec<_> = self
+            .driver
             .incident_records_filtered(self.ui.filter())
             .into_iter()
             .filter(|r| {
@@ -391,7 +395,10 @@ impl App {
                     || r.location.to_lowercase().contains(&q)
                     || r.disposition.to_lowercase().contains(&q)
             })
-            .collect()
+            .collect();
+        // One ordering contract for the cursor, selection and renderer.
+        records.reverse();
+        records
     }
 
     /// Decision audit entries for the decision view, narrowed by the current
@@ -401,7 +408,8 @@ impl App {
         let all = self.driver.decision_audit_log().to_vec();
         let q = self.ui.query();
         let vf = self.ui.decision_validation_filter.as_deref();
-        all.into_iter()
+        let mut visible: Vec<_> = all
+            .into_iter()
             .filter(|d| {
                 let q_ok = query_matches(&d.actor, q)
                     || query_matches(&d.source, q)
@@ -410,11 +418,16 @@ impl App {
                 let v_ok = match vf {
                     None => true,
                     Some("repaired") => d.validation.starts_with("repaired"),
+                    Some("rejected") => d.validation.starts_with("rejected"),
+                    Some("accepted") => d.validation.starts_with("accepted"),
                     Some(v) => d.validation == v,
                 };
                 q_ok && v_ok
             })
-            .collect()
+            .collect();
+        // Newest first everywhere: the list, the cursor and the detail panel.
+        visible.reverse();
+        visible
     }
 
     /// Run the frame loop until the observer quits.
@@ -587,7 +600,7 @@ impl App {
             };
         }
         if matches!(self.ui.mode, ViewMode::DecisionAudit) {
-            self.ui.selected_decision = decisions.get(idx).map(|d| decision_key(idx, d));
+            self.ui.selected_decision = decisions.get(idx).map(crate::decision_key);
         }
         let _ = obs;
     }
@@ -1057,13 +1070,6 @@ impl App {
     fn speed_down(&mut self) {
         self.ticks_per_second = (self.ticks_per_second / 2).max(1);
     }
-}
-
-/// Unique record identity for a decision-audit row: `"<index>|<time>|<actor>|<action>"`
-/// (see [`UiState::selected_decision`]). The index disambiguates identical
-/// actor/action pairs, so detail always matches the cursor.
-fn decision_key(idx: usize, d: &sumo::DecisionAuditRecord) -> String {
-    format!("{idx}|{}|{}|{}", d.time, d.actor, d.action)
 }
 
 /// Shared case-insensitive substring matcher for the `visible_*` filters.
@@ -1571,14 +1577,36 @@ mod tests {
         app.ui_mut().mode = ViewMode::DecisionAudit;
         app.sync_selection();
         let mut keys = Vec::new();
-        for _ in 0..mock(&mut app).decisions.len() {
-            keys.push(app.ui().selected_decision.clone().expect("selection follows cursor"));
+        for i in 0..mock(&mut app).decisions.len() {
+            let visible = app.visible_decisions();
+            let expected = crate::decision_key(&visible[i]);
+            let key = app.ui().selected_decision.clone().expect("selection follows cursor");
+            assert_eq!(key, expected, "key must identify the row under the cursor");
+            keys.push(key);
             app.move_cursor(1);
             app.sync_selection();
         }
         let unique: std::collections::HashSet<_> = keys.iter().collect();
         assert_eq!(keys.len(), unique.len(), "decision keys must be unique");
         assert!(!keys.iter().any(|k| k.is_empty()));
+    }
+
+    #[test]
+    fn decision_key_survives_trim_and_filter() {
+        let mut app = app();
+        app.ui_mut().mode = ViewMode::DecisionAudit;
+        app.sync_selection();
+        let key = app.ui().selected_decision.clone().expect("newest decision selected");
+        // Simulate bounded-log trimming from the front.
+        mock(&mut app).decisions.remove(0);
+        app.ui_mut().scroll = 0;
+        app.sync_selection();
+        assert_eq!(app.ui().selected_decision.as_deref(), Some(key.as_str()));
+        // Filtering renumbers rows; the key must still identify the same record.
+        app.ui_mut().set_query("decision 2");
+        app.ui_mut().scroll = 0;
+        app.sync_selection();
+        assert_eq!(app.ui().selected_decision.as_deref(), Some(key.as_str()));
     }
 
     #[test]
@@ -1589,13 +1617,14 @@ mod tests {
         app.ui_mut().search_active = true;
         app.ui_mut().notifications.push("stale".to_string());
         app.ui_mut().selected_contraband = Some(1);
-        app.ui_mut().selected_decision = Some("0|t|a|x".to_string());
+        app.ui_mut().selected_decision = Some("stale-key".to_string());
         assert!(app.quick_load().is_ok());
         assert!(app.ui().bookmarks.is_empty());
         assert!(app.ui().search.is_empty());
         assert!(!app.ui().search_active);
         assert!(!app.ui().notifications.iter().any(|n| n == "stale"));
         assert!(app.ui().selected_contraband.is_none());
+        assert!(app.ui().selected_decision.is_none());
     }
 
     #[test]

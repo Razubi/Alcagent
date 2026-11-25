@@ -149,10 +149,11 @@ fn run_council_path(sim: &mut Sim) -> WardenAction {
         summarise_weights(&weights),
     );
     let at = sim.world.time;
-    sim.emit_events(vec![
+    let mut events = vec![
         WorldEvent::new(0, at, EventKind::PolicyChange, summary)
             .with_cause("council-mode deliberation; deterministic drive dot product"),
-    ]);
+    ];
+    sim.emit_events(&mut events);
 
     action
 }
@@ -181,13 +182,14 @@ fn run_shadow_path(sim: &mut Sim) -> WardenAction {
         rationale = vote.rationale,
     );
     let at = sim.world.time;
-    sim.emit_events(vec![
+    let mut events = vec![
         WorldEvent::new(0, at, EventKind::PolicyChange, summary).with_cause(format!(
             "shadow A/B: council total {:.2}; weights {}",
             vote.total,
             summarise_weights(&weights)
         )),
-    ]);
+    ];
+    sim.emit_events(&mut events);
 
     baseline
 }

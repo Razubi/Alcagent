@@ -148,6 +148,7 @@ pub fn invariant_intention_target_exists_and_is_legal(world: &World) -> bool {
 ///
 /// * every sidecar id is unique;
 /// * any non-`None` `cause`/`consequence` resolves to an existing incident id;
+/// * every incident `causal_chain` link resolves to a live incident id;
 /// * no incident points to itself as both cause and consequence (or, more
 ///   strictly, as either one);
 /// * a conflict-kind incident is not fully orphaned — it must carry at least
@@ -201,7 +202,18 @@ pub fn invariant_every_incident_has_cause_and_consequence(sim: &Sim) -> bool {
             ));
         }
 
-        // (d) A conflict incident with no cause, consequence or causal chain is
+        // (d) Structured incident links must resolve too. Bounded-log trimming
+        // scrubs them, so a surviving link must name a live incident.
+        for link in &incident.causal_chain {
+            if link.is_incident && !ids.contains(&link.source_id) {
+                violations.push(format!(
+                    "incident {} chain references non-existent incident {}",
+                    incident.id, link.source_id
+                ));
+            }
+        }
+
+        // (e) A conflict incident with no cause, consequence or causal chain is
         // legitimate: many conflicts arise spontaneously from unmet needs with
         // no prior event, and bounded-log trimming can drop earlier records.
         // We do NOT require causal context here — we only reject *invalid*

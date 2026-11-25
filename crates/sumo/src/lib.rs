@@ -167,7 +167,8 @@ impl Sim {
         &self.engine_state.decision_audit
     }
 
-    /// Record a structured decision audit entry.
+    /// Record a structured decision audit entry, bounded here so callers can
+    /// never grow the audit store past the invariant limit.
     pub fn record_decision_audit(&mut self, record: DecisionAuditRecord) {
         self.engine_state.decision_audit.push(record);
         let max = crate::invariants::MAX_LOG_ENTRIES;
@@ -175,7 +176,6 @@ impl Sim {
             let excess = self.engine_state.decision_audit.len() - max;
             self.engine_state.decision_audit.drain(..excess);
         }
-        self.trim_engine_logs();
     }
 
     /// Record a control/observer mutation in the decision audit log (0.05).
@@ -340,6 +340,20 @@ impl Sim {
         )
     }
 
+    /// True when a world event has already been mirrored into either engine
+    /// incident store. The primary log is bounded, so old events can survive
+    /// only as `CausalLink::world_event` provenance on a sidecar incident.
+    fn world_event_was_mirrored(&self, event_id: u64) -> bool {
+        if self.engine_state.incidents.iter().any(|e| e.id == event_id) {
+            return true;
+        }
+        self.engine_state.incident_sidecar.iter().any(|inc| {
+            inc.causal_chain
+                .iter()
+                .any(|link| !link.is_incident && link.source_id == event_id)
+        })
+    }
+
     /// Mirror one conflict/incident-kind event into engine incident stores with
     /// dedupe by world event id. Public emission and tick pumping both route
     /// here so mirrored kinds are consistently recorded.
@@ -347,7 +361,7 @@ impl Sim {
         if !Self::is_engine_mirrored_kind(event.kind) {
             return;
         }
-        if self.engine_state.incidents.iter().any(|e| e.id == event.id) {
+        if self.world_event_was_mirrored(event.id) {
             return;
         }
         let next_id = self
@@ -393,7 +407,8 @@ impl Sim {
     /// Keep engine audit stores within the bounded invariant limit (R6).
     fn trim_engine_logs(&mut self) {
         const MAX: usize = crate::invariants::MAX_LOG_ENTRIES;
-        if self.engine_state.incidents.len() > MAX {
+        let events_trimmed = self.engine_state.incidents.len() > MAX;
+        if events_trimmed {
             let excess = self.engine_state.incidents.len() - MAX;
             self.engine_state.incidents.drain(..excess);
         }
@@ -403,25 +418,38 @@ impl Sim {
             self.engine_state.incident_sidecar.drain(..excess);
             sidecar_trimmed = true;
         }
-        if sidecar_trimmed {
-            // B2: drop cause/consequence references to incidents that were
-            // evicted by the bounded log, so the causality invariant stays
-            // honest instead of reporting dangling ids on long runs.
-            let live: std::collections::HashSet<u64> = self
+        if sidecar_trimmed || events_trimmed {
+            // B2: drop cause/consequence and chain references to incidents or
+            // world events evicted by a bounded log, so causality stays honest
+            // instead of accumulating dangling ids on long runs. Both live id
+            // sets are built once per trim, never per link.
+            let live_incidents: std::collections::HashSet<u64> = self
                 .engine_state
                 .incident_sidecar
                 .iter()
                 .map(|inc| inc.id)
                 .collect();
+            let live_events: std::collections::HashSet<u64> = self
+                .engine_state
+                .incidents
+                .iter()
+                .map(|event| event.id)
+                .collect();
             for inc in &mut self.engine_state.incident_sidecar {
-                if inc.cause.is_some() && !live.contains(&inc.cause.unwrap()) {
+                if inc.cause.is_some_and(|id| !live_incidents.contains(&id)) {
                     inc.cause = None;
                 }
-                if inc.consequence.is_some() && !live.contains(&inc.consequence.unwrap()) {
+                if inc.consequence.is_some_and(|id| !live_incidents.contains(&id)) {
                     inc.consequence = None;
                 }
                 if !inc.causal_chain.is_empty() {
-                    inc.causal_chain.retain(|link| !link.is_incident || live.contains(&link.source_id));
+                    inc.causal_chain.retain(|link| {
+                        if link.is_incident {
+                            live_incidents.contains(&link.source_id)
+                        } else {
+                            live_events.contains(&link.source_id)
+                        }
+                    });
                 }
             }
         }
@@ -2098,11 +2126,18 @@ impl Sim {
         s
     }
 
-    /// Emit engine events with the current simulation time.
-    pub(crate) fn emit_events(&mut self, events: Vec<WorldEvent>) {
-        for mut e in events {
+    /// Emit engine events with authoritative world event ids, then mirror
+    /// conflict kinds into the incident stores.
+    ///
+    /// IDs are assigned back into `events` before mirroring so dedupe and
+    /// causal provenance use the same ids observers see on the world bus.
+    pub(crate) fn emit_events(&mut self, events: &mut [WorldEvent]) {
+        for e in events.iter_mut() {
             e.at = self.world.time;
-            self.world.events.emit(e);
+            e.id = self.world.events.emit(e.clone());
+        }
+        for e in events.iter() {
+            self.mirror_conflict_event_to_engine_log(e);
         }
     }
 
@@ -2203,8 +2238,8 @@ impl Sim {
     pub fn apply_warden_action(&mut self, action: WardenAction) {
         let at = self.world.time;
         let summary = format!("{:?}", action);
-        let events = drivers::apply_warden_action(&mut self.world, at, action.clone());
-        self.emit_events(events);
+        let mut events = drivers::apply_warden_action(&mut self.world, at, action.clone());
+        self.emit_events(&mut events);
         // The driver mutates `world.policies` directly (it only has &mut World),
         // so reconcile the engine-side policy mirror afterwards (R6: drift
         // between the two is an invariant violation).
@@ -2555,5 +2590,116 @@ mod dto_tests {
         assert_eq!(rows[0].recidivism_risk, Some(0.2));
         assert_eq!(rows[0].has_reintegration_plan, Some(true));
         assert!(!rows[0].follow_up_required);
+    }
+
+    #[test]
+    fn public_conflict_emission_uses_real_world_event_ids_and_dedupes() {
+        let mut sim = Sim::new(46);
+        let actor = sim.world.prisoners[0].id.raw();
+        let sidecar_before = sim.incident_sidecar().len();
+        let log_before = sim.incident_log().len();
+
+        let mut events = vec![
+            WorldEvent::new(0, sim.world.time, EventKind::Fight, "audit: yard fight")
+                .with_actor(actor),
+        ];
+        sim.emit_events(&mut events);
+
+        let first_id = events[0].id;
+        assert!(first_id > 0, "world bus must assign an authoritative id");
+        assert!(sim.events().recent().any(|e| e.id == first_id));
+        assert_eq!(sim.incident_sidecar().len(), sidecar_before + 1);
+        assert_eq!(sim.incident_log().len(), log_before + 1);
+
+        let first_incident = sim
+            .incident_sidecar()
+            .iter()
+            .find(|inc| {
+                inc.causal_chain
+                    .iter()
+                    .any(|link| !link.is_incident && link.source_id == first_id)
+            })
+            .expect("mirrored incident must reference its world event id");
+        let first_incident_id = first_incident.id;
+
+        // Replaying the same event through the mirror path is a no-op: dedupe
+        // is by world event id, not by free-text summary or actor list.
+        let sidecar_len = sim.incident_sidecar().len();
+        let log_len = sim.incident_log().len();
+        sim.mirror_conflict_event_to_engine_log(&events[0]);
+        assert_eq!(sim.incident_sidecar().len(), sidecar_len);
+        assert_eq!(sim.incident_log().len(), log_len);
+
+        // A distinct public emission gets a new id and a distinct incident.
+        let mut second = vec![
+            WorldEvent::new(0, sim.world.time, EventKind::Threat, "audit: cell threat")
+                .with_actor(actor),
+        ];
+        sim.emit_events(&mut second);
+        assert_ne!(second[0].id, first_id);
+        assert_eq!(sim.incident_sidecar().len(), sidecar_len + 1);
+        assert!(sim.incident_sidecar().iter().any(|inc| {
+            inc.causal_chain
+                .iter()
+                .any(|link| !link.is_incident && link.source_id == second[0].id)
+        }));
+        assert_ne!(sim.incident_sidecar().last().unwrap().id, first_incident_id);
+    }
+
+    #[test]
+    fn incident_trim_scrubs_dangling_world_event_links() {
+        let mut sim = Sim::new(47);
+        let live_event = WorldEvent::new(7_001, sim.world.time, EventKind::Fight, "live event");
+        sim.engine_state.incidents.push(live_event.clone());
+
+        let max = crate::invariants::MAX_LOG_ENTRIES as u64;
+        for id in 2..=(max + 10) {
+            let causal_chain = if id == max + 10 {
+                vec![
+                    incidents::CausalLink::world_event(live_event.id, "live evidence"),
+                    incidents::CausalLink::world_event(9_999, "gone evidence"),
+                ]
+            } else {
+                Vec::new()
+            };
+            sim.engine_state.incident_sidecar.push(incidents::Incident {
+                id,
+                causal_chain,
+                timestamp: sim.world.time,
+                ..Default::default()
+            });
+        }
+
+        // Trigger the bounded-log cleanup through a public recording path.
+        sim.record_incident(WorldEvent::new(
+            0,
+            sim.world.time,
+            EventKind::Argument,
+            "trim",
+        ));
+
+        let live_events: std::collections::HashSet<u64> = sim
+            .engine_state
+            .incidents
+            .iter()
+            .map(|event| event.id)
+            .collect();
+        let mut kept_live_link = false;
+        for inc in &sim.engine_state.incident_sidecar {
+            for link in &inc.causal_chain {
+                if link.is_incident {
+                    continue;
+                }
+                assert!(
+                    live_events.contains(&link.source_id),
+                    "dangling world-event link {} in incident {}",
+                    link.source_id,
+                    inc.id
+                );
+                kept_live_link |= link.source_id == live_event.id;
+            }
+        }
+        assert!(kept_live_link, "resolvable event provenance must be preserved");
+        assert!(sim.check_invariants().is_empty());
     }
 }

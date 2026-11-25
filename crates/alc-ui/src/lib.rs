@@ -51,9 +51,9 @@ pub struct UiState {
     pub selected_gang: Option<u64>,
     pub selected_guard: Option<u64>,
     pub selected_incident: Option<u64>,
-    /// Unique key of the decision-audit row in view. The key is built as
-    /// `"<row-index>|<time>|<actor>|<action>"` so two different decisions can
-    /// never collide and the detail panel follows the cursor.
+    /// Stable key of the decision-audit row under the cursor, produced by
+    /// [`decision_key`]. Content-derived so trimming older audit entries or
+    /// changing a filter cannot make the key point at a different decision.
     pub selected_decision: Option<String>,
     pub selected_construction: Option<u64>,
     pub selected_rehab: Option<u64>,
@@ -171,4 +171,61 @@ impl UiState {
 /// headless tests can run without a terminal.
 pub trait Renderer {
     fn render(&mut self, state: &UiState, frame: &mut dyn std::any::Any);
+}
+
+/// Stable identity for an audit row, shared by the app and the detail renderer.
+///
+/// Every free-form field is length-prefixed, so no value can forge a field
+/// boundary and two distinct decisions cannot collide (including two identical
+/// actions by the same actor at different times).
+pub(crate) fn decision_key(record: &sumo::DecisionAuditRecord) -> String {
+    use std::fmt::Write;
+
+    fn push(key: &mut String, value: &str) {
+        let _ = write!(key, "{}:{}", value.len(), value);
+    }
+
+    // `SimTime::to_string` is minute-resolution; `secs` distinguishes audit
+    // rows written within the same displayed minute.
+    let time = record.time.secs.to_string();
+    let outcome = format!("{:?}", record.outcome);
+    let mut key = String::with_capacity(128);
+    push(&mut key, &time);
+    push(&mut key, &outcome);
+    for field in [
+        &record.actor,
+        &record.source,
+        &record.action,
+        &record.summary,
+        &record.validation,
+        &record.reason,
+        &record.rationale,
+        &record.repair_reason,
+    ] {
+        push(&mut key, field);
+    }
+    key
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decision_key_is_stable_and_disjoint() {
+        let mut first = sumo::DecisionAuditRecord::default();
+        first.actor = "guard:7|prisoner:9".to_string();
+        first.action = "fight".to_string();
+        let mut second = first.clone();
+        second.source = "agent".to_string();
+        let key = decision_key(&first);
+        assert_eq!(key, decision_key(&first));
+        assert_ne!(key, decision_key(&second));
+        second.source.clear();
+        second.validation = "agent".to_string();
+        assert_ne!(key, decision_key(&second), "field boundaries must not be forgeable");
+        let mut later = first.clone();
+        later.time.secs += 1;
+        assert_ne!(key, decision_key(&later), "time alone must disambiguate rows");
+    }
 }

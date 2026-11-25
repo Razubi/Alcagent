@@ -715,6 +715,129 @@ pub fn incident_node(location: &str) -> Option<u64> {
 }
 
 // ---------------------------------------------------------------------------
+// Audit detail — pure row shaping shared by panels and tests
+// ---------------------------------------------------------------------------
+
+/// Stable identity for a decision audit row. Free-form fields are
+/// length-prefixed so field boundaries cannot be forged and trimming older
+/// rows cannot make a key point at a different decision.
+#[must_use]
+pub fn decision_key(record: &DecisionAuditRecord) -> String {
+    use std::fmt::Write;
+
+    fn push(key: &mut String, value: &str) {
+        let _ = write!(key, "{}:{}", value.len(), value);
+    }
+
+    // `SimTime::to_string` is minute-resolution; `secs` distinguishes audit
+    // rows written within the same displayed minute.
+    let time = record.time.secs.to_string();
+    let outcome = format!("{:?}", record.outcome);
+    let mut key = String::with_capacity(128);
+    push(&mut key, &time);
+    push(&mut key, &outcome);
+    for field in [
+        &record.actor,
+        &record.source,
+        &record.action,
+        &record.summary,
+        &record.validation,
+        &record.reason,
+        &record.rationale,
+        &record.repair_reason,
+    ] {
+        push(&mut key, field);
+    }
+    key
+}
+
+/// Validation filter match. The engine emits statuses such as
+/// `rejected: bad target`, so exact equality alone misses real audit rows.
+#[must_use]
+pub fn validation_matches(validation: &str, filter: &str) -> bool {
+    let value = validation.to_ascii_lowercase();
+    let wanted = filter.to_ascii_lowercase();
+    value == wanted || value.starts_with(&format!("{wanted}:"))
+}
+
+/// Labelled rows for the incident detail panel: cause, actors, validation of
+/// the staff response, and outcome.
+#[must_use]
+pub fn incident_detail_rows(
+    record: &IncidentRecord,
+    names: &HashMap<u64, String>,
+) -> Vec<(String, String)> {
+    let name = |id: u64| names.get(&id).cloned().unwrap_or_else(|| format!("#{id}"));
+    let actors: Vec<String> = record.involved_prisoners.iter().copied().map(name).collect();
+    let witnesses: Vec<String> = record.witnesses.iter().copied().map(name).collect();
+    let cause = record
+        .causal_chain
+        .first()
+        .map(|link| {
+            format!(
+                "{} #{}: {}",
+                if link.is_incident { "incident" } else { "event" },
+                link.source_id,
+                link.description
+            )
+        })
+        .or_else(|| record.cause.map(|id| format!("incident #{id}")))
+        .unwrap_or_else(|| "none recorded".to_string());
+    let ok = record.response_actions.iter().filter(|a| a.success).count();
+    let failed = record.response_actions.len() - ok;
+    let validation = if record.response_actions.is_empty() {
+        "no staff response recorded".to_string()
+    } else {
+        format!("{} response(s): {} ok / {} failed", record.response_actions.len(), ok, failed)
+    };
+    vec![
+        ("ID / kind".to_string(), format!("#{} · {}", record.id, record.kind)),
+        ("Time".to_string(), record.at.to_string()),
+        ("Severity".to_string(), format!("{:.0}%", record.severity * 100.0)),
+        ("Location".to_string(), record.location.clone()),
+        ("Cause".to_string(), cause),
+        ("Actors".to_string(), if actors.is_empty() { "-".into() } else { actors.join(", ") }),
+        ("Witnesses".to_string(), if witnesses.is_empty() { "-".into() } else { witnesses.join(", ") }),
+        ("Validation".to_string(), validation),
+        (
+            "Outcome".to_string(),
+            format!(
+                "{} · {}",
+                if record.resolved { "resolved" } else { "open" },
+                record.disposition
+            ),
+        ),
+    ]
+}
+
+/// Labelled rows for the decision detail panel: cause, actors, validation and
+/// outcome, plus the supporting rationale and summary.
+#[must_use]
+pub fn decision_detail_rows(record: &DecisionAuditRecord) -> Vec<(String, String)> {
+    let cause = if record.reason.is_empty() {
+        if record.rationale.is_empty() { "none recorded".to_string() } else { record.rationale.clone() }
+    } else {
+        record.reason.clone()
+    };
+    let mut rows = vec![
+        ("Time".to_string(), record.time.to_string()),
+        ("Actors".to_string(), format!("{} · {}", record.actor, record.source)),
+        ("Cause".to_string(), cause),
+        ("Action".to_string(), record.action.clone()),
+        ("Validation".to_string(), record.validation.clone()),
+        ("Outcome".to_string(), format!("{:?}", record.outcome)),
+        ("Summary".to_string(), record.summary.clone()),
+    ];
+    if !record.rationale.is_empty() {
+        rows.push(("Rationale".to_string(), record.rationale.clone()));
+    }
+    if !record.repair_reason.is_empty() {
+        rows.push(("Repair reason".to_string(), record.repair_reason.clone()));
+    }
+    rows
+}
+
+// ---------------------------------------------------------------------------
 // Tests — pure smoke tests over synthetic inputs
 // ---------------------------------------------------------------------------
 
@@ -1007,5 +1130,83 @@ mod tests {
         assert!(snap.selected_agent.is_some());
         assert!(snap.selected_schedule.is_some());
         assert!(snap.violations.is_empty(), "engine invariants: {:?}", snap.violations);
+    }
+
+    #[test]
+    fn decision_key_is_stable_and_unique() {
+        let mut first = DecisionAuditRecord::default();
+        first.actor = "guard:1".to_string();
+        first.action = "fight".to_string();
+        let mut second = first.clone();
+        second.time = SimTime { secs: 42 };
+        assert_eq!(decision_key(&first), decision_key(&first));
+        assert_ne!(decision_key(&first), decision_key(&second));
+        assert!(validation_matches("rejected: bad target", "rejected"));
+        assert!(validation_matches("Accepted", "accepted"));
+        assert!(!validation_matches("repaired", "rejected"));
+    }
+
+    #[test]
+    fn incident_detail_rows_cover_cause_actors_validation_and_outcome() {
+        let mut names = HashMap::new();
+        names.insert(7, "Rioter".to_string());
+        let record = IncidentRecord {
+            id: 12,
+            at: SimTime { secs: 60 },
+            kind: "Fight".to_string(),
+            severity: 0.9,
+            location: "Yard".to_string(),
+            involved_prisoners: vec![7],
+            cause: Some(11),
+            consequence: None,
+            causal_chain: vec![sumo::incidents::CausalLink::incident(11, "prior argument")],
+            witnesses: vec![7],
+            response_actions: vec![sumo::incidents::ResponseAction {
+                action: sumo::incidents::ResponseActionKind::GuardIntervention,
+                responder: sumo::incidents::Responder::Guard(3),
+                at: SimTime { secs: 61 },
+                description: "separated".to_string(),
+                success: true,
+            }],
+            disposition: "Disciplinary".to_string(),
+            resolved: true,
+        };
+        let rows = incident_detail_rows(&record, &names);
+        let lookup = |label: &str| {
+            rows.iter()
+                .find(|(key, _)| key == label)
+                .map(|(_, value)| value.as_str())
+                .unwrap_or_else(|| panic!("missing {label} row"))
+        };
+        assert!(lookup("Cause").contains("prior argument"));
+        assert!(lookup("Actors").contains("Rioter"));
+        assert!(lookup("Validation").contains("1 ok / 0 failed"));
+        assert!(lookup("Outcome").contains("resolved"));
+        assert!(lookup("Outcome").contains("Disciplinary"));
+    }
+
+    #[test]
+    fn decision_detail_rows_cover_cause_actors_validation_and_outcome() {
+        let mut record = DecisionAuditRecord::default();
+        record.time = SimTime { secs: 90 };
+        record.actor = "prisoner:7".to_string();
+        record.source = "agent".to_string();
+        record.action = "fight".to_string();
+        record.summary = "attacked peer".to_string();
+        record.validation = "rejected: guard nearby".to_string();
+        record.reason = "guard nearby".to_string();
+        record.rationale = "status".to_string();
+        let record = record;
+        let rows = decision_detail_rows(&record);
+        let lookup = |label: &str| {
+            rows.iter()
+                .find(|(key, _)| key == label)
+                .map(|(_, value)| value.as_str())
+                .unwrap_or_else(|| panic!("missing {label} row"))
+        };
+        assert_eq!(lookup("Cause"), "guard nearby");
+        assert!(lookup("Actors").contains("prisoner:7"));
+        assert_eq!(lookup("Validation"), "rejected: guard nearby");
+        assert_eq!(lookup("Outcome"), "Proposed");
     }
 }

@@ -151,23 +151,9 @@ pub fn incident_detail(
     record: &sumo::IncidentRecord,
     names: &HashMap<u64, String>,
 ) {
-    theme::kv(ui, "ID / kind", format!("#{} · {}", record.id, record.kind));
-    theme::kv(ui, "Time", record.at.to_string());
-    theme::kv(ui, "Severity", format!("{:.0}%", record.severity * 100.0));
-    theme::kv(ui, "Location", &record.location);
-    theme::kv(ui, "Disposition", &record.disposition);
-    theme::kv(ui, "Resolved", if record.resolved { "yes" } else { "OPEN" });
-    let involved: Vec<String> = record
-        .involved_prisoners
-        .iter()
-        .map(|id| names.get(id).cloned().unwrap_or_else(|| format!("#{id}")))
-        .collect();
-    theme::kv(ui, "Involved", if involved.is_empty() { "-".into() } else { involved.join(", ") });
-    theme::kv(
-        ui,
-        "Cause",
-        record.cause.map(|id| format!("incident #{id}")).unwrap_or_else(|| "none recorded".into()),
-    );
+    for (label, value) in data::incident_detail_rows(record, names) {
+        theme::kv(ui, &label, value);
+    }
     theme::kv(
         ui,
         "Consequence",
@@ -190,43 +176,36 @@ pub fn incident_detail(
     }
     for action in &record.response_actions {
         ui.add(egui::Label::new(
-            egui::RichText::new(format!("• {:?}: {}", action.action, action.description)).small(),
+            egui::RichText::new(format!(
+                "• {:?} by {:?} at {} — {} ({})",
+                action.action,
+                action.responder,
+                action.at,
+                action.description,
+                if action.success { "ok" } else { "failed" }
+            ))
+            .small(),
         ));
     }
 }
 
 /// Draw the cause/validation/outcome detail of a decision audit record.
 pub fn decision_detail(ui: &mut egui::Ui, record: &sumo::DecisionAuditRecord) {
-    theme::kv(ui, "Time", record.time.to_string());
-    theme::kv(ui, "Actor", &record.actor);
-    theme::kv(ui, "Source", &record.source);
-    theme::kv(ui, "Action", &record.action);
-    ui.horizontal(|ui| {
-        ui.add(egui::Label::new(
-            egui::RichText::new("Validation").color(theme::MUTED),
-        ));
-        ui.add(egui::Label::new(
-            egui::RichText::new(&record.validation)
-                .color(theme::validation_colour(&record.validation))
-                .strong(),
-        ));
-        ui.add(egui::Label::new(
-            egui::RichText::new(format!("{:?}", record.outcome)).color(theme::MUTED),
-        ));
-    });
-    ui.label(&record.summary);
-    if !record.reason.is_empty() {
-        theme::kv(ui, "Reason", &record.reason);
-    }
-    if !record.rationale.is_empty() {
-        theme::kv(ui, "Rationale", &record.rationale);
-    }
-    if !record.repair_reason.is_empty() {
-        theme::kv(
-            ui,
-            "Repair",
-            egui::RichText::new(&record.repair_reason).color(theme::MUTED),
-        );
+    for (label, value) in data::decision_detail_rows(record) {
+        if label == "Validation" {
+            ui.horizontal(|ui| {
+                ui.add(egui::Label::new(
+                    egui::RichText::new(&label).color(theme::MUTED),
+                ));
+                ui.add(egui::Label::new(
+                    egui::RichText::new(&value)
+                        .color(theme::validation_colour(&value))
+                        .strong(),
+                ));
+            });
+        } else {
+            theme::kv(ui, &label, value);
+        }
     }
 }
 

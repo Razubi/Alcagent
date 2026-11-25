@@ -117,3 +117,22 @@ fn invariant_rejects_dangling_cause_and_self_reference() {
     sim2.record_sidecar_incident(self_ref);
     assert!(!invariant_every_incident_has_cause_and_consequence(&sim2));
 }
+
+#[test]
+fn invariant_rejects_dangling_incident_chain_link() {
+    let mut sim = Sim::new(4);
+    let mut bad = incident_from_world_event(
+        &event(EventKind::Fight, vec![]),
+        1,
+        &[],
+        &known(),
+        0.9,
+        "yard".into(),
+    );
+    bad.causal_chain.push(CausalLink::incident(9_999, "missing prior"));
+    sim.record_sidecar_incident(bad);
+    assert!(
+        !invariant_every_incident_has_cause_and_consequence(&sim),
+        "a structured chain link must resolve to a live incident"
+    );
+}

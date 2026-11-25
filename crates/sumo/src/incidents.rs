@@ -314,7 +314,7 @@ pub fn incident_from_world_event(
         format!("originating event: {}", event.summary),
     ));
 
-    let cause = most_recent_matching_prior(event, prior_incidents, known_prisoners).map(|prior| {
+    let cause = most_recent_matching_prior(id, event, prior_incidents, known_prisoners).map(|prior| {
         causal_chain.push(CausalLink::incident(
             prior.id,
             format!("preceding {:?} incident with shared context", prior.kind),
@@ -342,6 +342,7 @@ pub fn incident_from_world_event(
 /// Most recent prior incident sharing a participant (or, failing that, the
 /// same event kind) with `event`. Ties break on higher incident id.
 fn most_recent_matching_prior<'a>(
+    new_incident_id: IncidentId,
     event: &WorldEvent,
     prior_incidents: &'a [Incident],
     known_prisoners: &[PrisonerId],
@@ -356,7 +357,9 @@ fn most_recent_matching_prior<'a>(
 
     prior_incidents
         .iter()
-        .filter(|inc| inc.timestamp <= event.at && inc.id != event.id)
+        // Incident ids and world event ids are separate spaces: compare like
+        // with like or a legitimate prior incident can be skipped.
+        .filter(|inc| inc.timestamp <= event.at && inc.id != new_incident_id)
         .filter(|inc| {
             inc.involved_prisoners.iter().any(|pid| actors.contains(pid))
                 || inc.kind == event.kind

@@ -687,10 +687,10 @@ pub struct DecisionOutcome {
 
 /// Validate + apply one decision on the engine.
 ///
-/// Audit policy: only decisions that pass validation and are applied are
-/// recorded via [`Sim::record_decision`]. Rejected proposals are reported in
-/// the returned [`DecisionOutcome`] but deliberately left out of the audit log
-/// so it represents decisions the engine actually carried out.
+/// Audit policy: applied decisions enter [`Sim::decision_log`] and every
+/// outcome (including rejections) enters [`Sim::decision_audit_log`] with its
+/// validation status, so observers can trace why a proposal was accepted,
+/// repaired or rejected. Only applied decisions mutate world state.
 pub fn deliver(sim: &mut Sim, id: PrisonerId, decision: Decision) -> DecisionOutcome {
     tracing::debug!(agent = id.raw(), ?decision, "deliver_decision");
     let (ok, result) = validate(&sim.world, id, &decision);
@@ -719,7 +719,7 @@ pub fn deliver(sim: &mut Sim, id: PrisonerId, decision: Decision) -> DecisionOut
         });
         return outcome;
     }
-    let events = apply(&mut sim.world, id, &result);
+    let mut events = apply(&mut sim.world, id, &result);
     if events.iter().any(|e| e.kind == EventKind::EscapeSucceeded) {
         sim.engine_state.post_release.insert(id, false);
     }
@@ -741,17 +741,9 @@ pub fn deliver(sim: &mut Sim, id: PrisonerId, decision: Decision) -> DecisionOut
         repair_reason: decision.repair_reason.clone(),
         outcome: decision.outcome,
     });
-    sim.emit_events(events.clone());
-    mirror_conflict_incidents(sim, &events);
+    // Emits with bus-assigned ids and mirrors conflict kinds exactly once.
+    sim.emit_events(&mut events);
     DecisionOutcome { agent: id, decision, result, applied: true }
-}
-
-/// Mirror conflict/incident-kind events produced by a delivered decision into
-/// the engine's incident log and sidecar. Deduped by world event id.
-fn mirror_conflict_incidents(sim: &mut Sim, events: &[WorldEvent]) {
-    for event in events {
-        sim.mirror_conflict_event_to_engine_log(event);
-    }
 }
 
 /// Coarse severity mapping for mirrored conflict incidents.

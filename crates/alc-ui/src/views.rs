@@ -1976,8 +1976,8 @@ fn render_map(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
 
 fn render_incidents(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
     let chunks = Layout::vertical([Constraint::Length(4), Constraint::Min(4), Constraint::Length(12)]).split(area);
-    let mut records: Vec<_> = data.incident_records.iter().collect();
-    records.reverse();
+    // The driver already supplies newest-first records (see App::visible_incidents).
+    let records: Vec<_> = data.incident_records.iter().collect();
     let total = records.len();
     let idx = if total == 0 { 0 } else { (ui.scroll as usize).min(total - 1) };
 
@@ -2030,10 +2030,13 @@ fn render_incidents(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
         chunks[1],
     );
 
-    let selected_record = ui
-        .selected_incident
-        .and_then(|sid| records.iter().copied().find(|r| r.id == sid))
-        .or_else(|| records.get(idx).copied());
+    // The detail follows the visible cursor; the cached id only confirms that
+    // the cursor row is the one the observer selected.
+    let cursor_record = records.get(idx).copied();
+    let selected_record = match (ui.selected_incident, cursor_record) {
+        (Some(id), Some(r)) if r.id == id => Some(r),
+        (_, r) => r,
+    };
     let mut detail = if let Some(r) = selected_record {
         let participants = if r.involved_prisoners.is_empty() {
             "none".to_string()
@@ -2084,16 +2087,33 @@ fn render_incidents(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
                 .collect::<Vec<_>>()
                 .join(", ")
         };
+        let cause = r
+            .causal_chain
+            .first()
+            .map(|link| format!(
+                "{} #{}: {}",
+                if link.is_incident { "incident" } else { "event" },
+                link.source_id,
+                truncate(&link.description, 40)
+            ))
+            .or_else(|| r.cause.map(|id| format!("incident #{id}")))
+            .unwrap_or_else(|| "none recorded".to_string());
+        let responses_ok = r.response_actions.iter().filter(|a| a.success).count();
+        let responses_failed = r.response_actions.len() - responses_ok;
+        let validation = if r.response_actions.is_empty() {
+            "no staff response recorded".to_string()
+        } else {
+            format!("{} response(s): {} ok / {} failed", r.response_actions.len(), responses_ok, responses_failed)
+        };
         let mut d = vec![
-            kv("ID", r.id.to_string()),
-            kv("Kind", r.kind.clone()),
-            kv("At", r.at.to_string()),
-            kv("Severity", format!("{:.0}% ({})", r.severity * 100.0, if r.severity >= 0.75 { "critical" } else if r.severity >= 0.4 { "high" } else { "low" })),
-            kv("Disposition", r.disposition.clone()),
+            kv("ID / kind", format!("#{} {}", r.id, truncate(&r.kind, 24))),
+            kv("At / severity", format!("{} · {:.0}%", r.at, r.severity * 100.0)),
             kv("Location", if r.location.is_empty() { "unknown".into() } else { r.location.clone() }),
-            kv("Participants", participants),
+            kv("Cause", cause),
+            kv("Actors", participants),
             kv("Witnesses", witnesses),
-            kv("Outcome", outcome.to_string()),
+            kv("Validation", validation),
+            kv("Outcome", format!("{} · {}", outcome, r.disposition)),
         ];
         d.push(plain("--- Causal chain ---"));
         for link in chain {
@@ -2193,13 +2213,13 @@ fn render_incidents(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
 
 fn render_decisions(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
     let chunks = Layout::vertical([Constraint::Length(4), Constraint::Min(4), Constraint::Length(10)]).split(area);
-    let mut entries: Vec<_> = data.decision_audit.iter().collect();
-    entries.reverse();
+    // The driver already supplies newest-first records (see App::visible_decisions).
+    let entries: Vec<_> = data.decision_audit.iter().collect();
     let idx = (ui.scroll as usize).min(entries.len().saturating_sub(1));
 
-    let accepted = entries.iter().filter(|d| d.validation == "accepted").count();
+    let accepted = entries.iter().filter(|d| d.validation.starts_with("accepted")).count();
     let repaired = entries.iter().filter(|d| d.validation.starts_with("repaired")).count();
-    let rejected = entries.iter().filter(|d| d.validation == "rejected").count();
+    let rejected = entries.iter().filter(|d| d.validation.starts_with("rejected")).count();
     let other = entries.len().saturating_sub(accepted + repaired + rejected);
 
     let df = ui.decision_validation_filter.as_deref().unwrap_or("all");
@@ -2216,11 +2236,14 @@ fn render_decisions(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
         let style = if i == idx {
             Style::default().bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD)
         } else { Style::default() };
-        let vcolor = match d.validation.as_str() {
-            "accepted" => Color::Green,
-            v if v.starts_with("repaired") => Color::Yellow,
-            "rejected" => Color::Red,
-            _ => Color::Gray,
+        let vcolor = if d.validation.starts_with("accepted") {
+            Color::Green
+        } else if d.validation.starts_with("repaired") {
+            Color::Yellow
+        } else if d.validation.starts_with("rejected") {
+            Color::Red
+        } else {
+            Color::Gray
         };
         ListItem::new(Line::from(vec![
             Span::styled(format!("{marker} "), Style::default().fg(Color::Yellow)),
@@ -2236,39 +2259,33 @@ fn render_decisions(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
         chunks[1],
     );
 
-    // Unique record identity: "<row-index>|<time>|<actor>|<action>" so two
-    // decisions can never collide and detail follows the cursor.
-    let selected = ui
-        .selected_decision
-        .as_ref()
-        .and_then(|key| {
-            key.split_once('|').and_then(|(idx_s, rest)| {
-                let i: usize = idx_s.parse().ok()?;
-                let d = entries.get(i).copied()?;
-                if format!("{}|{}|{}", d.time, d.actor, d.action) == rest {
-                    Some(d)
-                } else {
-                    None
-                }
-            })
-        })
-        .or_else(|| entries.get(idx).copied());
+    // The unique content key identifies the row under the cursor. If the key
+    // has gone stale after trimming/filtering, the visible cursor wins.
+    let cursor_record = entries.get(idx).copied();
+    let selected = match (&ui.selected_decision, cursor_record) {
+        (Some(key), Some(d)) if crate::decision_key(d) == *key => Some(d),
+        (_, d) => d,
+    };
     let detail = if let Some(d) = selected {
         let outcome = format!("{:?}", d.outcome);
         let proposed = if d.action.is_empty() { d.summary.clone() } else { d.action.clone() };
         let provenance = if d.source.is_empty() { "unknown".to_string() } else { d.source.clone() };
+        let cause = if d.reason.is_empty() {
+            if d.rationale.is_empty() { "none recorded".to_string() } else { truncate(&d.rationale, 120) }
+        } else {
+            truncate(&d.reason, 120)
+        };
         vec![
             kv("Time", d.time.to_string()),
-            kv("Actor", d.actor.clone()),
-            kv("Provenance", provenance),
+            kv("Actors", format!("{} · {}", d.actor, provenance)),
+            kv("Cause", cause),
             kv("Proposed action", truncate(&proposed, 80)),
-            kv("Outcome", outcome),
             kv("Validation", d.validation.clone()),
+            kv("Outcome", outcome),
             kv("Rationale", if d.rationale.is_empty() { "none recorded".into() } else { truncate(&d.rationale, 120) }),
             kv("Repair reason", if d.repair_reason.is_empty() { "none".into() } else { truncate(&d.repair_reason, 120) }),
-            kv("Reason", if d.reason.is_empty() { "none recorded".into() } else { truncate(&d.reason, 120) }),
             kv("Summary", truncate(&d.summary, 120)),
-            plain("↑/↓ scroll list; detail follows selected_decision when set."),
+            plain("↑/↓ scroll list; detail follows the cursor."),
         ]
     } else {
         vec![plain("No decisions recorded. Pending data contract: decision_audit empty.")]
@@ -2677,6 +2694,111 @@ mod tests {
         ] {
             assert!(rendered.contains(needle), "financial panel missing {needle}");
         }
+    }
+
+    fn render_text(data: &ViewData, ui: &UiState, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| draw(frame, data, ui, &status(false)))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut rendered = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                rendered.push_str(buf[(x, y)].symbol());
+            }
+        }
+        rendered
+    }
+
+    #[test]
+    fn incident_detail_shows_cause_actors_validation_and_outcome() {
+        let world = alc_world::World::new(11);
+        let mut data = view_data_from_world(&world);
+        data.incident_records = vec![sumo::IncidentRecord {
+            id: 12,
+            at: alc_core::SimTime { secs: 60 },
+            kind: "Fight".to_string(),
+            severity: 0.9,
+            location: "Yard".to_string(),
+            involved_prisoners: vec![7],
+            cause: Some(11),
+            consequence: None,
+            causal_chain: vec![sumo::incidents::CausalLink::incident(11, "prior argument")],
+            witnesses: vec![7],
+            response_actions: vec![sumo::incidents::ResponseAction {
+                action: sumo::incidents::ResponseActionKind::GuardIntervention,
+                responder: sumo::incidents::Responder::Guard(3),
+                at: alc_core::SimTime { secs: 61 },
+                description: "separated".to_string(),
+                success: true,
+            }],
+            disposition: "Disciplinary".to_string(),
+            resolved: true,
+        }];
+        let ui = UiState {
+            mode: ViewMode::IncidentReports,
+            selected_incident: Some(12),
+            ..UiState::new()
+        };
+        let rendered = render_text(&data, &ui, 160, 60);
+        let actor_label = name_map(&data.prisoners)
+            .get(&7)
+            .cloned()
+            .unwrap_or_else(|| "P7".to_string());
+        for needle in ["Cause", "prior argument", "Actors", actor_label.as_str(), "Validation", "1 ok / 0 failed", "Outcome", "Disciplinary"] {
+            assert!(rendered.contains(needle), "incident detail missing {needle}");
+        }
+    }
+
+    #[test]
+    fn decision_detail_shows_cause_actors_validation_and_outcome() {
+        let world = alc_world::World::new(12);
+        let mut data = view_data_from_world(&world);
+        data.decision_audit = vec![sumo::DecisionAuditRecord {
+            time: alc_core::SimTime { secs: 90 },
+            actor: "prisoner:7".to_string(),
+            source: "agent".to_string(),
+            action: "fight".to_string(),
+            summary: "attacked peer".to_string(),
+            validation: "rejected: guard nearby".to_string(),
+            reason: "guard nearby".to_string(),
+            rationale: "status".to_string(),
+            repair_reason: "clamped to socialize".to_string(),
+            ..Default::default()
+        }];
+        let ui = UiState { mode: ViewMode::DecisionAudit, ..UiState::new() };
+        let rendered = render_text(&data, &ui, 160, 60);
+        for needle in ["Cause", "guard nearby", "Actors", "prisoner:7", "Validation", "rejected: guard nearby", "Outcome", "Repair reason"] {
+            assert!(rendered.contains(needle), "decision detail missing {needle}");
+        }
+    }
+
+    #[test]
+    fn decision_detail_follows_cursor_when_key_is_stale() {
+        let world = alc_world::World::new(13);
+        let mut data = view_data_from_world(&world);
+        data.decision_audit = (0..2)
+            .map(|i| sumo::DecisionAuditRecord {
+                time: alc_core::SimTime { secs: 100 + i },
+                actor: format!("prisoner:{i}"),
+                action: "fight".to_string(),
+                summary: format!("decision {i}"),
+                reason: format!("DETAIL_TOKEN_{i}"),
+                validation: "accepted".to_string(),
+                ..Default::default()
+            })
+            .collect();
+        let stale_key = crate::decision_key(&data.decision_audit[0]);
+        let ui = UiState {
+            mode: ViewMode::DecisionAudit,
+            scroll: 1,
+            selected_decision: Some(stale_key),
+            ..UiState::new()
+        };
+        let rendered = render_text(&data, &ui, 160, 60);
+        assert!(rendered.contains("DETAIL_TOKEN_1"), "detail must follow the cursor");
+        assert!(!rendered.contains("DETAIL_TOKEN_0"), "stale key must not override the cursor");
     }
 
     #[test]

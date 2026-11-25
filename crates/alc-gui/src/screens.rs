@@ -730,16 +730,22 @@ fn incidents(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
             });
         },
         |ui, ctx| {
-            if let Some(id) = ctx.state.selected_incident {
-                if let Some(record) = snap.incidents.iter().find(|r| r.id == id) {
-                    ui.heading("Incident detail");
-                    panels::incident_detail(ui, record, &name_map);
-                    if !record.resolved && ui.button("Resolve incident").clicked() {
-                        ctx.emit(Command::ResolveIncident(id));
-                    }
+            let selected = ctx
+                .state
+                .selected_incident
+                .and_then(|id| snap.incidents.iter().find(|r| r.id == id))
+                .or_else(|| snap.incidents.iter().rev().find(|r| {
+                    r.severity >= ctx.state.incident_min_severity
+                        && (!ctx.state.incident_open_only || !r.resolved)
+                }));
+            if let Some(record) = selected {
+                ui.heading("Incident detail");
+                panels::incident_detail(ui, record, &name_map);
+                if !record.resolved && ui.button("Resolve incident").clicked() {
+                    ctx.emit(Command::ResolveIncident(record.id));
                 }
             } else {
-                ui.label("Select an incident to see its cause, consequences and staff response.");
+                ui.label("Select an incident to see its cause, actors, validation and outcome.");
             }
         },
     );
@@ -761,31 +767,39 @@ fn audit(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
         }
     });
     let filter = ctx.state.decision_validation_filter.clone();
+    let visible: Vec<_> = snap
+        .decision_audit
+        .iter()
+        .filter(|record| filter.as_deref().is_none_or(|f| data::validation_matches(&record.validation, f)))
+        .collect();
+    let selected_key = ctx.state.selected_decision.clone();
     columns(
         ui,
         ctx,
         |ui, ctx| {
             egui::ScrollArea::vertical().id_salt("audit_list").show(ui, |ui| {
-                for (index, record) in snap.decision_audit.iter().enumerate().rev() {
-                    if let Some(f) = &filter {
-                        if !record.validation.eq_ignore_ascii_case(f) { continue; }
-                    }
-                    let selected = ctx.state.selected_decision == Some(index);
+                for record in visible.iter().rev() {
+                    let key = data::decision_key(record);
+                    let selected = selected_key.as_deref() == Some(key.as_str());
                     if ui.selectable_label(selected, format!("{} {} · {} · {}", record.time, data::short_truncate(&record.actor, 16), data::short_truncate(&record.action, 16), record.validation)).clicked() {
-                        ctx.state.selected_decision = Some(index);
+                        ctx.state.selected_decision = Some(key);
                     }
                 }
-                if snap.decision_audit.is_empty() { ui.label("No decisions audited yet."); }
+                if visible.is_empty() { ui.label("No decisions audited yet."); }
             });
         },
         |ui, ctx| {
-            if let Some(index) = ctx.state.selected_decision {
-                if let Some(record) = snap.decision_audit.get(index) {
-                    ui.heading("Decision detail");
-                    panels::decision_detail(ui, record);
-                }
+            let selected = ctx
+                .state
+                .selected_decision
+                .as_deref()
+                .and_then(|key| visible.iter().copied().find(|r| data::decision_key(r) == key))
+                .or_else(|| visible.last().copied());
+            if let Some(record) = selected {
+                ui.heading("Decision detail");
+                panels::decision_detail(ui, record);
             } else {
-                ui.label("Select an audit entry to see its actor, validation reason and outcome.");
+                ui.label("Select an audit entry to see its cause, actors, validation and outcome.");
             }
         },
     );

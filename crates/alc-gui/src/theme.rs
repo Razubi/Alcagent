@@ -74,11 +74,15 @@ pub fn urgency_colour(v: f32) -> Color32 {
 /// Colour for a decision validation outcome string.
 #[must_use]
 pub fn validation_colour(v: &str) -> Color32 {
-    match v.to_ascii_lowercase().as_str() {
-        "accepted" => good_colour(1.0),
-        "repaired" | "proposed" => Color32::from_rgb(255, 195, 90),
-        "rejected" => Color32::from_rgb(255, 90, 90),
-        _ => MUTED,
+    let value = v.to_ascii_lowercase();
+    if value.starts_with("accepted") {
+        good_colour(1.0)
+    } else if value.starts_with("rejected") {
+        Color32::from_rgb(255, 90, 90)
+    } else if value.starts_with("repaired") || value.starts_with("proposed") {
+        Color32::from_rgb(255, 195, 90)
+    } else {
+        MUTED
     }
 }
 

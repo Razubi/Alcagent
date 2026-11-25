@@ -143,7 +143,7 @@ println!("{:?} -> {:?}", outcome.result, outcome.decision);
 
 `DecisionOutcome { agent, decision, result: ValidationResult, applied: bool }`.
 `ValidationResult` is re-exported: `Accepted(Decision) | Repaired(Decision) | Rejected { reason }`.
-Only applied decisions enter the engine decision audit log (`sim.decision_log()`).
+Applied decisions enter `sim.decision_log()`; every outcome, including rejected proposals, enters `sim.decision_audit_log()` with its validation status and reason.
 
 ### 4.2 The 13 decision variants and their effects
 
