@@ -303,7 +303,6 @@ dependencies = [
  "alc-economy",
  "serde",
  "serde_json",
- "thiserror 2.0.21",
  "tracing",
 ]
 
@@ -323,7 +322,6 @@ dependencies = [
  "rand_pcg",
  "serde",
  "serde_json",
- "thiserror 2.0.21",
  "tracing",
 ]
 

@@ -6,4 +6,6 @@
 - Baseline commits: 40afb6f, 3e5696b, 9e6bc15, 97ff20d (all authored by Razubi <matthewmanning278@gmail.com>).
 - Created overnight spec backlog: dev/ralph/specs/001..014.
 - Loop entrypoint: dev/ralph/ralph-loop.ps1.
+- Full `cargo test --workspace` passed (all suites, including 730-day chaos soak and 365-day review soak).
+- Final manifest cleanup removed the last unused dependency; `cargo build --workspace --all-targets` is warning-free.
 
