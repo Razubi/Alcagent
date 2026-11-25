@@ -27,18 +27,19 @@ Maps each design document to implemented state. Maintained docs only; status ref
 - **Wave 4 additions (landed):** engine R1–R7 surface is present (`Sim::map_frame`, `propose_decision`, policy modes, structured incident logs, extended invariants/state digest, driver event wiring); persistence converter edits were applied and the workspace is green. See `../Communication/Note's/wave4-implementation-status.md`.
 - **Contraband/rehab** library modules exist (`alc-social::contraband`, `alc-social::rehab`) but full world-tick lifecycle wiring is incomplete.
 - **Post-release tracking** partial (sumo engine-side helpers; persistent community outcomes not fully wired).
-- **`alc-gui`** crate exists at `crates/alc-gui` but is not a workspace member and does not build standalone.
+- **`alc-gui`** crate exists at `crates/alc-gui` but is not a workspace member and does not build standalone. This is no longer merely a deferred decision: a buildable GUI is part of the 0.05 UI/GUI overhaul requirement.
 
-## Known gaps / Wave 4 work items (deferred to 0.1 beta or later)
+## Known gaps / 0.05 blockers and remaining Wave 4/5 work items
 
-1. Full `KnowledgeStore` (design §9) — warden uses inbox IDs.
-2. Wave 4 engine support R1–R6: map frame, decision proposal/dry-run, policy mode switch, structured incidents with causality, persistence migration, new invariants.
-3. Contraband and rehab full lifecycle wiring.
-4. Post-release outcome tracking (design §15).
-5. AI-generated narrative text (orchestrator has no provider client).
-6. `World::summary()` / CLI ergonomics; `alcagent --ui` not present (TUI is `observe`).
-7. `alc-gui` integration decision + doc cleanup.
-8. Wave 5 items: real navigation graph, UI map switch to `MapFrame`, council/shadow behavior, driver authority unification, `&mut Sim` applier signature.
+1. **Major UI/GUI overhaul + real game map (0.05 blocker):** TUI map is schematic; `alc-gui` is not buildable. 0.05 requires a buildable GUI observer sharing DTOs/validated controls with the TUI and a real spatial map from `sumo::MapFrame` (cell/wing occupancy, pawn positions, movement/path hints, incident overlays, facility condition/capacity/utilization).
+2. Full `KnowledgeStore` (design §9) — warden uses inbox IDs.
+3. Wave 4 engine support R1–R6: map frame, decision proposal/dry-run, policy mode switch, structured incidents with causality, persistence migration, new invariants.
+4. Contraband and rehab full lifecycle wiring.
+5. Post-release outcome tracking (design §15).
+6. AI-generated narrative text (orchestrator has no provider client).
+7. `World::summary()` / CLI ergonomics; `alcagent --ui` not present (TUI is `observe`).
+8. Driver authority unification and `&mut Sim` applier signature remain Wave 5 items.
+9. Real navigation-graph depth remains Wave 5 work; the required 0.05 map must consume the existing `MapFrame` surface even if the deeper nav graph lands later.
 
 ## Wave 4 driver / integration pass (Integration & Docs engineer)
 

@@ -7,9 +7,15 @@ Master Directive lives in `AGENTS.md` (mirror of the original `agents.md` direct
 
 ## Status (version 0.05 — active development / Wave 4)
 
-The simulation is playable and the workspace **builds**. The current work wave (Wave 4) is adding
+The simulation is playable and the workspace **builds**. The current work wave (Wave 4) added
 intentions, a council of drives, memory-driven choices, a navigation graph, real-time pawn
-positions, structured conflicts and a live map (see `../Communication/Sumo-AI-Team/NEXT-UPDATE-SUPPORT.md`).
+positions, structured conflicts and an engine-level map surface (see `../Communication/Sumo-AI-Team/NEXT-UPDATE-SUPPORT.md`).
+
+**0.05 completion blocker:** the major UI/GUI overhaul and a real game map are now required. The
+TUI map is still a schematic facility table and `alc-gui` is not a buildable workspace member. 0.05
+is not complete until the GUI observer is buildable and both frontends render a spatial map with
+cell/wing occupancy, prisoner/guard pawn positions, movement/path hints and incident overlays from
+`sumo::MapFrame`.
 
 **Verified 2026-11-23:**
 - `cargo build --workspace` / `cargo test --workspace` — **green**. 184 tests passed,
@@ -34,6 +40,7 @@ cargo run -- --help           # CLI + TUI keybindings
 ## Current milestone
 
 - **Current version:** 0.05
+- **0.05 exit blocker:** major UI/GUI overhaul + real game map implementation.
 - **Next milestone:** **0.1 beta** — scope in `../Project/version-milestones.md`.
 
 ## Where to look

@@ -10,7 +10,7 @@
 ## 1. Headline feature — GUI (`alc-gui`)
 
 ### 1.1 Decision
-Add a **desktop GUI** for the sumo engine as the headline of beta 0.05. The existing observer (`alc-ui`) is a read-only ratatui TUI over `&World`; it has no GUI counterpart.
+Add a **desktop GUI** for the sumo engine as the headline of beta 0.05. The existing observer (`alc-ui`) is a ratatui TUI over summaries/DTOs and validated controls; it currently has no buildable GUI counterpart. The current map is also schematic rather than a real game map. Both are **0.05 blockers**: the release requires a major UI/GUI overhaul that includes a real spatial game map in the TUI and GUI.
 
 GUI framework decision (from UI research, verified): **egui `0.36.2` + eframe `0.36.2`**.
 - egui 0.36.2 is present in the local cargo registry cache; MSRV Rust ≥ 1.95, toolchain is 1.100.0 → compatible (workspace `rust-version = 1.85` stays as a floor).
@@ -54,14 +54,29 @@ GUI framework decision (from UI research, verified): **egui `0.36.2` + eframe `0
 | 6 | Guard Roster | guards × posts / shift / fatigue / stress / history |
 | 7 | Stats Dashboard | `Stats` (13 fields) + `leader_board(10)`; population-over-time via proposed `Sim::population_history()` |
 | 8 | Social Network | `SocialGraph` + `alc_social::detect_roles` |
-| 9 | Map | schematic with pan/zoom; port of TUI `render_map`; hover tooltips |
+| 9 | Real game map | spatial cell/wing layout; prisoner/guard pawn positions from `sumo::MapFrame`; movement/path hints; incident overlays; facility condition/capacity/utilization; pan/zoom and hover detail. Replaces the schematic facility table. |
 
 ### 1.6 Phase plan
 - **Phase 1:** App + HUD + Institution Overview + Warden control windows.
-- **Phase 2:** remaining panels (timeline, incidents, policy, expansion, schedule, roster, stats, social, map).
-- **Phase 3:** map pan/zoom, population graph, stats windows, save/load UI.
+- **Phase 2:** remaining panels (timeline, incidents, policy, expansion, schedule, roster, stats, social) and the first real map implementation in both TUI and GUI.
+- **Phase 3:** map pan/zoom, cell/wing rosters, pawn movement/path hints, incident overlays, population graph, stats windows, save/load UI, and UX fixes for clipped panels/help/tabs.
 
 ## 2. Required features (beta core)
+
+### 2.0 R0 — Major UI/GUI overhaul + real game map (0.05 blocker)
+
+- `alc-gui` becomes a buildable workspace member and ships the same 11 observation views as the TUI.
+- TUI and GUI share DTO/read-model contracts and validated controls; no frontend mutates raw `World`.
+- Replace the schematic facility table with a real game map:
+  - cell/wing layout and rosters;
+  - prisoner/guard pawn positions from `sumo::MapFrame`;
+  - movement/path hints;
+  - incident overlays;
+  - facility condition, capacity and utilization;
+  - pan/zoom and hover detail in GUI;
+  - equivalent inspectable detail in TUI.
+- Fix UI legibility/control defects: clipped finance/help/tab panels, incorrect help text, inconsistent search scope, stale selection/bookmarks after load, and any control that is advertised but not reachable.
+- Acceptance: the observer can follow an individual or group through physical space, time, relationships and institutional response in both TUI and GUI.
 
 ### 2.1 R1 — World-level incident log + "Incident Reports" view
 - `World::incidents` store; capture in `make_decisions_step` + `resolve_encounters_step`.
@@ -94,7 +109,7 @@ GUI framework decision (from UI research, verified): **egui `0.36.2` + eframe `0
 - **H4 — Contraband in the world:** world market state + daily generation via `alc_social::contraband_market` / `contraband_discovery`; detection → `ContrabandFound` events; freedom-need escalation.
 - **H5 — Warden KnowledgeStore:** direct knowledge + rumors + standing/expiry with provenance; warden weighs it.
 - **H6 — Full daily schedule display:** `World::schedules`, `resolve_schedules_step`, Prisoner schedule timeline.
-- **H7 — Map / cells view:** prisoner placement on map + per-wing cell rosters (`World::prisoner_location`).
+- **H7 — Map / cells view:** promoted into R0 as a 0.05 blocker — prisoner/guard placement on a real map + per-wing cell rosters, movement/path hints and incident overlays (`World::prisoner_location`, `World::guard_location`, `sumo::MapFrame`).
 - **H8 — Finance dashboard enhancements:** wire `AnnualBudgetPlan` / `FinanceHealthState` / `BudgetLine`; budget plan to world; variance/trend lines; guard payroll; health states.
 
 ## 4. Nice-to-have (N1–N6)
@@ -108,8 +123,8 @@ GUI framework decision (from UI research, verified): **egui `0.36.2` + eframe `0
 
 ## 5. Proposed beta 0.05 ship list (priority order)
 
-1. **Must-have (headline + required):** GUI (`alc-gui`, Phase 1–3 panels) · R1 incident log · R2 decision audit log · R3 rehab wiring · R4 post-release tracking · R5 decision batching.
-2. **Small, user-visible, ship now:** R2, R1, H1, H6, H7.
+1. **Must-have (headline + required):** R0 major UI/GUI overhaul + real game map · GUI (`alc-gui`, Phase 1–3 panels, buildable workspace member) · R1 incident log · R2 decision audit log · R3 rehab wiring · R4 post-release tracking · R5 decision batching.
+2. **Small, user-visible, ship now:** R2, R1, H1, H6; H7 is folded into R0 and is no longer optional.
 3. **Core systems (ship if capacity allows):** R3, R4, H2, H4.
 4. **High-value stretch:** H3, H5, H8.
 
@@ -125,7 +140,7 @@ Exec order (Features agent): R4/R5 → R1 → R2 → R3 → H1–H3 → H4–H6 
 
 ## 7. Risks / open design questions (beta-relevant)
 
-- **GUI:** eframe fetch on first build; headless CI (keep TUI path); MSRV interplay (egui ≥1.95 floor); control panel mutates world — engine is read-oriented (AGENTS §19), treat as feature addition.
+- **GUI / map:** eframe fetch on first build; headless CI must keep TUI path; MSRV interplay (egui ≥1.95 floor); GUI controls must route through the same validated `Sim` control surface as the TUI (AGENTS §19); real map must consume `sumo::MapFrame` rather than a bespoke world copy; both frontends must be built/tested before 0.05 can be accepted.
 - **Engine:** catch-all `_ => ok()` in decision acceptance; parole ledger not persisted on `Sim::load`; `ParoleDenied` loses reason; escape-path divergence (world tick removes escaped; engine path does not); `MoveTo` sets `schedule.wing` approximation; `Trade` effect-free; `stats_since` population history only fills on tick.
 - **Ops:** `Sim::wait_for_event` unbounded-loop footgun; `full_365_day_run_no_invariant_violations` 30 s wall-clock assert (timing flake risk); invariant coverage gaps (decisions/determinism/engine_api/observation/persistence tests).
 - **Social/AI:** double-driving guards (`World::tick` vs `Sim::guard_duty_cycle`); guard-report 3-mappings inconsistency; doc drift (`../../sumo/sumo-engine-research.md` missing expansion APIs).
