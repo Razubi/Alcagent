@@ -143,6 +143,14 @@ pub trait SimDriver {
     /// is not yet re-exported through `sumo` for the `alcagent` binary crate, so
     /// the driver-level enrollment hook is intentionally not wired here yet.
     fn apply_rehab_progress(&mut self, prisoner_id: u64, minutes: u64) -> f32;
+
+    /// Downcast access to the concrete driver (0.05 test support).
+    ///
+    /// Returns `None` by default; drivers that want it override with
+    /// `Some(self)`. Used by `alc-ui` tests to reach mock state.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
 }
 
 /// Startup options for the TUI.
@@ -182,6 +190,10 @@ pub struct App {
     save_dir: std::path::PathBuf,
     autosave_days: u64,
     status_msg: Option<String>,
+    /// Incident ids already seen by the auto-pause-on-critical logic this
+    /// session; a *new* critical id pauses the sim, so resuming (`SPACE`)
+    /// works instead of re-pausing forever.
+    seen_critical: Vec<u64>,
 }
 
 impl App {
@@ -195,12 +207,18 @@ impl App {
             save_dir: opts.save_dir,
             autosave_days: opts.autosave_days,
             status_msg: None,
+            seen_critical: Vec::new(),
         };
-        // The engine starts paused by default; mirror our playback state.
+        // Speed precedence: paused observer state wins; otherwise honor a
+        // speed the driver already has (e.g. `Sim::load` restores the saved
+        // `World.speed`); only fall back to RealTime when the driver is
+        // actually paused but we are not.
         let engine_speed = if app.paused {
             TimeSpeed::Paused
-        } else {
+        } else if app.driver.speed() == TimeSpeed::Paused {
             TimeSpeed::RealTime
+        } else {
+            app.driver.speed()
         };
         app.driver.set_speed(engine_speed);
         app
@@ -273,6 +291,11 @@ impl App {
                 if self.autosave_days > 0 {
                     self.driver.enable_autosave(self.save_dir.clone(), self.autosave_days);
                 }
+                // Clear observer state that references the pre-load world so
+                // stale pins/queries/notifications don't leak into the new
+                // session, then revalidate cached selections.
+                self.clear_observer_state();
+                self.revalidate_selections();
                 self.notify(format!("Loaded save from {}", dir.display()));
                 Ok(())
             }
@@ -283,61 +306,92 @@ impl App {
         }
     }
 
+    /// Drop observer state that may reference pre-load entities: bookmarks,
+    /// the free-text search (including active input), and notifications.
+    fn clear_observer_state(&mut self) {
+        self.ui.bookmarks.clear();
+        self.ui.search.clear();
+        self.ui.search_active = false;
+        self.ui.notifications.clear();
+    }
+
+    /// Re-clamp cached entity selections after the world changed under the
+    /// observer. Reads the world only through the driver.
+    fn revalidate_selections(&mut self) {
+        let cases = self.driver.contraband_cases();
+        self.ui.selected_contraband = self
+            .ui
+            .selected_contraband
+            .filter(|id| cases.iter().any(|c| c.case_id == *id));
+        let queue = self.driver.construction_queue();
+        self.ui.selected_construction = self
+            .ui
+            .selected_construction
+            .filter(|id| queue.iter().any(|p| p.id == *id));
+        let incidents = self.driver.incident_records();
+        self.ui.selected_incident = self
+            .ui
+            .selected_incident
+            .filter(|id| incidents.iter().any(|r| r.id == *id));
+        self.sync_selection();
+    }
+
     /// Prisoners visible to the prisoner view given the current search query.
     fn visible_prisoners(&self) -> Vec<sumo::PrisonerSummary> {
-        let all = self.driver.prisoners();
-        let q = self.ui.query().trim().to_lowercase();
-        if q.is_empty() {
-            return all;
-        }
-        all.into_iter()
-            .filter(|p| p.name.to_lowercase().contains(&q) || p.id.0.to_string().contains(&q))
+        let q = self.ui.query();
+        self.driver
+            .prisoners()
+            .into_iter()
+            .filter(|p| query_matches(&p.name, q) || query_matches(&p.id.0.to_string(), q))
             .collect()
     }
 
     /// Gangs visible to the gang view given the current search query.
     fn visible_gangs(&self) -> Vec<sumo::GangSummary> {
-        let all = self.driver.gangs();
-        let q = self.ui.query().trim().to_lowercase();
-        if q.is_empty() {
-            return all;
-        }
-        all.into_iter()
-            .filter(|g| g.name.to_lowercase().contains(&q) || g.id.to_string().contains(&q))
+        let q = self.ui.query();
+        self.driver
+            .gangs()
+            .into_iter()
+            .filter(|g| query_matches(&g.name, q) || query_matches(&g.id.to_string(), q))
             .collect()
     }
 
     /// Guards visible to the staff view given the current search query.
     fn visible_guards(&self) -> Vec<sumo::GuardSummary> {
-        let all = self.driver.guards();
-        let q = self.ui.query().trim().to_lowercase();
-        if q.is_empty() {
-            return all;
-        }
-        all.into_iter()
-            .filter(|g| g.name.to_lowercase().contains(&q) || g.id.to_string().contains(&q))
+        let q = self.ui.query();
+        self.driver
+            .guards()
+            .into_iter()
+            .filter(|g| query_matches(&g.name, q) || query_matches(&g.id.to_string(), q))
             .collect()
     }
 
     /// Events visible to the timeline view given the current search query.
     fn visible_events(&self) -> Vec<sumo::WorldEvent> {
-        let all = self.driver.events_since(SimTime::EPOCH);
-        let q = self.ui.query().trim().to_lowercase();
-        if q.is_empty() {
-            return all;
-        }
-        all.into_iter()
+        let q = self.ui.query();
+        self.driver
+            .events_since(SimTime::EPOCH)
+            .into_iter()
             .filter(|e| {
-                e.summary.to_lowercase().contains(&q)
-                    || format!("{:?}", e.kind).to_lowercase().contains(&q)
+                query_matches(&e.summary, q) || query_matches(&format!("{:?}", e.kind), q)
             })
             .collect()
     }
 
     /// Incident records for the incident view, honoring the declarative
-    /// [`UiState`] filter through the driver.
+    /// [`UiState`] filter through the driver *and* the free-text query.
     fn visible_incidents(&self) -> Vec<sumo::IncidentRecord> {
-        self.driver.incident_records_filtered(self.ui.filter())
+        let q = self.ui.query().trim().to_lowercase();
+        self.driver
+            .incident_records_filtered(self.ui.filter())
+            .into_iter()
+            .filter(|r| {
+                q.is_empty()
+                    || r.kind.to_lowercase().contains(&q)
+                    || r.location.to_lowercase().contains(&q)
+                    || r.disposition.to_lowercase().contains(&q)
+            })
+            .collect()
     }
 
     /// Decision audit entries for the decision view, narrowed by the current
@@ -345,15 +399,14 @@ impl App {
     /// optional validation filter.
     fn visible_decisions(&self) -> Vec<sumo::DecisionAuditRecord> {
         let all = self.driver.decision_audit_log().to_vec();
-        let q = self.ui.query().trim().to_lowercase();
+        let q = self.ui.query();
         let vf = self.ui.decision_validation_filter.as_deref();
         all.into_iter()
             .filter(|d| {
-                let q_ok = q.is_empty()
-                    || d.actor.to_lowercase().contains(&q)
-                    || d.source.to_lowercase().contains(&q)
-                    || d.action.to_lowercase().contains(&q)
-                    || d.summary.to_lowercase().contains(&q);
+                let q_ok = query_matches(&d.actor, q)
+                    || query_matches(&d.source, q)
+                    || query_matches(&d.action, q)
+                    || query_matches(&d.summary, q);
                 let v_ok = match vf {
                     None => true,
                     Some("repaired") => d.validation.starts_with("repaired"),
@@ -405,19 +458,9 @@ impl App {
                 }
             }
 
-            // Observer safety valve: halt on a newly visible critical incident.
-            if self.ui.pause_on_critical && !self.paused {
-                let has_critical = self
-                    .driver
-                    .incident_records()
-                    .into_iter()
-                    .any(|r| r.severity >= 0.75 && !r.resolved);
-                if has_critical {
-                    self.paused = true;
-                    self.driver.set_speed(TimeSpeed::Paused);
-                    self.notify("Auto-paused: unresolved critical incident");
-                }
-            }
+            // Observer safety valve: halt once on a *newly seen* critical
+            // incident (see `check_pause_on_critical`).
+            self.check_pause_on_critical();
 
             self.sync_selection();
             terminal.draw(|frame| self.render(frame))?;
@@ -426,25 +469,24 @@ impl App {
         Ok(())
     }
 
-    fn render(&self, frame: &mut Frame) {
-        let status = AppStatus {
-            paused: self.paused,
-            ticks_per_second: self.ticks_per_second,
-            status_msg: self.status_msg.clone(),
-            save_dir: self.save_dir.display().to_string(),
-            autosave_days: self.autosave_days,
-        };
-        let obs = self.driver.observation();
-        // Lists are filtered through [`App::visible_*`] so the search query in
-        // [`UiState`] narrows exactly what the (read-only) views render.
-        let prisoners = self.visible_prisoners();
-        let gangs = self.visible_gangs();
-        let guards = self.visible_guards();
-        let data = views::ViewData {
-            observation: obs,
-            prisoners,
-            gangs,
-            guards,
+    /// Assemble the read-only [`views::ViewData`] bundle the renderers use.
+    /// `map_frame` is fetched once per frame through the driver (no raw
+    /// `World` access — see the [`SimDriver`] docs); true totals come from the
+    /// driver unfiltered by the observer search so view titles can show both
+    /// visible and total counts.
+    fn build_view_data(&self) -> views::ViewData {
+        views::ViewData {
+            observation: self.driver.observation(),
+            map_frame: self.driver.map_frame(),
+            total_prisoners: self.driver.prisoners().len(),
+            total_gangs: self.driver.gangs().len(),
+            total_guards: self.driver.guards().len(),
+            // Lists are filtered through [`App::visible_*`] so the search
+            // query in [`UiState`] narrows exactly what the (read-only) views
+            // render.
+            prisoners: self.visible_prisoners(),
+            gangs: self.visible_gangs(),
+            guards: self.visible_guards(),
             warden: self.driver.warden(),
             economy: self.driver.economy(),
             social_edges: self.driver.social_edges(),
@@ -463,7 +505,18 @@ impl App {
             contraband_inventory: self.driver.contraband_inventory(),
             budget_snapshot: self.driver.budget_snapshot(),
             selected_schedule: self.ui.selected_prisoner.and_then(|id| self.driver.schedule_timeline(id)),
+        }
+    }
+
+    fn render(&self, frame: &mut Frame) {
+        let status = AppStatus {
+            paused: self.paused,
+            ticks_per_second: self.ticks_per_second,
+            status_msg: self.status_msg.clone(),
+            save_dir: self.save_dir.display().to_string(),
+            autosave_days: self.autosave_days,
         };
+        let data = self.build_view_data();
         views::draw(frame, &data, &self.ui, &status);
     }
 
@@ -471,6 +524,21 @@ impl App {
     /// fields in [`UiState`] consistent with it.
     fn sync_selection(&mut self) {
         let obs = self.driver.observation();
+        if matches!(self.ui.mode, ViewMode::Warden) {
+            // Preserve a context prisoner so the Warden's r/R (rehab
+            // enroll/drop) has a target even when the observer entered the
+            // view before any Prisoner selection was made.
+            if self.ui.selected_prisoner.is_none() {
+                self.ui.selected_prisoner = self.driver.prisoners().first().map(|p| p.id.0);
+            }
+            // Revalidate the selected construction project against the queue
+            // so x/X/> target the queue entry, not a stale id.
+            let queue = self.driver.construction_queue();
+            let still_valid = queue.iter().any(|p| Some(p.id) == self.ui.selected_construction);
+            if !queue.is_empty() && !still_valid {
+                self.ui.selected_construction = queue.first().map(|p| p.id);
+            }
+        }
         let prisoners = if matches!(self.ui.mode, ViewMode::Prisoner) { self.visible_prisoners() } else { Vec::new() };
         let gangs = if matches!(self.ui.mode, ViewMode::Gang) { self.visible_gangs() } else { Vec::new() };
         let guards = if matches!(self.ui.mode, ViewMode::Staff) { self.visible_guards() } else { Vec::new() };
@@ -500,7 +568,11 @@ impl App {
             self.ui.scroll = max;
         }
         let idx = self.ui.scroll as usize;
-        self.ui.selected_prisoner = prisoners.get(idx).map(|p| p.id.0);
+        // In Warden mode there is no prisoner list; the context prisoner set
+        // above is preserved instead.
+        if !matches!(self.ui.mode, ViewMode::Warden) {
+            self.ui.selected_prisoner = prisoners.get(idx).map(|p| p.id.0);
+        }
         self.ui.selected_gang = gangs.get(idx).map(|g| g.id);
         self.ui.selected_guard = guards.get(idx).map(|g| g.id);
         if matches!(self.ui.mode, ViewMode::IncidentReports) {
@@ -515,12 +587,13 @@ impl App {
             };
         }
         if matches!(self.ui.mode, ViewMode::DecisionAudit) {
-            self.ui.selected_decision = decisions.get(idx).map(|d| format!("{}|{}", d.actor, d.action));
+            self.ui.selected_decision = decisions.get(idx).map(|d| decision_key(idx, d));
         }
         let _ = obs;
     }
 
     fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        let ctrl = modifiers.contains(KeyModifiers::CONTROL);
         if self.ui.search_active {
             match code {
                 KeyCode::Esc | KeyCode::Enter => {
@@ -530,7 +603,19 @@ impl App {
                 KeyCode::Backspace => {
                     self.ui.search.pop();
                 }
-                KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl keys stay live while searching (0.05 control wiring).
+                KeyCode::Char('c') | KeyCode::Char('C') if ctrl => {
+                    self.should_quit = true;
+                }
+                KeyCode::Char('l') | KeyCode::Char('L') if ctrl => {
+                    let _ = self.quick_load();
+                }
+                // Clear the query while keeping the search input open.
+                KeyCode::Char('w') | KeyCode::Char('W') if ctrl => {
+                    self.ui.search.clear();
+                    self.notify("Query cleared");
+                }
+                KeyCode::Char(c) if !ctrl => {
                     if self.ui.search.len() < 64 {
                         self.ui.search.push(c);
                     }
@@ -539,6 +624,19 @@ impl App {
             }
             return;
         }
+        if self.ui.show_help {
+            match code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.ui.help_scroll = self.ui.help_scroll.saturating_sub(1);
+                    return;
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.ui.help_scroll = self.ui.help_scroll.saturating_add(1);
+                    return;
+                }
+                _ => {}
+            }
+        }
         if modifiers.contains(KeyModifiers::CONTROL) {
             if code == KeyCode::Char('c') || code == KeyCode::Char('C') {
                 self.should_quit = true;
@@ -546,6 +644,10 @@ impl App {
                 // Quick load from the configured save directory (0.05 control).
                 // Errors are surfaced through the status message.
                 let _ = self.quick_load();
+            } else if code == KeyCode::Char('r') || code == KeyCode::Char('R') {
+                // Resolve/acknowledge the selected (or newest open critical)
+                // incident via the validated driver control (0.05).
+                self.resolve_critical_incident();
             }
             return;
         }
@@ -707,6 +809,12 @@ impl App {
                     self.notify("No construction project selected");
                 }
             }
+            KeyCode::Char('u') if matches!(self.ui.mode, ViewMode::Warden) => {
+                self.cycle_construction(1);
+            }
+            KeyCode::Char('O') if matches!(self.ui.mode, ViewMode::Warden) => {
+                self.cycle_construction(-1);
+            }
             KeyCode::Char(c @ '1'..='9') => {
                 if let Some(mode) = views::mode_from_index((c as u8 - b'1') as usize) {
                     self.ui.mode = mode;
@@ -859,6 +967,79 @@ impl App {
         self.ui.scroll = next.clamp(0, i32::from(u16::MAX)) as u16;
     }
 
+    /// Resolve the selected incident, or — when none is selected — the newest
+    /// open critical incident (Ctrl-R). Routing goes through the validated
+    /// [`SimDriver::resolve_incident`] control; it never mutates driver state
+    /// directly.
+    fn resolve_critical_incident(&mut self) {
+        let records = self.driver.incident_records();
+        let newest_critical = records
+            .iter()
+            .rev()
+            .find(|r| !r.resolved && r.severity >= 0.75)
+            .map(|r| r.id);
+        let target = match self.ui.selected_incident {
+            Some(id) if records.iter().any(|r| r.id == id && !r.resolved) => Some(id),
+            _ => newest_critical,
+        };
+        match target {
+            Some(id) => {
+                let ok = self.driver.resolve_incident(id);
+                // If the incident re-appears as unresolved later, allow the
+                // auto-pause-on-critical to fire again.
+                self.seen_critical.retain(|&s| s != id);
+                self.notify(format!(
+                    "Resolved incident #{id}: {}",
+                    if ok { "recorded" } else { "already resolved / unavailable" }
+                ));
+            }
+            None => self.notify("No open critical incidents"),
+        }
+    }
+
+    /// Cycle the Warden's selected construction project forward (`u`) or
+    /// backward (`U`) through the current queue.
+    fn cycle_construction(&mut self, delta: i32) {
+        let queue = self.driver.construction_queue();
+        if queue.is_empty() {
+            self.notify("No construction projects in queue");
+            return;
+        }
+        let len = queue.len() as i32;
+        let idx = match self.ui.selected_construction {
+            Some(id) => queue
+                .iter()
+                .position(|p| p.id == id)
+                .map(|i| (i as i32 + delta).rem_euclid(len))
+                .unwrap_or(0),
+            None => 0,
+        };
+        let id = queue[idx as usize].id;
+        self.ui.selected_construction = Some(id);
+        self.notify(format!("Selected construction project #{id} ({}/{})", idx + 1, queue.len()));
+    }
+
+    /// Observer safety valve from `run()`: pause once on a *newly seen*
+    /// critical incident (see [`App::seen_critical`]).
+    fn check_pause_on_critical(&mut self) {
+        if !(self.ui.pause_on_critical && !self.paused) {
+            return;
+        }
+        let new_critical = self
+            .driver
+            .incident_records()
+            .into_iter()
+            .filter(|r| r.severity >= 0.75 && !r.resolved)
+            .map(|r| r.id)
+            .find(|id| !self.seen_critical.contains(id));
+        if let Some(id) = new_critical {
+            self.seen_critical.push(id);
+            self.paused = true;
+            self.driver.set_speed(TimeSpeed::Paused);
+            self.notify("Auto-paused: unresolved critical incident");
+        }
+    }
+
     fn toggle_pause(&mut self) {
         self.paused = !self.paused;
         let speed = if self.paused {
@@ -876,6 +1057,20 @@ impl App {
     fn speed_down(&mut self) {
         self.ticks_per_second = (self.ticks_per_second / 2).max(1);
     }
+}
+
+/// Unique record identity for a decision-audit row: `"<index>|<time>|<actor>|<action>"`
+/// (see [`UiState::selected_decision`]). The index disambiguates identical
+/// actor/action pairs, so detail always matches the cursor.
+fn decision_key(idx: usize, d: &sumo::DecisionAuditRecord) -> String {
+    format!("{idx}|{}|{}|{}", d.time, d.actor, d.action)
+}
+
+/// Shared case-insensitive substring matcher for the `visible_*` filters.
+/// Empty queries match everything.
+fn query_matches(haystack: &str, needle: &str) -> bool {
+    let n = needle.trim().to_lowercase();
+    n.is_empty() || haystack.to_lowercase().contains(&n)
 }
 
 /// Convenience entry point: set up the terminal, run the app, and always
@@ -901,12 +1096,30 @@ pub fn run_tui(driver: Box<dyn SimDriver>, opts: TuiOptions) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
 
     struct MockDriver {
         sim: sumo::Sim,
         ticks: u32,
         lockdown: bool,
         autosave_enables: Vec<(std::path::PathBuf, u64)>,
+        /// Structured incident records served by `incident_records`.
+        incidents: Vec<sumo::IncidentRecord>,
+        /// Incident ids recorded through `resolve_incident`.
+        resolved_incidents: Vec<u64>,
+        /// Structured decision audit records served by `decision_audit_log`.
+        decisions: Vec<sumo::DecisionAuditRecord>,
+        /// Construction projects in the queue served by `construction_queue`.
+        construction_queue: Vec<sumo::ConstructionSummary>,
+    }
+
+    /// Borrow the concrete [`MockDriver`] behind an [`App`] (tests).
+    fn mock(app: &mut App) -> &mut MockDriver {
+        app.driver_mut()
+            .as_any_mut()
+            .and_then(|a| a.downcast_mut::<MockDriver>())
+            .expect("App driver is a MockDriver")
     }
 
     impl SimDriver for MockDriver {
@@ -943,15 +1156,23 @@ mod tests {
         }
         fn maybe_autosave(&mut self) -> Result<bool, String> { self.sim.maybe_autosave().map_err(|e| e.to_string()) }
         fn incident_log(&self) -> Vec<sumo::WorldEvent> { self.sim.incident_log() }
-        fn incident_records(&self) -> Vec<sumo::IncidentRecord> { self.sim.incident_records() }
+        fn incident_records(&self) -> Vec<sumo::IncidentRecord> { self.incidents.clone() }
+        fn resolve_incident(&mut self, id: u64) -> bool {
+            self.resolved_incidents.push(id);
+            if let Some(r) = self.incidents.iter_mut().find(|r| r.id == id) {
+                r.resolved = true;
+            }
+            true
+        }
+        fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> { Some(self) }
+        fn decision_audit_log(&self) -> Vec<sumo::DecisionAuditRecord> { self.decisions.clone() }
         fn incident_records_filtered(&self, filter: &sumo::incidents::IncidentFilter) -> Vec<sumo::IncidentRecord> {
-            self.sim.incident_records().into_iter().filter(|r| {
+            self.incidents.iter().filter(|r| {
                 if let Some(min) = filter.min_severity { if r.severity < min { return false; } }
                 if let Some(resolved) = filter.resolved { if r.resolved != resolved { return false; } }
                 true
-            }).collect()
+            }).cloned().collect()
         }
-        fn decision_audit_log(&self) -> Vec<sumo::DecisionAuditRecord> { self.sim.decision_audit_log().to_vec() }
         fn load(&mut self, _dir: &std::path::Path) -> Result<(), String> { Ok(()) }
         fn post_release_status(&self, _prisoner_id: u64) -> Option<bool> { None }
         fn post_release_records(&self) -> Vec<sumo::PostReleaseSummary> { Vec::new() }
@@ -965,18 +1186,80 @@ mod tests {
         fn schedule_timeline(&self, _prisoner_id: u64) -> Option<sumo::ScheduleTimeline> { None }
         fn budget_snapshot(&self) -> sumo::BudgetSnapshot { sumo::BudgetSnapshot::default() }
         fn apply_rehab_progress(&mut self, _prisoner_id: u64, _minutes: u64) -> f32 { 0.0 }
+        fn enqueue_construction(&mut self, kind: alc_world::FacilityKind, wing: u32, capacity: u32) -> u64 {
+            let id = self.construction_queue.len() as u64 + 1;
+            self.construction_queue.push(sumo::ConstructionSummary {
+                id,
+                kind,
+                wing,
+                capacity,
+                total_days: 10,
+                progress_days: 0,
+                cost: 100.0,
+                started_day: 0,
+                status: alc_world::ConstructionStatus::Queued,
+                terminal_reason: None,
+                staff_allocated: false,
+                materials_ready: false,
+                prereqs_met: false,
+            });
+            id
+        }
+    }
+
+    fn new_mock() -> MockDriver {
+        MockDriver {
+            sim: sumo::Sim::new(7),
+            ticks: 0,
+            lockdown: false,
+            autosave_enables: Vec::new(),
+            incidents: Vec::new(),
+            resolved_incidents: Vec::new(),
+            decisions: default_decisions(),
+            construction_queue: Vec::new(),
+        }
     }
 
     fn app() -> App {
-        App::new(
-            Box::new(MockDriver {
-                sim: sumo::Sim::new(7),
-                ticks: 0,
-                lockdown: false,
-                autosave_enables: Vec::new(),
-            }),
-            TuiOptions::default(),
-        )
+        App::new(Box::new(new_mock()), TuiOptions::default())
+    }
+
+    #[test]
+    fn app_new_honors_restored_driver_speed() {
+        // A non-paused driver speed (e.g. restored by `Sim::load`) is kept.
+        let mut mock = new_mock();
+        mock.sim.set_speed(TimeSpeed::Extreme);
+        let app = App::new(Box::new(mock), TuiOptions::default());
+        assert_eq!(app.driver().speed(), TimeSpeed::Extreme);
+        // Explicit paused observer state still wins over the restored speed.
+        let mut mock2 = new_mock();
+        mock2.sim.set_speed(TimeSpeed::Extreme);
+        let app2 = App::new(Box::new(mock2), TuiOptions { paused: true, ..Default::default() });
+        assert_eq!(app2.driver().speed(), TimeSpeed::Paused);
+    }
+
+    fn default_decisions() -> Vec<sumo::DecisionAuditRecord> {
+        // Identical actor/action but distinct times — decision drill-down keys
+        // must stay unique for rows like these.
+        (0..3)
+            .map(|i| sumo::DecisionAuditRecord {
+                time: alc_core::SimTime::from_secs(100 + i),
+                actor: "Warden A".to_string(),
+                action: "toggle_lockdown".to_string(),
+                source: "test".to_string(),
+                summary: format!("decision {i}"),
+                ..Default::default()
+            })
+            .collect()
+    }
+
+    fn critical_record(id: u64, severity: f32, resolved: bool) -> sumo::IncidentRecord {
+        sumo::IncidentRecord {
+            id,
+            severity,
+            resolved,
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -1083,7 +1366,8 @@ mod tests {
         app.handle_key(KeyCode::Char('c'), KeyModifiers::NONE);
         assert_ne!(app.ui().construction_kind_index, before);
         app.handle_key(KeyCode::Char('C'), KeyModifiers::NONE);
-        assert_eq!(app.ui().selected_construction, Some(0));
+        // MockDriver's enqueue_construction returns queue ids starting at 1.
+        assert_eq!(app.ui().selected_construction, Some(1));
         app.handle_key(KeyCode::Char('>'), KeyModifiers::NONE);
         app.handle_key(KeyCode::Char('x'), KeyModifiers::NONE);
         app.handle_key(KeyCode::Char('X'), KeyModifiers::NONE);
@@ -1227,5 +1511,151 @@ mod tests {
         assert!(app.visible_decisions().is_empty());
         app.ui_mut().clear_query();
         assert_eq!(app.visible_decisions().len(), all.len());
+    }
+
+    #[test]
+    fn view_data_carries_map_frame_and_true_totals() {
+        let app = app();
+        let data = app.build_view_data();
+        // MapFrame is present and unfiltered.
+        assert_eq!(data.map_frame.at, app.driver().map_frame().at);
+        // True totals equal driver totals.
+        assert_eq!(data.total_prisoners, app.driver().prisoners().len());
+        assert_eq!(data.total_gangs, app.driver().gangs().len());
+        assert_eq!(data.total_guards, app.driver().guards().len());
+        // And the whole frame renders.
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|f| app.render(f)).unwrap();
+    }
+
+    #[test]
+    fn pause_on_critical_pauses_once_and_resumes() {
+        let mut app = app();
+        mock(&mut app).incidents = vec![critical_record(1, 0.9, false)];
+        app.handle_key(KeyCode::Char('V'), KeyModifiers::NONE);
+        assert!(app.ui().pause_on_critical);
+        assert!(!app.is_paused());
+        // New critical id pauses the sim.
+        app.check_pause_on_critical();
+        assert!(app.is_paused());
+        // Resuming is not re-blocked by the same incident.
+        app.handle_key(KeyCode::Char(' '), KeyModifiers::NONE);
+        assert!(!app.is_paused());
+        app.check_pause_on_critical();
+        assert!(!app.is_paused(), "seen critical must not re-pause");
+        // A genuinely new critical id pauses again.
+        mock(&mut app).incidents.push(critical_record(2, 0.95, false));
+        app.check_pause_on_critical();
+        assert!(app.is_paused());
+    }
+
+    #[test]
+    fn ctrl_r_resolves_selected_or_newest_critical_incident() {
+        let mut app = app();
+        mock(&mut app).incidents = vec![
+            critical_record(10, 0.2, false),
+            critical_record(11, 0.95, false),
+        ];
+        app.handle_key(KeyCode::Char('0'), KeyModifiers::NONE);
+        // Newest open critical resolved when nothing is selected.
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert_eq!(mock(&mut app).resolved_incidents, vec![11]);
+        // Nothing left to resolve.
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert_eq!(mock(&mut app).resolved_incidents.len(), 1);
+    }
+
+    #[test]
+    fn decision_keys_are_unique_and_follow_cursor() {
+        let mut app = app();
+        app.ui_mut().mode = ViewMode::DecisionAudit;
+        app.sync_selection();
+        let mut keys = Vec::new();
+        for _ in 0..mock(&mut app).decisions.len() {
+            keys.push(app.ui().selected_decision.clone().expect("selection follows cursor"));
+            app.move_cursor(1);
+            app.sync_selection();
+        }
+        let unique: std::collections::HashSet<_> = keys.iter().collect();
+        assert_eq!(keys.len(), unique.len(), "decision keys must be unique");
+        assert!(!keys.iter().any(|k| k.is_empty()));
+    }
+
+    #[test]
+    fn quick_load_clears_stale_observer_state() {
+        let mut app = app();
+        app.ui_mut().bookmarks.push(42);
+        app.ui_mut().search.push('q');
+        app.ui_mut().search_active = true;
+        app.ui_mut().notifications.push("stale".to_string());
+        app.ui_mut().selected_contraband = Some(1);
+        app.ui_mut().selected_decision = Some("0|t|a|x".to_string());
+        assert!(app.quick_load().is_ok());
+        assert!(app.ui().bookmarks.is_empty());
+        assert!(app.ui().search.is_empty());
+        assert!(!app.ui().search_active);
+        assert!(!app.ui().notifications.iter().any(|n| n == "stale"));
+        assert!(app.ui().selected_contraband.is_none());
+    }
+
+    #[test]
+    fn search_query_applies_to_incidents() {
+        let mut app = app();
+        mock(&mut app).incidents = vec![sumo::IncidentRecord {
+            id: 7,
+            kind: "Fight".to_string(),
+            location: "Yard".to_string(),
+            ..Default::default()
+        }];
+        app.ui_mut().set_query("fight");
+        assert_eq!(app.visible_incidents().len(), 1);
+        app.ui_mut().set_query("yard");
+        assert_eq!(app.visible_incidents().len(), 1);
+        app.ui_mut().set_query("zzz-nothing");
+        assert!(app.visible_incidents().is_empty());
+        app.ui_mut().clear_query();
+        assert_eq!(app.visible_incidents().len(), 1);
+    }
+
+    #[test]
+    fn ctrl_c_ctrl_l_and_ctrl_w_work_while_searching() {
+        let mut a = app();
+        a.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        assert!(a.ui().search_active);
+        // Ctrl-C quits even while the search input is open.
+        a.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(a.should_quit);
+        // Ctrl-W clears the query while keeping the input open.
+        let mut a2 = app();
+        a2.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        a2.ui_mut().search = "some query".to_string();
+        a2.handle_key(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        assert!(a2.ui().search_active);
+        assert_eq!(a2.ui().search, "");
+        assert!(a2.status_message().is_some());
+    }
+
+    #[test]
+    fn warden_mode_preserves_context_prisoner() {
+        let mut app = app();
+        assert!(!mock(&mut app).sim.world.prisoners.is_empty(), "world has prisoners");
+        app.handle_key(KeyCode::Char('5'), KeyModifiers::NONE);
+        assert_eq!(app.ui().mode, ViewMode::Warden);
+        app.sync_selection();
+        assert!(app.ui().selected_prisoner.is_some(), "Warden needs a context prisoner for r/R");
+    }
+
+    #[test]
+    fn uppercase_u_and_o_cycle_construction_selection() {
+        let mut app = app();
+        app.handle_key(KeyCode::Char('5'), KeyModifiers::NONE);
+        // Queue one project via the validated enqueue control.
+        app.handle_key(KeyCode::Char('C'), KeyModifiers::NONE);
+        assert_eq!(app.ui().selected_construction, Some(1));
+        // Cycle around a single-project queue stays put.
+        app.handle_key(KeyCode::Char('u'), KeyModifiers::NONE);
+        assert_eq!(app.ui().selected_construction, Some(1));
+        app.handle_key(KeyCode::Char('O'), KeyModifiers::NONE);
+        assert_eq!(app.ui().selected_construction, Some(1));
     }
 }
