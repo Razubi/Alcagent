@@ -547,10 +547,14 @@ fn staff(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                         format!("{:?} / {}", g.authority, g.shift),
                     );
                     theme::kv(ui, "Current task", &g.current_task);
+                    theme::kv(ui, "Report credibility", format!("{:.2}", g.credibility));
                     theme::kv(
                         ui,
-                        "Report credibility",
-                        format!("{:.2}", (g.competence + g.integrity) * 0.5),
+                        "Duty record",
+                        format!(
+                            "{} opinions · {} mistakes · {} violations",
+                            g.tracked_opinions, g.mistakes, g.violations
+                        ),
                     );
                     theme::metric_bar(ui, "Competence", g.competence, true);
                     theme::metric_bar(ui, "Experience", g.experience, true);

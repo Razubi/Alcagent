@@ -295,6 +295,86 @@ pub struct DutyLoopOutcome {
     pub assistance_requested: bool,
 }
 
+/// One co-located prisoner observed from a guard's assigned post.
+///
+/// The world supplies only prisoners sharing the guard's current facility, so
+/// duty perception is area-scoped rather than omniscient.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct GuardObservation {
+    pub prisoner_id: u64,
+    pub facility_id: u64,
+    /// Local friction signal in `0.0..=1.0`.
+    pub tension: f32,
+}
+
+/// Durable impression of one prisoner.
+///
+/// Impressions are encoded in [`Guard::history`] instead of a new persisted
+/// field: this keeps the version-5 bincode layout loadable while still making
+/// opinions survive save/load.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct GuardOpinion {
+    pub suspicion: f32,
+    pub trust: f32,
+    pub fear: f32,
+    pub last_seen_hour: u64,
+}
+
+impl Default for GuardOpinion {
+    fn default() -> Self {
+        Self {
+            suspicion: 0.0,
+            trust: 0.35,
+            fear: 0.0,
+            last_seen_hour: 0,
+        }
+    }
+}
+
+/// Kind of direct guard → prisoner interaction produced by a duty tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GuardInteractionKind {
+    Observe,
+    Directive,
+    Restrain,
+    Assist,
+    PolicyViolation,
+}
+
+impl GuardInteractionKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Observe => "observe",
+            Self::Directive => "directive",
+            Self::Restrain => "restraint",
+            Self::Assist => "assist",
+            Self::PolicyViolation => "policy_violation",
+        }
+    }
+}
+
+/// A structured interaction the world can apply to prisoner state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GuardInteraction {
+    pub at: SimTime,
+    pub guard: GuardId,
+    pub prisoner_id: u64,
+    pub kind: GuardInteractionKind,
+    /// Bounded intensity/strength in `0.0..=1.0`.
+    pub intensity: f32,
+}
+
+/// Full result of one area-scoped duty tick.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GuardDutyResult {
+    pub reports: Vec<GuardReport>,
+    pub interactions: Vec<GuardInteraction>,
+    /// Mistakes made during this tick (cumulative totals live in history).
+    pub mistakes: u32,
+    /// Policy violations made during this tick (cumulative totals in history).
+    pub violations: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Guard {
     pub id: GuardId,
@@ -386,8 +466,7 @@ impl Guard {
             self.experience = (self.experience + 0.0005).min(1.0);
             self.current_task = "patrol".into();
             // Abstract off-shift recovery marker in history (stub).
-            self.history
-                .push(format!("shift rotation -> {}", self.shift));
+            self.push_history(format!("shift rotation -> {}", self.shift));
             if self.rotation.consecutive_shifts >= 6 {
                 self.stress = (self.stress + 0.02).min(1.0);
                 self.morale = (self.morale - 0.01).max(0.0);
@@ -413,6 +492,89 @@ impl Guard {
         (base - stress_impairment - fatigue_penalty).clamp(0.05, 0.99)
     }
 
+    /// Guard history is a bounded audit log. Bounding it keeps long runs fast
+    /// while retaining the structured opinion/mistake/violation markers that
+    /// the observer surfaces derive from.
+    const HISTORY_CAP: usize = 256;
+
+    fn push_history(&mut self, entry: String) {
+        self.history.push(entry);
+        if self.history.len() > Self::HISTORY_CAP {
+            let drop = self.history.len() - Self::HISTORY_CAP;
+            self.history.drain(0..drop);
+        }
+    }
+
+    fn history_f32(entry: &str) -> f32 {
+        entry.parse::<f32>().unwrap_or(0.0).clamp(0.0, 1.0)
+    }
+
+    /// Latest impression formed about a prisoner, derived from durable history.
+    pub fn opinion_of(&self, prisoner_id: u64) -> GuardOpinion {
+        let prefix = format!("opinion@");
+        for entry in self.history.iter().rev() {
+            let Some(rest) = entry.strip_prefix(&prefix) else {
+                continue;
+            };
+            let mut parts = rest.split(':');
+            let hour = parts
+                .next()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0);
+            let id = parts
+                .next()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(u64::MAX);
+            if id != prisoner_id {
+                continue;
+            }
+            let suspicion = parts.next().map(Self::history_f32).unwrap_or(0.0);
+            let trust = parts.next().map(Self::history_f32).unwrap_or(0.35);
+            let fear = parts.next().map(Self::history_f32).unwrap_or(0.0);
+            return GuardOpinion {
+                suspicion,
+                trust,
+                fear,
+                last_seen_hour: hour,
+            };
+        }
+        GuardOpinion::default()
+    }
+
+    /// Number of distinct prisoners this guard has formed an opinion about.
+    pub fn opinion_count(&self) -> usize {
+        let mut ids = Vec::new();
+        for entry in &self.history {
+            let Some(rest) = entry.strip_prefix("opinion@") else {
+                continue;
+            };
+            let mut parts = rest.split(':');
+            let _ = parts.next();
+            if let Some(id) = parts.next().and_then(|s| s.parse::<u64>().ok()) {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+        }
+        ids.len()
+    }
+
+    /// Cumulative number of recorded perceptual/enforcement mistakes.
+    pub fn mistake_count(&self) -> u32 {
+        self.history
+            .iter()
+            .filter(|e| e.starts_with("mistake@"))
+            .count() as u32
+    }
+
+    /// Cumulative number of recorded policy violations.
+    pub fn violation_count(&self) -> u32 {
+        self.history
+            .iter()
+            .filter(|e| e.starts_with("violation@"))
+            .count() as u32
+    }
+
     /// Duty-loop step: observe surroundings/post state (stub).
     pub fn observe(&mut self, at: SimTime, incident_load: f32) -> Option<String> {
         self.current_task = "observe".into();
@@ -424,7 +586,7 @@ impl Guard {
                 self.post,
                 salience.min(1.0)
             );
-            self.history.push(format!("observe@{}", at.as_secs()));
+            self.push_history(format!("observe@{}", at.as_secs()));
             Some(note)
         } else {
             None
@@ -451,7 +613,7 @@ impl Guard {
             witnessed_directly,
             requests_assistance: false,
         };
-        self.history.push(format!(
+        self.push_history(format!(
             "report@{} sev={} cred={:.2}",
             at.as_secs(),
             report.severity,
@@ -476,12 +638,11 @@ impl Guard {
                 required,
                 situation.into()
             );
-            self.history.push(format!("enforce@{}", at.as_secs()));
+            self.push_history(format!("enforce@{}", at.as_secs()));
             self.stress = (self.stress + 0.01).min(1.0);
             Some(action)
         } else {
-            self.history
-                .push(format!("enforce_denied@{}", at.as_secs()));
+            self.push_history(format!("enforce_denied@{}", at.as_secs()));
             None
         }
     }
@@ -566,77 +727,170 @@ impl Guard {
         self.shift = self.rotation.current_shift;
     }
 
-    /// Observe nearby prisoners, report incidents with credibility, and request
-    /// assistance when stress is high.
+    /// Area-scoped duty tick: observe only the supplied co-located prisoners,
+    /// form opinions, interact directly, file imperfect reports, and escalate.
     ///
-    /// `world_prisoners` contains per-prisoner observed tension/pressure values
-    /// (0..1, one entry per nearby prisoner). `world_policies` provides the
-    /// current simulation time and relevant security posture.
-    pub fn duty_tick(
+    /// Returns structured interactions so the world can apply their prisoner
+    /// consequences without the guard reaching into arbitrary simulation state.
+    pub fn duty_tick_area(
         &mut self,
-        world_prisoners: &[f32],
-        world_policies: DutyContext,
+        observations: &[GuardObservation],
+        policies: DutyContext,
         rng: &mut RngStream,
-    ) -> Vec<GuardReport> {
-        let at = world_policies.at;
-        let mut reports = Vec::new();
+    ) -> GuardDutyResult {
+        let at = policies.at;
+        let hour = at.as_secs() / 3600;
+        let mut result = GuardDutyResult::default();
 
-        let nearby = world_prisoners.len() as f32;
-        let avg_tension = if world_prisoners.is_empty() {
+        // Stable ordering prevents HashMap-style iteration from changing traces.
+        let mut seen: Vec<GuardObservation> = observations.to_vec();
+        seen.sort_by_key(|o| o.prisoner_id);
+        let nearby = seen.len() as f32;
+        let avg_tension = if seen.is_empty() {
             0.0
         } else {
-            (world_prisoners.iter().copied().sum::<f32>() / nearby).clamp(0.0, 1.0)
+            (seen.iter().map(|o| o.tension.clamp(0.0, 1.0)).sum::<f32>() / nearby).clamp(0.0, 1.0)
         };
-        let peak_tension = world_prisoners
+        let peak_tension = seen
             .iter()
-            .copied()
-            .fold(0.0_f32, f32::max)
-            .clamp(0.0, 1.0);
+            .map(|o| o.tension.clamp(0.0, 1.0))
+            .fold(0.0_f32, f32::max);
+        let peak_obs = seen
+            .iter()
+            .max_by(|a, b| a.tension.total_cmp(&b.tension))
+            .copied();
 
-        let lockdown_pressure = if world_policies.lockdown { 0.08 } else { 0.0 };
+        let lockdown_pressure = if policies.lockdown { 0.08 } else { 0.0 };
         let incident_load = (avg_tension * 0.6
             + peak_tension * 0.4
             + self.post.risk_profile() * 0.15
-            + world_policies.security_level.clamp(0.0, 1.0) * 0.1
+            + policies.security_level.clamp(0.0, 1.0) * 0.1
             + lockdown_pressure)
             .clamp(0.0, 1.0);
 
-        // Base fatigue/stress/rotation progression for this duty tick.
         self.tick(at, incident_load);
 
-        // Observe: always maintain situational awareness; notable observations
-        // become reports when something stands out.
+        // Opinions are updated from direct observation only. A small threshold
+        // avoids rewriting identical entries every hour.
+        for obs in &seen {
+            let tension = obs.tension.clamp(0.0, 1.0);
+            let mut opinion = self.opinion_of(obs.prisoner_id);
+            let suspicion = (opinion.suspicion * 0.85 + tension * 0.15).clamp(0.0, 1.0);
+            let trust = (opinion.trust * 0.85 + (1.0 - tension) * 0.15).clamp(0.0, 1.0);
+            let fear = (opinion.fear * 0.9 + tension * 0.1).clamp(0.0, 1.0);
+            let delta = (suspicion - opinion.suspicion).abs()
+                + (trust - opinion.trust).abs()
+                + (fear - opinion.fear).abs();
+            if delta > 0.02 {
+                self.push_history(format!(
+                    "opinion@{hour}:{}:{suspicion:.3}:{trust:.3}:{fear:.3}",
+                    obs.prisoner_id
+                ));
+                opinion = GuardOpinion {
+                    suspicion,
+                    trust,
+                    fear,
+                    last_seen_hour: hour,
+                };
+            }
+            result.interactions.push(GuardInteraction {
+                at,
+                guard: self.id,
+                prisoner_id: obs.prisoner_id,
+                kind: GuardInteractionKind::Observe,
+                intensity: tension,
+            });
+            let _ = opinion;
+        }
+
         let observation = self.observe(at, incident_load);
         let notable = observation.is_some() || peak_tension > 0.7 || incident_load > 0.6;
         if notable {
-            let severity = if peak_tension > 0.95 || incident_load > 0.95 {
+            let mut severity: u8 = if peak_tension > 0.95 || incident_load > 0.95 {
                 3
             } else if peak_tension > 0.8 || incident_load > 0.8 {
                 2
             } else {
                 1
             };
-            let summary = observation.unwrap_or_else(|| {
+            let mut summary = observation.unwrap_or_else(|| {
                 format!(
-                    "Routine observation at {:?}: {} nearby prisoner(s), tension {:.2}",
-                    self.post,
-                    world_prisoners.len(),
-                    peak_tension
+                    "Routine observation at {:?}: {} co-located prisoner(s), tension {:.2}",
+                    self.post, nearby, peak_tension
                 )
             });
 
-            let witnessed_directly = rng.chance((0.55 + self.competence as f64 * 0.35).min(0.98));
-            let mut report = self.report(at, summary, severity, witnessed_directly);
+            let mut witnessed_directly =
+                rng.chance((0.55 + self.competence as f64 * 0.35).min(0.98));
 
-            // Attempt enforcement when the situation warrants it and authority allows.
-            if incident_load > 0.6 || peak_tension > 0.7 {
-                let _ = self.enforce(at, "contain escalating incident");
+            // Imperfect perception: fatigued/stressed or incompetent guards can
+            // misremember severity or witness status. The degraded report still
+            // carries a cause string, so this remains explainable to observers.
+            let mistake_chance =
+                ((1.0 - self.competence) * 0.40 + self.fatigue * 0.25 + self.stress * 0.20
+                    - self.integrity * 0.10)
+                    .clamp(0.01, 0.65) as f64;
+            if rng.chance(mistake_chance) {
+                witnessed_directly = false;
+                severity = severity.saturating_sub(1);
+                summary = format!("Unverified/misremembered report: {summary}");
+                self.push_history(format!("mistake@{hour}:perception"));
+                result.mistakes += 1;
             }
 
-            // Request assistance when stress is high or the situation exceeds
-            // safe response. A per-guard cooldown keeps a stressed guard from
-            // re-escalating on every hourly duty tick.
-            let hour = at.as_secs() / 3600;
+            let mut report = self.report(at, summary, severity, witnessed_directly);
+            if !witnessed_directly {
+                report.credibility = (report.credibility * 0.65).clamp(0.05, 0.99);
+                self.report_credibility = report.credibility;
+            }
+
+            // Direct intervention creates a structured prisoner effect.
+            if (incident_load > 0.6 || peak_tension > 0.7) && result.mistakes == 0 {
+                if let Some(enforcement) = self.enforce(at, "contain escalating incident") {
+                    if let Some(target) = peak_obs {
+                        let kind = if incident_load > 0.85 || peak_tension > 0.9 {
+                            GuardInteractionKind::Restrain
+                        } else {
+                            GuardInteractionKind::Directive
+                        };
+                        result.interactions.push(GuardInteraction {
+                            at,
+                            guard: self.id,
+                            prisoner_id: target.prisoner_id,
+                            kind,
+                            intensity: incident_load.clamp(0.0, 1.0),
+                        });
+                    }
+                    let _ = enforcement;
+                }
+            }
+
+            // Occasional policy violation: leniency under stress, or excessive
+            // force from a rigid, low-integrity guard. Bounded and rate-limited
+            // by the same incident pressure that drives enforcement.
+            let violation_chance =
+                ((1.0 - self.integrity) * 0.35 + self.stress * 0.20 + self.personality * 0.10
+                    - self.morale * 0.10)
+                    .clamp(0.0, 0.45) as f64;
+            if (incident_load > 0.55 || self.stress > 0.7) && rng.chance(violation_chance) {
+                let kind = if self.personality > 0.6 {
+                    "leniency"
+                } else {
+                    "excessive_force"
+                };
+                self.push_history(format!("violation@{hour}:{kind}"));
+                result.violations += 1;
+                if let Some(target) = peak_obs {
+                    result.interactions.push(GuardInteraction {
+                        at,
+                        guard: self.id,
+                        prisoner_id: target.prisoner_id,
+                        kind: GuardInteractionKind::PolicyViolation,
+                        intensity: violation_chance.clamp(0.0, 1.0) as f32,
+                    });
+                }
+            }
+
             let can_escalate = hour.saturating_sub(self.last_escalation_hour) >= 12;
             let stress_high = self.stress > 0.8 && incident_load > 0.6;
             let overwhelmed =
@@ -656,22 +910,50 @@ impl Guard {
                         .max(if overwhelmed { 3 } else { 2 });
                 assist.credibility = self.compute_credibility(true);
                 report.requests_assistance = true;
-                reports.push(assist);
+                if let Some(target) = peak_obs {
+                    result.interactions.push(GuardInteraction {
+                        at,
+                        guard: self.id,
+                        prisoner_id: target.prisoner_id,
+                        kind: GuardInteractionKind::Assist,
+                        intensity: incident_load,
+                    });
+                }
+                result.reports.push(assist);
             }
 
-            reports.push(report);
-        } else if self.stress > 0.85
-            && (at.as_secs() / 3600).saturating_sub(self.last_escalation_hour) >= 12
-        {
-            // Even without a visible incident, an over-stressed guard asks for relief.
-            self.last_escalation_hour = at.as_secs() / 3600;
+            result.reports.push(report);
+        } else if self.stress > 0.85 && hour.saturating_sub(self.last_escalation_hour) >= 12 {
+            self.last_escalation_hour = hour;
             let assist = self.request_assistance(at, "guard stress critical; relief requested");
-            reports.push(assist);
+            result.reports.push(assist);
         }
 
-        // Keep credibility signal current for consumers (warden inbox, etc.).
         self.report_credibility = self.compute_credibility(true);
-        reports
+        result
+    }
+
+    /// Backward-compatible duty tick over anonymous tension values.
+    ///
+    /// The world uses [`Guard::duty_tick_area`] so observations are area-scoped;
+    /// this wrapper keeps existing AI/driver callers working.
+    pub fn duty_tick(
+        &mut self,
+        world_prisoners: &[f32],
+        world_policies: DutyContext,
+        rng: &mut RngStream,
+    ) -> Vec<GuardReport> {
+        let observations: Vec<GuardObservation> = world_prisoners
+            .iter()
+            .enumerate()
+            .map(|(i, tension)| GuardObservation {
+                prisoner_id: i as u64,
+                facility_id: 0,
+                tension: *tension,
+            })
+            .collect();
+        self.duty_tick_area(&observations, world_policies, rng)
+            .reports
     }
 }
 
@@ -736,5 +1018,92 @@ mod tests {
             assistance_reports <= 14,
             "too many assistance escalations over 7 days: {assistance_reports}"
         );
+    }
+
+    fn test_guard(id: u64, post: PostType) -> Guard {
+        Guard::new(
+            GuardId(id),
+            format!("Guard {id}"),
+            GuardRank::Officer,
+            post,
+            &mut RngStream::new(7, id),
+        )
+    }
+
+    fn ctx(hour: u64) -> DutyContext {
+        DutyContext {
+            at: SimTime::from_secs(hour * 3600),
+            lockdown: false,
+            security_level: 1.0,
+        }
+    }
+
+    fn observation(prisoner_id: u64, tension: f32) -> GuardObservation {
+        GuardObservation {
+            prisoner_id,
+            facility_id: 4,
+            tension,
+        }
+    }
+
+    fn best_credibility(result: &GuardDutyResult) -> f32 {
+        result
+            .reports
+            .iter()
+            .map(|r| r.credibility)
+            .fold(0.0_f32, f32::max)
+    }
+
+    #[test]
+    fn fatigue_and_stress_reduce_report_credibility_deterministically() {
+        let mut fresh = test_guard(1, PostType::Yard);
+        let mut tired = test_guard(2, PostType::Yard);
+        tired.fatigue = 0.95;
+        tired.stress = 0.95;
+        tired.morale = 0.05;
+
+        let obs = [observation(101, 1.0)];
+        let fresh_result = fresh.duty_tick_area(&obs, ctx(0), &mut RngStream::new(11, 7));
+        let tired_result = tired.duty_tick_area(&obs, ctx(0), &mut RngStream::new(11, 7));
+        assert!(best_credibility(&fresh_result) > 0.0);
+        assert!(
+            best_credibility(&tired_result) < best_credibility(&fresh_result),
+            "fatigue/stress must degrade credibility: fresh={} tired={}",
+            best_credibility(&fresh_result),
+            best_credibility(&tired_result)
+        );
+    }
+
+    #[test]
+    fn repeated_area_observations_form_durable_prisoner_opinions() {
+        let mut guard = test_guard(3, PostType::Wing);
+        let obs = [observation(201, 0.8)];
+        for hour in 0..6 {
+            guard.duty_tick_area(&obs, ctx(hour), &mut RngStream::new(19, hour));
+        }
+        let opinion = guard.opinion_of(201);
+        assert!(opinion.suspicion > 0.3, "suspicion: {opinion:?}");
+        assert!(opinion.fear > 0.0);
+        assert_eq!(opinion.last_seen_hour, 5);
+        assert_eq!(guard.opinion_count(), 1);
+    }
+
+    #[test]
+    fn low_integrity_guards_record_mistakes_and_policy_violations() {
+        let mut guard = test_guard(4, PostType::Yard);
+        guard.competence = 0.05;
+        guard.integrity = 0.02;
+        guard.stress = 0.98;
+        guard.fatigue = 0.98;
+        guard.morale = 0.02;
+        guard.personality = 0.9;
+
+        let obs = [observation(301, 1.0)];
+        for hour in 0..48 {
+            guard.duty_tick_area(&obs, ctx(hour), &mut RngStream::new(23, hour));
+        }
+        assert!(guard.mistake_count() > 0, "no mistakes recorded");
+        assert!(guard.violation_count() > 0, "no violations recorded");
+        assert!(guard.history.len() <= Guard::HISTORY_CAP);
     }
 }

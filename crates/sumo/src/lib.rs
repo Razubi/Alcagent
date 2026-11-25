@@ -85,7 +85,7 @@ use crate::views::{
 };
 use alc_core::TimeSpeed;
 use alc_events::EventKind;
-use alc_guard::GuardReport;
+use alc_guard::{GuardReport, PostType};
 use alc_persistence::{SaveError, SaveManager};
 use alc_prisoner::NeedTag;
 use alc_prisoner::{
@@ -95,6 +95,58 @@ use alc_prisoner::{
 use alc_social::rehab::{RehabProgram, enroll_in_program};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+
+/// Extract a reported field from the structured guard-report cause string.
+fn guard_cause_field<'a>(cause: &'a str, key: &str) -> Option<&'a str> {
+    cause
+        .split_whitespace()
+        .find_map(|part| part.strip_prefix(key))
+}
+
+fn guard_report_post(cause: &str) -> PostType {
+    let value = guard_cause_field(cause, "post=").unwrap_or("Corridor");
+    match value {
+        "Tower" => PostType::Tower,
+        "Wing" => PostType::Wing,
+        "Corridor" => PostType::Corridor,
+        "Yard" => PostType::Yard,
+        "Reception" => PostType::Reception,
+        "Medical" => PostType::Medical,
+        "Work" => PostType::Work,
+        "Visitor" => PostType::Visitor,
+        "Admin" => PostType::Admin,
+        _ => PostType::Corridor,
+    }
+}
+
+/// Rebuild the DTO the warden actually received from an event id.
+///
+/// The warden never reads raw world incidents here: only ids placed in its
+/// inbox are resolved, so fog-of-war remains intact in the observer view.
+fn guard_report_from_event(event: &alc_events::WorldEvent) -> Option<GuardReport> {
+    let cause = event.causes.first()?.as_str();
+    if !cause.starts_with("guard duty report") {
+        return None;
+    }
+    let severity = guard_cause_field(cause, "sev=")?
+        .parse::<u8>()
+        .unwrap_or(0)
+        .min(3);
+    let witnessed = guard_cause_field(cause, "witness=")
+        .and_then(|v| v.parse::<u8>().ok())
+        .unwrap_or(0)
+        != 0;
+    Some(GuardReport {
+        at: event.at,
+        post: guard_report_post(cause),
+        summary: event.summary.clone(),
+        severity,
+        credibility: event.confidence.clamp(0.05, 0.99),
+        witnessed_directly: witnessed,
+        requests_assistance: event.kind == EventKind::SecurityResponse
+            || event.summary.starts_with("Assistance requested:"),
+    })
+}
 
 /// The simulation engine: owns the world and drives it over time.
 pub struct Sim {
@@ -940,6 +992,10 @@ impl Sim {
                 loyalty: g.loyalty,
                 integrity: g.integrity,
                 personality: g.personality,
+                credibility: g.credibility(),
+                mistakes: g.mistake_count(),
+                violations: g.violation_count(),
+                tracked_opinions: g.opinion_count(),
                 history: g.history.clone(),
             })
             .collect()
@@ -947,12 +1003,22 @@ impl Sim {
 
     /// Get the warden as summary for the warden view.
     pub fn warden(&self) -> WardenSummary {
+        let events: Vec<&alc_events::WorldEvent> = self.world.events.recent().collect();
+        let inbox = self
+            .world
+            .warden
+            .inbox
+            .iter()
+            .filter_map(|id| events.iter().find(|event| event.id == *id))
+            .filter_map(|event| guard_report_from_event(event))
+            .take(50)
+            .collect();
         WardenSummary {
             name: self.world.warden.name.clone(),
             philosophy: self.world.warden.philosophy.clone(),
             traits: self.world.warden.traits.clone(),
             attention: self.world.warden.attention,
-            inbox: Vec::new(), // Would need conversion from event ids to reports
+            inbox,
             pending_actions: self.world.warden.pending_actions.clone(),
             last_decision_at: self.world.warden.last_decision_at,
         }
@@ -2639,6 +2705,12 @@ impl Sim {
     /// Deliver a guard duty report to the world bus; returns the event id.
     pub fn deliver_guard_report(&mut self, guard_id: GuardId, report: GuardReport) -> u64 {
         drivers::deliver_guard_report(self, guard_id, report)
+    }
+
+    /// Reassign a guard to a post. The world moves the pawn atomically; an
+    /// unknown guard is rejected without mutating the location map.
+    pub fn assign_guard_post(&mut self, guard_id: GuardId, post: PostType) -> bool {
+        self.world.assign_guard_post(guard_id, post)
     }
 
     // --- 4.4 Warden ---

@@ -104,6 +104,14 @@ pub struct GuardSummary {
     pub integrity: f32,
     /// Personality trait 0..1 (rigid vs lenient).
     pub personality: f32,
+    /// Current credibility of this guard's reports.
+    pub credibility: f32,
+    /// Cumulative perceptual/enforcement mistakes (spec 009).
+    pub mistakes: u32,
+    /// Cumulative policy violations (spec 009).
+    pub violations: u32,
+    /// Distinct prisoners this guard has formed an opinion about.
+    pub tracked_opinions: usize,
     /// Historical event log.
     pub history: Vec<String>,
 }

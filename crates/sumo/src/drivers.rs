@@ -34,37 +34,36 @@ use alc_guard::{DutyContext, Guard, GuardRank, GuardReport, PostType};
 use alc_warden::WardenAction;
 use alc_world::{FacilityKind, World};
 
-/// Build the tension-aware guard context from current world state. Prisoner
-/// need pressure is the best available proxy for local friction; the duty tick
-/// derives incident load from its average/peak plus security posture.
-fn guard_context(sim: &Sim, at: SimTime) -> (Vec<f32>, DutyContext) {
-    let tensions: Vec<f32> = sim
-        .world
-        .prisoners
-        .iter()
-        .map(|p| p.needs.total_pressure().clamp(0.0, 1.0))
-        .collect();
-    let ctx = DutyContext {
+/// Duty context for an explicit engine-driven guard cycle.
+fn guard_context(sim: &Sim, at: SimTime) -> DutyContext {
+    DutyContext {
         at,
         lockdown: sim.world.policies.lockdown,
         security_level: sim.world.policies.security_level,
-    };
-    (tensions, ctx)
+    }
 }
 
 /// Run the duty loop of every guard once (§10): tick + observe + report +
-/// enforce + request_assistance; reports are collected. Uses the same
-/// tension-aware duty tick as the live world loop (no fixed-load spam).
+/// enforce + request_assistance. Observations use the same area-scoped helper
+/// as the live world sweep, so a guard only perceives its assigned facility.
 pub fn guard_duty_cycle(sim: &mut Sim) -> Vec<(GuardId, GuardReport)> {
     let at = sim.world.time;
     let seed = sim.world.seed;
-    let (tensions, ctx) = guard_context(sim, at);
+    let ctx = guard_context(sim, at);
+    let plans: Vec<(GuardId, Vec<alc_guard::GuardObservation>)> = sim
+        .world
+        .guards
+        .iter()
+        .map(|g| (g.id, sim.world.guard_observations(g.id)))
+        .collect();
     let mut rng = RngStream::new(seed, at.as_secs() ^ 0x6A11);
     let mut out = Vec::new();
-    for g in &mut sim.world.guards {
-        for report in g.duty_tick(&tensions, ctx, &mut rng) {
-            out.push((g.id, report));
-        }
+    for (gid, observations) in plans {
+        let Some(g) = sim.world.guards.iter_mut().find(|g| g.id == gid) else {
+            continue;
+        };
+        let result = g.duty_tick_area(&observations, ctx, &mut rng);
+        out.extend(result.reports.into_iter().map(|r| (gid, r)));
     }
     out
 }
@@ -76,12 +75,17 @@ pub fn run_guard_duty(sim: &mut Sim, guard_id: GuardId, minutes: u64) -> Vec<Gua
     let mut out = Vec::new();
     for minute in 0..minutes {
         let at = start.add_mins(minute);
-        let (tensions, ctx) = guard_context(sim, at);
+        let observations = sim.world.guard_observations(guard_id);
+        let ctx = guard_context(sim, at);
         let Some(g) = sim.world.guards.iter_mut().find(|g| g.id == guard_id) else {
             continue;
         };
         let mut rng = RngStream::new(seed, at.as_secs() ^ g.id.raw());
-        out.extend(g.duty_tick(&tensions, ctx, &mut rng));
+        out.extend(
+            g.duty_tick_area(&observations, ctx, &mut rng)
+                .reports
+                .into_iter(),
+        );
     }
     out
 }
@@ -435,19 +439,40 @@ pub fn apply_warden_action(
 /// update guard credibility, push the event id onto the warden inbox.
 /// Returns the new event id (0 when the report was informational).
 pub fn deliver_guard_report(sim: &mut Sim, guard_id: GuardId, report: GuardReport) -> u64 {
+    // Warden receives reports, not omniscient events: implausible reports are
+    // rejected at the engine boundary unless the guard is calling for help.
+    if report.severity == 0 || (!report.requests_assistance && report.credibility < 0.25) {
+        return 0;
+    }
     let kind = match report.severity {
-        0 => return 0,
         1 => EventKind::Argument,
         2 => EventKind::Threat,
         _ => EventKind::Investigation,
     };
-    sim.world.events.emit(
-        WorldEvent::new(0, report.at, kind, report.summary.clone()).with_actor(guard_id.raw()),
+    let witness = u8::from(report.witnessed_directly);
+    let cause = format!(
+        "guard duty report; post={:?} sev={} cred={:.2} witness={} mistake={}",
+        report.post,
+        report.severity,
+        report.credibility,
+        witness,
+        u8::from(report.summary.starts_with("Unverified"))
     );
-    let id = sim.world.events.recent().last().map(|e| e.id).unwrap_or(0);
+    let id = sim.world.events.emit(
+        WorldEvent::new(0, report.at, kind, report.summary.clone())
+            .with_actor(guard_id.raw())
+            .with_cause(cause)
+            .with_confidence(report.credibility),
+    );
     if let Some(g) = sim.world.guards.iter_mut().find(|g| g.id == guard_id) {
         g.report_credibility = report.credibility.clamp(0.05, 0.99);
     }
-    sim.world.warden.inbox.push(id);
+    if id != 0 {
+        sim.world.warden.inbox.push(id);
+        if sim.world.warden.inbox.len() > 200 {
+            let drop = sim.world.warden.inbox.len() - 200;
+            sim.world.warden.inbox.drain(0..drop);
+        }
+    }
     id
 }

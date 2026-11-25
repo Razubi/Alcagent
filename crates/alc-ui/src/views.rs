@@ -1441,11 +1441,17 @@ fn render_staff(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
         kv("Authority", format!("{:?}", g.authority)),
         kv("Shift", g.shift.to_string()),
         kv("Current task", g.current_task.clone()),
+        kv("Report credibility", format!("{:.2}", g.credibility)),
         kv(
-            "Report credibility",
-            format!("{:.2}", (g.competence + g.integrity) / 2.0),
+            "Duty record",
+            format!(
+                "{} opinions · {} mistakes · {} violations · {} log entries",
+                g.tracked_opinions,
+                g.mistakes,
+                g.violations,
+                g.history.len()
+            ),
         ),
-        kv("On-duty history", format!("{} entries", g.history.len())),
     ];
     frame.render_widget(
         Paragraph::new(header).block(title_block(format!(" {} ", g.name))),
@@ -3195,6 +3201,10 @@ mod tests {
                 loyalty: g.loyalty,
                 integrity: g.integrity,
                 personality: g.personality,
+                credibility: g.credibility(),
+                mistakes: g.mistake_count(),
+                violations: g.violation_count(),
+                tracked_opinions: g.opinion_count(),
                 history: g.history.clone(),
             })
             .collect();

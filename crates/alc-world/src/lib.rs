@@ -12,7 +12,9 @@ use alc_agents::{ActionCandidate, Decision, Disposition, Legality, Orchestrator,
 use alc_core::{FacilityId, GuardId, PrisonerId, RngStream, SimTime, TimeSpeed, WardenId};
 use alc_economy::Economy;
 use alc_events::{EventBus, EventKind, RehabFailureReason, WorldEvent};
-use alc_guard::{Guard, GuardRank, PostType};
+use alc_guard::{
+    Guard, GuardInteraction, GuardInteractionKind, GuardObservation, GuardRank, PostType,
+};
 use alc_prisoner::{
     Activity, DriftActivity, GoalKind, NeedDriftContext, NeedTag, Prisoner, SchedulePolicy,
     ScheduleTemplate, current_block, generate_intake, resolve_schedule,
@@ -24,6 +26,11 @@ use alc_social::{
 use alc_warden::{Warden, WardenAction};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+/// Loss-of-privileges status is a sanction with a finite sentence, not a
+/// permanent parole bar. Kept as a world rule so old saves (which may carry a
+/// status without a dated record) are left untouched.
+const DISCIPLINARY_STATUS_DAYS: u64 = 30;
 
 /// Building / facility (Directive §12 expansion catalog).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -501,6 +508,215 @@ impl World {
         self.prisoners.len() as u32
     }
 
+    /// Local friction signal used by guard perception. Need pressure is a
+    /// proxy for tension, not proof of a critical incident.
+    fn prisoner_guard_tension(&self, p: &Prisoner) -> f32 {
+        let base = p.needs.total_pressure();
+        let agitation = p.needs.respect * 0.15 + p.needs.safety * 0.1;
+        let compliant = self
+            .current_decisions
+            .get(&p.id)
+            .map(|d| {
+                matches!(
+                    d.action,
+                    alc_agents::decision::DecisionAction::Comply
+                        | alc_agents::decision::DecisionAction::None
+                )
+            })
+            .unwrap_or(false);
+        let compliance = if compliant { 0.0 } else { 0.08 };
+        (base * 0.5 + agitation + compliance).clamp(0.0, 1.0)
+    }
+
+    /// Prisoners the guard can actually perceive from its assigned facility.
+    pub fn guard_observations(&self, guard_id: GuardId) -> Vec<GuardObservation> {
+        let Some(facility) = self.guard_location.get(&guard_id).copied() else {
+            return Vec::new();
+        };
+        self.prisoners
+            .iter()
+            .filter_map(|p| {
+                if self.prisoner_location.get(&p.id).copied() != Some(facility) {
+                    return None;
+                }
+                Some(GuardObservation {
+                    prisoner_id: p.id.raw(),
+                    facility_id: facility.0,
+                    tension: self.prisoner_guard_tension(p),
+                })
+            })
+            .collect()
+    }
+
+    /// Current policy context for a guard duty tick.
+    pub fn guard_duty_context(&self) -> alc_guard::DutyContext {
+        alc_guard::DutyContext {
+            at: self.time,
+            lockdown: self.policies.lockdown,
+            security_level: self.policies.security_level,
+        }
+    }
+
+    /// Local supervisory deterrence, used to make post assignments change
+    /// encounter hostility and incident likelihood.
+    pub fn guard_deterrence(&self, facility: FacilityId) -> f32 {
+        let local: Vec<&Guard> = self
+            .guards
+            .iter()
+            .filter(|g| self.guard_location.get(&g.id) == Some(&facility))
+            .collect();
+        if local.is_empty() {
+            return 0.0;
+        }
+        let quality = local
+            .iter()
+            .map(|g| g.competence * 0.6 + (1.0 - g.fatigue) * 0.25 + (1.0 - g.stress) * 0.15)
+            .sum::<f32>()
+            / local.len() as f32;
+        (quality * 0.18 * local.len().min(3) as f32).clamp(0.0, 0.55)
+    }
+
+    /// Reassign a guard to a post and move its pawn atomically, so the
+    /// "exactly one place" invariant remains true. Returns false if unknown.
+    pub fn assign_guard_post(&mut self, guard_id: GuardId, post: PostType) -> bool {
+        let Some(guard) = self.guards.iter_mut().find(|g| g.id == guard_id) else {
+            return false;
+        };
+        if guard.post == post {
+            return true;
+        }
+        guard.post = post;
+        guard.current_task = "patrol".into();
+        let location = Self::facility_for_guard_post(post);
+        let facility = self
+            .facility_of_kind(location)
+            .or_else(|| self.facilities.first().map(|f| f.id))
+            .unwrap_or(FacilityId(0));
+        self.guard_location.insert(guard_id, facility);
+        self.events.emit(
+            WorldEvent::new(
+                0,
+                self.time,
+                EventKind::PolicyChange,
+                format!("Guard {} reassigned to {post:?}", guard_id.raw()),
+            )
+            .with_actor(guard_id.raw())
+            .with_cause("guard duty reassignment"),
+        );
+        true
+    }
+
+    /// Hourly guard duty sweep: area-scoped observation → opinion → report →
+    /// interaction → escalation. Kept as one world-owned authority; the engine
+    /// driver calls the same primitives for explicit duty cycles.
+    pub fn guard_duty_sweep(&mut self) {
+        let hour = self.time.as_secs() / 3600;
+        if hour == self.last_guard_duty_hour {
+            return;
+        }
+        self.last_guard_duty_hour = hour;
+
+        let guard_policy = self.guard_duty_context();
+        let guard_ids: Vec<GuardId> = self.guards.iter().map(|g| g.id).collect();
+        let mut guard_reports = Vec::new();
+        let mut guard_interactions: Vec<GuardInteraction> = Vec::new();
+
+        for gid in guard_ids {
+            let observed = self.guard_observations(gid);
+            let Some(guard) = self.guards.iter_mut().find(|g| g.id == gid) else {
+                continue;
+            };
+            let mut rng =
+                RngStream::new(self.seed, self.time.as_secs() ^ (gid.raw() << 8) ^ 0xA11CE);
+            let result = guard.duty_tick_area(&observed, guard_policy, &mut rng);
+            guard_interactions.extend(result.interactions);
+            guard_reports.extend(result.reports.into_iter().map(|r| (gid, r)));
+        }
+
+        // Guard interactions are validated consequences applied by the world,
+        // never arbitrary writes from the guard subagent itself.
+        for interaction in guard_interactions {
+            let intensity = interaction.intensity.clamp(0.0, 1.0);
+            let target = interaction.prisoner_id;
+            let Some(prisoner) = self.prisoners.iter_mut().find(|p| p.id.raw() == target) else {
+                continue;
+            };
+            match interaction.kind {
+                GuardInteractionKind::Observe => {}
+                GuardInteractionKind::Directive => {
+                    prisoner.needs.impulse(NeedTag::Respect, -0.02 * intensity);
+                    prisoner.needs.impulse(NeedTag::Safety, 0.02 * intensity);
+                }
+                GuardInteractionKind::Restrain => {
+                    prisoner.needs.impulse(NeedTag::Safety, 0.05 * intensity);
+                    prisoner.needs.impulse(NeedTag::Freedom, 0.04 * intensity);
+                    prisoner.needs.impulse(NeedTag::Respect, 0.03 * intensity);
+                }
+                GuardInteractionKind::Assist => {
+                    prisoner.needs.impulse(NeedTag::Safety, 0.03 * intensity);
+                }
+                GuardInteractionKind::PolicyViolation => {
+                    prisoner.needs.impulse(NeedTag::Respect, 0.04 * intensity);
+                    prisoner.needs.impulse(NeedTag::Safety, 0.02 * intensity);
+                }
+            }
+        }
+
+        let accepted: Vec<(GuardId, alc_guard::GuardReport)> = guard_reports
+            .into_iter()
+            .filter(|(_, r)| r.severity == 0 || r.requests_assistance || r.credibility >= 0.25)
+            .collect();
+        if accepted.is_empty() {
+            return;
+        }
+
+        self.warden.security_incidents_this_week =
+            self.warden.security_incidents_this_week.saturating_add(
+                accepted
+                    .iter()
+                    .filter(|(_, r)| {
+                        r.severity >= 2 && (r.requests_assistance || r.credibility >= 0.25)
+                    })
+                    .count() as u32,
+            );
+        self.warden.incidents_this_week = self.warden.security_incidents_this_week;
+
+        for (gid, report) in accepted {
+            if report.severity == 0 {
+                continue;
+            }
+            // Only critical reports and assistance requests reach the event
+            // bus. Lower-severity observations remain in guard history.
+            if report.severity < 3 && !report.requests_assistance {
+                continue;
+            }
+            let kind = if report.requests_assistance || report.severity >= 3 {
+                EventKind::SecurityResponse
+            } else {
+                EventKind::GuardReport
+            };
+            let mistake = u8::from(report.summary.starts_with("Unverified"));
+            let witness = u8::from(report.witnessed_directly);
+            let cause = format!(
+                "guard duty report; post={:?} sev={} cred={:.2} witness={} mistake={}",
+                report.post, report.severity, report.credibility, witness, mistake
+            );
+            let ev = WorldEvent::new(0, self.time, kind, report.summary.clone())
+                .with_actor(gid.raw())
+                .with_cause(cause)
+                .with_confidence(report.credibility);
+            let id = self.events.emit(ev);
+            if id == 0 {
+                continue;
+            }
+            self.warden.inbox.push(id);
+            if self.warden.inbox.len() > 200 {
+                let drop = self.warden.inbox.len() - 200;
+                self.warden.inbox.drain(0..drop);
+            }
+        }
+    }
+
     /// Advance the world by one simulation step.
     pub fn tick(&mut self) {
         if self.speed == TimeSpeed::Paused {
@@ -522,87 +738,9 @@ impl World {
         //    fatigue therefore ripple into every later decision this tick.
         self.drift_needs_step(dt_mins);
 
-        // 2. Guards duty tick: observe nearby prisoners, report incidents,
-        //    and request assistance when stress is high. Runs once per sim-hour
-        //    — every-tick sweeps flooded the event bus with routine reports.
-        let duty_hour = now_secs / 3600;
-        if duty_hour != self.last_guard_duty_hour {
-            self.last_guard_duty_hour = duty_hour;
-            let guard_policy = alc_guard::DutyContext {
-                at: self.time,
-                lockdown: self.policies.lockdown,
-                security_level: self.policies.security_level,
-            };
-            let mut guard_reports = Vec::new();
-            for g in &mut self.guards {
-                let observed: Vec<f32> = self
-                    .prisoners
-                    .iter()
-                    .map(|p| {
-                        // Need pressure is a proxy for friction, not proof of a
-                        // critical incident. Keep the baseline low so only
-                        // genuine peaks produce severity-3 reports; otherwise
-                        // routine unmet needs saturate the event bus.
-                        let base = p.needs.total_pressure();
-                        let agitation = p.needs.respect * 0.15 + p.needs.safety * 0.1;
-                        let compliance = if let Some(d) = self.current_decisions.get(&p.id) {
-                            matches!(
-                                &d.action,
-                                alc_agents::decision::DecisionAction::Comply
-                                    | alc_agents::decision::DecisionAction::None
-                            )
-                        } else {
-                            false
-                        };
-                        let compliance: f32 = if compliance { 0.0 } else { 0.08 };
-                        (base * 0.5 + agitation + compliance).clamp(0.0, 1.0)
-                    })
-                    .collect();
-                let mut rng =
-                    RngStream::new(self.seed, self.time.as_secs() ^ (g.id.raw() << 8) ^ 0xA11CE);
-                let reports = g.duty_tick(&observed, guard_policy, &mut rng);
-                if !reports.is_empty() {
-                    guard_reports.extend(reports.into_iter().map(|r| (g.id, r)));
-                }
-            }
-            if !guard_reports.is_empty() {
-                self.warden.security_incidents_this_week =
-                    self.warden.security_incidents_this_week.saturating_add(
-                        guard_reports
-                            .iter()
-                            .filter(|(_, r)| r.severity >= 2)
-                            .count() as u32,
-                    );
-                self.warden.incidents_this_week = self.warden.security_incidents_this_week;
-                for (gid, report) in guard_reports {
-                    // Only critical reports and assistance requests reach the
-                    // event bus. Severity-2 routine incidents stay in guard
-                    // state/history: emitting them hourly saturated the 50k
-                    // bus within a year and evicted social/parole events.
-                    if report.severity < 3 && !report.requests_assistance {
-                        continue;
-                    }
-                    let kind = if report.requests_assistance || report.severity >= 3 {
-                        EventKind::SecurityResponse
-                    } else {
-                        EventKind::GuardReport
-                    };
-                    let ev = WorldEvent::new(0, self.time, kind, report.summary.clone())
-                        .with_actor(gid.raw())
-                        .with_cause(format!(
-                            "guard duty report; post={:?} sev={} cred={:.2}",
-                            report.post, report.severity, report.credibility
-                        ));
-                    let id = self.events.emit(ev);
-                    // Warden inbox tracks received report/event ids (credibility-scored upstream).
-                    self.warden.inbox.push(id);
-                    if self.warden.inbox.len() > 200 {
-                        let drop = self.warden.inbox.len() - 200;
-                        self.warden.inbox.drain(0..drop);
-                    }
-                }
-            }
-        }
+        // 2. Guards duty tick: area-scoped observation, opinion formation,
+        //    reporting and escalation. Runs once per sim-hour.
+        self.guard_duty_sweep();
 
         // 3. Resolve today's schedule for everyone against live policy.
         self.resolve_schedules_step();
@@ -975,6 +1113,10 @@ impl World {
 
         for fid in facility_ids {
             let ids = &by_facility[&fid];
+            // Co-located guards materially reduce the chance that a tense
+            // dyad escalates; re-posting a guard therefore changes incident
+            // likelihood without scripting a specific encounter.
+            let deterrence = self.guard_deterrence(fid);
             for (i, &a) in ids.iter().enumerate() {
                 for &b in ids.iter().skip(i + 1) {
                     let (Some(sa), Some(sb)) = (snaps.get(&a), snaps.get(&b)) else {
@@ -987,7 +1129,8 @@ impl World {
 
                     let hostility = ((sa.aggression + sb.aggression) * 0.5
                         + (sa.respect + sb.respect) * 0.15)
-                        * 0.45;
+                        * 0.45
+                        * (1.0 - deterrence);
                     let rumor_bias = 0.12 + (sa.manipulation + sb.manipulation) * 0.12;
                     let roll = rng.next_f64() as f32;
                     let mut delta = RelationshipDelta::default();
@@ -1148,9 +1291,20 @@ impl World {
             f.condition = (f.condition - 0.001).max(0.0);
         }
 
-        // Sentence progress.
+        // Sentence progress and finite disciplinary sanctions. A dated
+        // loss-of-privileges record expires after the configured window; this
+        // prevents a single contraband finding from barring parole forever.
         for p in &mut self.prisoners {
             p.sentence_served_days += 1;
+            if p.schedule.disciplinary_status {
+                if let Some(last) = p.discipline_history.last() {
+                    if self.days_simulated.saturating_sub(u64::from(last.day))
+                        >= DISCIPLINARY_STATUS_DAYS
+                    {
+                        p.schedule.disciplinary_status = false;
+                    }
+                }
+            }
         }
 
         // Escape attempts for the genuinely desperate (Directive §16).
@@ -1676,10 +1830,19 @@ impl World {
         }
         // One admission per sweep keeps growth paced; never exceed capacity.
         let accepted = 1.min(free);
+        // A day-boundary admission may be the last state change of a run, so
+        // place the pawn atomically rather than waiting for the next tick's
+        // schedule assignment.
+        let intake_facility = self
+            .facility_of_kind(FacilityKind::CellBlock)
+            .or_else(|| self.facilities.first().map(|f| f.id))
+            .unwrap_or(FacilityId(0));
         for _ in 0..accepted {
             let id = self.next_prisoner_id;
             self.next_prisoner_id += 1;
-            let p = generate_intake(self.seed, PrisonerId(id));
+            let pid = PrisonerId(id);
+            let p = generate_intake(self.seed, pid);
+            self.prisoner_location.insert(pid, intake_facility);
             self.events.emit(
                 WorldEvent::new(
                     0,
@@ -2072,6 +2235,12 @@ impl World {
         let holder = found.holder;
         if let Some(p) = self.prisoners.iter_mut().find(|p| p.id == holder) {
             p.schedule.disciplinary_status = true;
+            p.record_discipline(
+                u32::try_from(self.days_simulated).unwrap_or(u32::MAX),
+                "contraband",
+                "loss-of-privileges",
+                found.severity,
+            );
             p.reputation = (p.reputation - 0.05).max(0.0);
             p.traits.discipline = (p.traits.discipline - 0.04).max(0.05);
             p.needs.safety = (p.needs.safety + 0.1).min(1.0);
@@ -2618,16 +2787,26 @@ impl World {
                 );
             }
             WardenAction::HireGuards { count } => {
+                // Seed the pawn location immediately: a day-boundary hire may
+                // happen after the last schedule assignment of the run, and a
+                // guard without a location violates the one-place invariant.
+                let home_facility = self
+                    .facilities
+                    .first()
+                    .map(|f| f.id)
+                    .unwrap_or(FacilityId(0));
                 for _ in 0..count {
                     let id = self.next_guard_id;
                     self.next_guard_id += 1;
+                    let guard_id = GuardId(id);
                     self.guards.push(Guard::new(
-                        GuardId(id),
+                        guard_id,
                         format!("Guard {id}"),
                         GuardRank::Officer,
                         PostType::Corridor,
                         &mut RngStream::new(self.seed, id),
                     ));
+                    self.guard_location.insert(guard_id, home_facility);
                 }
                 self.events.emit(WorldEvent::new(
                     0,
@@ -2709,7 +2888,9 @@ impl World {
             }
             WardenAction::FireGuards { count } => {
                 for _ in 0..count.min(self.guards.len() as u32) {
-                    self.guards.pop();
+                    if let Some(guard) = self.guards.pop() {
+                        self.guard_location.remove(&guard.id);
+                    }
                 }
                 self.events.emit(WorldEvent::new(
                     0,
