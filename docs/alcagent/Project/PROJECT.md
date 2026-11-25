@@ -5,32 +5,32 @@ Master Directive lives in `AGENTS.md` (mirror of the original `agents.md` direct
 **Canonical docs:** `../Project/` (status, milestones, design-status), `../Systems/` (interfaces), `../Design/` (intent/plans), `../Reports/` (findings), `../Communication/` (AI-to-AI handoffs).
 **Release/change notes:** `CHANGELOG.md` at repo root.
 
-## Status (version 0.05 — active development / Wave 4)
+## Status (version 0.05 — release candidate, all specs complete)
 
-The simulation is playable and the workspace **builds**. The current work wave (Wave 4) added
-intentions, a council of drives, memory-driven choices, a navigation graph, real-time pawn
-positions, structured conflicts and an engine-level map surface (see `../Communication/Sumo-AI-Team/NEXT-UPDATE-SUPPORT.md`).
+The simulation is playable and the workspace **builds**. Wave 4 added intentions, a council of
+drives, memory-driven choices, a navigation graph, real-time pawn positions, structured conflicts
+and an engine-level map surface. The final 0.05 wave added gang politics, AI orchestration/batching,
+long-run soak acceptance and release documentation; all 14 Ralph specs in `dev/ralph/specs` are `done`.
 
 **0.05 status (R0):** the major UI/GUI overhaul and real game map are implemented — the TUI and
 the egui GUI (`alc-gui`, a buildable workspace member) both render a spatial map with cell/wing
 occupancy, prisoner/guard pawn positions, movement/path hints and incident overlays from
 `sumo::MapFrame`. See `dev/ralph/specs/002-map-gui-acceptance.md`.
 
-**Verified 2026-11-23:**
-- `cargo build --workspace` / `cargo test --workspace` — **green**. 184 tests passed,
-  0 failed, 1 ignored (the 10k-entry `logs_over_limit_are_detected` stress test).
-  Includes the 730-day 3-seed chaos soak, save/load determinism, and all Wave 4
-  suites (`engine_state_roundtrip`, `invariants_negative`, `log_wiring`,
-  `map_frame`, `integration_wave4`).
-- Only benign unused-dependency warnings remain (feature-gated egui/eframe and
-  workspace-level entries); no source-code warnings.
-- Earlier baseline (before Wave 4) was 136/136 tests passing.
+**Verified 2026-11-25:**
+- `cargo fmt --all -- --check`, `cargo build --workspace --all-targets` and
+  `cargo test --workspace` — **green**. 439 passed, 0 failed, 1 ignored (the
+  10k-entry `logs_over_limit_are_detected` stress test), with no build warnings.
+  Includes the 365-day and 730-day 3-seed chaos soaks, save/load determinism,
+  Wave 4 suites (`engine_state_roundtrip`, `invariants_negative`, `log_wiring`,
+  `map_frame`, `integration_wave4`), gang politics and AI orchestration suites.
+- Earlier baselines: 184 passed after Wave 4, 136 passed before Wave 4.
 
 ## Quick start
 
 ```powershell
 cargo build --workspace
-cargo test --workspace        # 184 passed, 0 failed, 1 ignored
+cargo test --workspace        # full workspace, including long-run soaks
 cargo run -- run 365          # 1-year headless evolution
 cargo run -- observe          # interactive ratatui observer (default)
 cargo run -- --help           # CLI + TUI keybindings
@@ -38,7 +38,7 @@ cargo run -- --help           # CLI + TUI keybindings
 
 ## Current milestone
 
-- **Current version:** 0.05 (`0.5.0-beta.1` pending release-version reconciliation).
+- **Current version:** 0.05 (`0.5.0-beta.1`, reconciled in the workspace manifest).
 - **0.05 exit criteria:** all Ralph specs done, green workspace, 365+ day soak; both TUI and GUI
   already render the shared `sumo::MapFrame`.
 - **Next milestone:** **0.1 beta** — scope in `../Project/version-milestones.md`.

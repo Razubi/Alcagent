@@ -1,6 +1,9 @@
 # Warden Cycle (`../Systems/warden-cycle.md`)
 
-The warden is an independent AI agent (`alc_warden::Warden`). The engine drives its cycle: `Sim::warden_cycle()` runs `alc_warden::arbitrate` and applies the action with `Sim::apply_warden_action`; `Sim::warden_pending()` reads pending actions.
+The warden is an independent AI agent (`alc_warden::Warden`). The deterministic cycle is
+`Sim::warden_cycle()` → `alc_warden::arbitrate` → `Sim::apply_warden_action`; `Sim::warden_pending()`
+reads pending actions. Council/Shadow modes and `Sim::warden_strategy_cycle()` instead use the
+report-only strategy path below. All explicit actions converge on `World::apply_warden_action`.
 
 ## WardenTraits
 
@@ -21,12 +24,26 @@ Otherwise: score objectives via `Warden::objective_utility` with light state nud
 
 `arbitrate_with_context(warden, economy, population, capacity, security_incidents_this_week, rng)` — explicit inputs (fog of war).
 
+## Report-driven strategy (`spec 010`)
+
+`alc_warden::decide_strategy(&WardenStrategySnapshot, &WardenTraits, &mut RngStream)` scores all
+objectives, records near-ties as conflicts, and maps the winner to a feasible action. The
+snapshot is assembled by `Sim::warden_strategy_snapshot()` exclusively from observer DTOs
+(`warden()`, `budget_snapshot_window(30)`, `construction_queue()`, `economy()`, `guards()`,
+`policy_summary()`) and delivered guard-report ids. Solvency outranks all other objectives;
+credible severity-3 assistance requests trigger a targeted response; expansion requires finance
+headroom, attention, no active construction and a real catalog entry. `StrategyDecision`
+carries rationale, conflicts, scores and finance state; `Sim::apply_strategy_decision` persists
+them in `DecisionAuditRecord` and `World.warden.audit_log` and charges attention unless the action
+is an emergency. `PolicyMode::Deterministic` is unchanged; Council applies strategy; Shadow
+applies the deterministic baseline and emits the strategy alternative as an A/B signal.
+
 ## WardenAction
 
-- `Expand { building: String }` — engine maps `"medical" | "education" | "isolation" | "visitor" | "workshop" | "recreation"` → corresponding `FacilityKind` (else `CellBlock`); adds facility (`world.add_facility(kind, 1, 40)`); emits `EventKind::Expansion`.
-- `HireGuards { count }` / `FireGuards { count }` — create/remove guards; emit `PolicyChange`.
+- `Expand { building: String }` — engine maps `"medical" | "education" | "isolation" | "visitor" | "workshop" | "recreation" | "dormitory"` → corresponding `FacilityKind` (else `CellBlock`); queues construction with the catalog capacity; charges cost and staffing requirements on completion.
+- `HireGuards { count }` / `FireGuards { count }` — create/remove at most 16 guards per action; hiring charges a `$2,000 × count` recruitment cost to `Account::Salaries` and records a ledger note; emits `PolicyChange`.
 - `PromoteStaff { guard: u64 }` — rank bump: Officer→Sergeant→Lieutenant→Captain→Captain; no event.
-- `ChangePolicy { policy, value: f64 }` — `"privileges"` → `policies.privileges_level` (clamped 0..1); `"security"` → `policies.security_level` (0..1); `"rehab_funding"` → `policies.rehab_funding_multiplier` (0.2..3.0); emits `PolicyChange`.
+- `ChangePolicy { policy, value: f64 }` — `"privileges"` → `policies.privileges_level` (clamped 0..1); `"security"` → `policies.security_level` (0..1); `"rehab_funding"` → `policies.rehab_funding_multiplier` (0.2..3.0); `"lockdown"` → `policies.lockdown` with the 14-day expiry clock reset; emits `PolicyChange`.
 - `IncreaseSecurity` — `security_level + 0.1`, capped 1.0.
 - `ReduceExpenses` — `rehab_funding_multiplier − 0.1`, floored 0.2.
 - `ImproveInfrastructure { facility: u64 }` — `condition + 0.05` capped 1.0.

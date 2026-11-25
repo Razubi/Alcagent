@@ -4,25 +4,24 @@
 
 ## Current version
 
-- **Version:** 0.05 (active development, Wave 4 engine integration complete).
-- **State (verified 2026-11-23):** `cargo build --workspace` / `cargo test --workspace`
-  are green: 184 passed, 0 failed, 1 ignored, including the 730-day 3-seed chaos
-  soak, save/load determinism, council/shadow modes and brain-inspector proposals.
-  Pre-Wave-4 baseline was 136/136 tests passing.
-- **Active work:** 0.05 completion is now blocked by the **major UI/GUI overhaul and real game map**.
-  The TUI map and the buildable egui GUI both render a spatial map from `sumo::MapFrame`
-  (accepted in 0.05, see `dev/ralph/specs/002-map-gui-acceptance.md`). Wave 4 engine surface
-  R1–R7 is largely implemented; remaining Wave 5 items continue (real nav pathfinding, deeper
-  map fidelity). See `../Communication/Note's/wave4-implementation-status.md` and
-  `../Communication/Sumo-AI-Team/NEXT-UPDATE-SUPPORT.md`.
-- Note: root `Cargo.toml` workspace `version` is `0.1.0`; reconciliation with the 0.05 label
-  is pending.
+- **Version:** 0.05 / workspace `0.5.0-beta.1` (release candidate).
+- **State (verified 2026-11-25):** `cargo fmt --all -- --check`,
+  `cargo build --workspace --all-targets` and `cargo test --workspace` are green
+  (439 passed, 1 intentionally ignored, 0 failed), including the 365-day and
+  730-day 3-seed chaos soaks, save/load determinism, council/shadow modes,
+  brain-inspector proposals, gang politics and AI orchestration suites. All 14
+  Ralph specs are `done`.
+- **Status:** the major UI/GUI overhaul and real game map are implemented and accepted in
+  0.05 (see `dev/ralph/specs/002-map-gui-acceptance.md`); both frontends render the shared
+  `sumo::MapFrame`. Wave 4 engine surface R1–R7 is complete. Only Wave 5 depth remains
+  (real nav pathfinding, deeper map fidelity), outside the 0.05 exit criteria.
+- Root `Cargo.toml` workspace `version` is reconciled to `0.5.0-beta.1`.
 
 ## Milestones
 
 | Version | Status | Summary |
 |---|---|---|
-| **0.1 beta** | **Planned — next milestone** | Complete Wave 4 engine/world state additions, ship the major UI/GUI overhaul and real game map, and close the remaining Phase 4+ gaps; make the prison a fully self-contained, observable, content-complete living institution. |
+| **0.1 beta** | **Planned — future milestone** | Add real navigation/pathfinding depth, full `KnowledgeStore` claims/provenance/standing, provider-backed narrative adapters and CLI polish. The 0.05 exit criteria are closed. |
 
 ## Version 0.1 beta — planned scope
 
@@ -44,7 +43,7 @@ sustainability fixes.
 6. AI-generated narrative text (no provider client wired).
 7. `World::summary()` / CLI polish; reconcile with `sumo::Observation`.
 8. `alc-gui` integration — resolved by item 1: it must be buildable and in scope for 0.05, not deferred or retired.
-9. Doc drift cleanup and test-suite green restoration. **(Done 2026-11-24: 184/0/1 green; re-audit required after the UI/GUI/map requirement is implemented.)**
+9. Doc drift cleanup and test-suite green restoration. **(Done 2026-11-25: 439 passed, 1 ignored, 0 failed; all specs and active docs re-audited.)**
 
 ### Acceptance criteria
 

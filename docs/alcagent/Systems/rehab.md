@@ -1,9 +1,10 @@
 # Rehabilitation (`../Systems/rehab.md`)
 
-**Status (beta-0.05, 2026-11-20):** `alc-social::rehab` (program state machine) and
-`Sim::apply_rehab_progress`/`Sim::rehab_score` (simplified needs relief) are implemented.
-Full wiring — `Sim::set_rehab_program`, `World::programs`, daily `rehab_tick`, and
-`ProgramEnrolled`/`RehabilitationSuccess` emission — is planned, not yet wired.
+**Status (0.05, 2026-11-25):** `alc-social::rehab` (program state machine),
+`World::rehab_records`, daily `rehab_step`, and `Sim::apply_rehab_progress`/`Sim::rehab_score`
+are wired. Enrollment, attendance, completion and failure are persisted and exposed through
+validated controls; `ProgramEnrolled`, `RehabilitationProgress`, `RehabilitationSuccess` and
+`RehabilitationFailure` events are emitted.
 
 ## Sim-level API (`sumo`)
 

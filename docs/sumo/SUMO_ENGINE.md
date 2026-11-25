@@ -6,9 +6,9 @@ use it. It is deliberately separate from the prison game built on top of it
 ([Project Alcagent](../README.md)); the same engine is intended to be reusable for other
 simulation projects.
 
-- **Crate:** `sumo` 0.1.0 (edition 2024, MSRV 1.85, MIT).
+- **Crate:** `sumo` 0.5.0-beta.1 (workspace version; edition 2024, MSRV 1.85, MIT).
 - **Repo:** standalone (`../sumo`), containing `sumo` plus 11 `alc-*` dependency crates.
-- **Baseline:** builds cleanly; last verified green suite 184 passed / 0 failed / 1 ignored.
+- **Baseline:** builds cleanly; workspace tests are green, including 365/730-day soaks.
 - **Public API guide:** [`SUMO_API.md`](SUMO_API.md) — exact signatures and usage examples.
 
 ---
@@ -19,8 +19,8 @@ Today `sumo` powers a prison simulation. Its goal is to become a **general-purpo
 deterministic, agent-based simulations** with:
 
 1. **Separation from any one game** — the core runs headless with no CLI/UI dependency.
-2. **One authoritative core, many frontends** — CLI, terminal UI and (planned) GUI all drive the
-   same `Sim` API.
+2. **One authoritative core, many frontends** — CLI, terminal UI and egui GUI all drive the
+   same validated `Sim` API.
 3. **Determinism and replay** — seeded RNG, fixed timestep, state fingerprints.
 4. **Emergent behavior** — autonomous agents, events with causes, consequences that ripple.
 5. **Observability** — read-only snapshots, event logs, audit records, invariants, tracing.
@@ -69,7 +69,8 @@ drifts agent needs, runs a throttled hourly guard-duty sweep, resolves schedules
 need-driven actions (trait-biased; AI deliberation is rate/token-gated with a deterministic
 fallback), resolves co-presence encounters, and — on day boundaries — accrues finances,
 progresses sentences, resolves escapes/parole, arbitrates warden policy, admits new agents,
-and runs the in-flight rehab/contraband/construction steps.
+and runs the wired rehab/contraband/construction steps. Weekly gang politics runs inside the
+day-boundary phase as well.
 
 `Sim` also reconciles engine-side policy state after the world mutates it, mirrors conflict
 events into structured incident logs, records population history and attempts autosave.

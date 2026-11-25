@@ -6,10 +6,9 @@ simulation you can watch evolve or run headlessly. It documents *what happens in
 [`SUMO_ENGINE.md`](../sumo/SUMO_ENGINE.md) for its design and [`SUMO_API.md`](../sumo/SUMO_API.md) to embed or
 extend the simulation in Rust. Engine docs are maintained under `docs/sumo/` in this repository.
 
-> **Status (2026-11-24):** the base simulation is stable (last green baseline: 184 tests passed,
-> 0 failed, 1 ignored). A new gameplay wave is landing: policy controls, queued construction,
-> incident/decision audit views, and daily rehab/contraband steps. Features marked **in-flight**
-> exist in the working tree but may change before release.
+> **Status (2026-11-25):** the 0.05 gameplay wave is stable and green: policy controls, queued
+> construction, incident/decision audit views, rehab/contraband/post-release lifecycles, report-only
+> warden strategy, autonomous guards, social roles and both spatial frontends are implemented.
 
 ---
 
@@ -100,12 +99,12 @@ field exists in code but has no bound key, so search is not a usable control.)
 | 2 | Prisoner | Selectable list + profile (sentence, class, gang, reputation), 12 personality traits, 25 need-deficit bars, goals, schedule, skills, memory summary. |
 | 3 | Gang | Leader, members, hierarchy, reputation/resources, culture, rivalries, alliances, disputes, goals. |
 | 4 | Staff | Guard roster, rank/post/authority/shift, duty condition (competence, morale, fatigue), disposition and duty log. |
-| 5 | Warden | Philosophy, 11 traits, attention, inbox/report count, pending actions; **in-flight** policy-control panel. |
-| 6 | Financial | Treasury, health index, per-prisoner funding, crowding threshold, paged daily ledger. |
+| 5 | Warden | Philosophy, 11 traits, attention, inbox/report count, pending actions, latest strategy rationale and policy controls. |
+| 6 | Financial | Treasury, health index, per-prisoner funding, crowding threshold, paged daily ledger and warden affordances. |
 | 7 | Event Timeline | Newest-first events with causes (`a → b`) and confidence. |
-| 8 | Social Network | Relationship dyads ranked by bond strength, with trust/fear/hostility/rivalry. |
-| 9 | Prison Map | ASCII schematic of facilities by kind and condition, guard posts; **in-flight** construction queue table. |
-| 0 / A | Incident Reports / Decision Audit (**in-flight**) | Structured incidents (severity, OPEN/RES, cause/consequence) and audited decisions (actor, source, validation, reason). |
+| 8 | Social Network | Relationship dyads and derived social roles ranked by bond strength, with trust/fear/hostility/rivalry. |
+| 9 | Prison Map | Spatial facilities, cell/wing occupancy, pawn positions, nav edges, movement hints, incident overlays and condition bars from `sumo::MapFrame`. |
+| 0 / A | Incident Reports / Decision Audit | Structured incidents (severity, OPEN/RES, cause/consequence) and audited decisions (actor, source, validation, reason, rationale). |
 
 Views are read-only over engine snapshots and remain stable on sparse or 2,000-prisoner worlds.
 
@@ -118,7 +117,7 @@ Views are read-only over engine snapshots and remain stable on sparse or 2,000-p
 - A tick advances 1/5/30 simulated minutes depending on speed (`RealTime`/`FastForward`/`Extreme`).
 - Every tick: needs drift → hourly guard sweep → schedule resolution → prisoner decisions →
   co-presence encounters → (on day boundary) economy, sentences, escape/parole, warden, intake,
-  gangs, and in-flight rehab/contraband/construction steps.
+  gangs, rehab/contraband/construction steps and report-driven warden strategy.
 - Schedules assign activities (wake, meals, work, yard, education, recreation, medical, showers,
   visits, lockdown, sleep) gated by classification, wing, privileges, discipline, staffing,
   weather and lockdown. Prisoners can be late, skip work, socialize or break rules.
@@ -144,7 +143,10 @@ bias the ranking (`Disposition`). AI deliberation is token/rate-gated; a determi
 keeps the simulation moving when the budget is exhausted.
 
 Decisions pass an 8-stage validation pipeline (format → semantic → authority → world-state →
-resource → legality → safety → clamp/repair). The engine — never the agent — applies them.
+resource → legality → safety → clamp/repair). Batches share one canonical context, repaired
+decisions are revalidated, and rejected proposals never mutate the world. Provider/model,
+token budgets, rate limits, retries, cache bounds and tier telemetry are configurable through
+`AiConfig` and observable in both frontends; the bundled provider is offline and deterministic.
 
 ### 3.4 Social relationships, gangs and roles
 
@@ -188,15 +190,15 @@ escape/violence reduction, political pressure and expansion, acting under fog of
 guard reports). Modes: **Deterministic** (historical arbitration), **Council** (deterministic
 drive vote with rationales) and **Shadow** (runs both, applies baseline, logs divergence).
 Policies: Normal/Enhanced/Lockdown bands, security/privileges/rehab-funding levels and intake
-pause. **In-flight:** these are directly controllable from the TUI (§2.2).
+pause. These are directly controllable from both frontends (§2.2).
 
-### 3.9 Expansion and construction (**in-flight**)
+### 3.9 Expansion and construction
 
 Warden `Expand` actions no longer add a facility instantly: they **queue a construction project**
 (7–14 days, with a cost charged to the economy ledger). The queue advances daily; completion
 adds the facility and emits `ConstructionComplete`. Progress appears in the map view.
 
-### 3.10 Rehabilitation, contraband and post-release (**in-flight**)
+### 3.10 Rehabilitation, contraband and post-release
 
 A daily rehab step auto-enrolls motivated, non-disciplinary prisoners in Education, Vocational,
 Counseling, AddictionRecovery or AngerManagement; progress changes skills, hope, mental/physical

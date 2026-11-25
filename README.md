@@ -7,10 +7,11 @@ and escapes change the population, and the world keeps developing whether or not
 watching. No LLM is required to run it — the simulation is deterministic, seed-driven and
 fully local.
 
-> **Status (v0.05):** last verified green baseline 2026-11-23 — `cargo build --workspace` and
-> `cargo test --workspace` passed (**184 passed, 0 failed, 1 ignored**), including a
-> 730-day three-seed chaos soak and save/load replay determinism. A new gameplay wave is
-> mid-edit as of 2026-11-24 (see docs); the tree may not compile until it lands.
+> **Status (v0.05 / `0.5.0-beta.1`):** the workspace builds and tests green, including the
+> 730-day three-seed chaos soak, a 365-day save/load continuation, deterministic council/shadow
+> policy modes and both frontend suites. All 14 specs in `dev/ralph/specs` are complete:
+> the ratatui/egui spatial map, gang politics, AI orchestration/batching, long-run soak
+> acceptance and release documentation are included in this candidate.
 
 ---
 

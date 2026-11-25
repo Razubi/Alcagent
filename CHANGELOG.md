@@ -1,13 +1,14 @@
 # Changelog — Project Alcagent
 
-## [0.05] — "The Living Institution" (in development; status 2026-11-25)
+## [0.5.0-beta.1] — "The Living Institution" (0.05 release candidate; status 2026-11-25)
 
 ### Build / tests
-- Verified green baseline after spec 009 (2026-11-25): `cargo fmt --all -- --check`,
-  `cargo build --workspace --all-targets` and `cargo test --workspace` all pass, including the
-  365-day chaos soak, review-agent suites, save/load determinism and both frontend suites.
-- The Ralph plan tracks 14 specs in `dev/ralph/specs`; 001–007, 009 and 012 are `done`.
-  Specs 008, 010, 011, 013 and 014 remain in progress/pending for the 0.05 release.
+- Final 2026-11-25 gates are green: `cargo fmt --all -- --check`,
+  `cargo build --workspace --all-targets` (no warnings) and `cargo test --workspace`
+  (439 passed, 1 intentionally ignored, 0 failed), including the 365-day and 730-day
+  chaos soaks, review-agent suites, save/load determinism and both frontend suites.
+- All 14 Ralph specs in `dev/ralph/specs` are `done`.
+- Workspace manifest version reconciled from `0.1.0` to `0.5.0-beta.1`.
 
 ### Repository split
 - The `sumo` engine and its 11 `alc-*` dependencies were extracted into a standalone repository
@@ -56,12 +57,27 @@
   local incident pressure (spec 009).
 - Social-network analysis: authoritative social roles and derived dyad labels exposed in TUI/GUI
   (spec 012).
+- Warden strategy: report-only objective scoring with explicit conflicts, finance/attention gates,
+  catalog-aware construction, funding/hiring consequences, and rationale persisted in both audit
+  stores and exposed in TUI/GUI (spec 010).
 
-### Remaining 0.05 work
-- Spec 008: gang lifecycle and internal politics; 010: report-driven warden strategy;
-  011: AI orchestration/batching; 013: long-run soak/performance acceptance; 014: release docs.
-- Deferred beyond 0.05: real navigation graph beyond the synthesized grid; full `KnowledgeStore`
-  claims/provenance/standing; council/shadow mode behavior beyond state.
+### Implemented (final 0.05 wave: specs 008, 011, 013, 014)
+- Gang politics: authoritative membership reconciliation, event-sourced gang history, disputes,
+  leadership challenges, splits, mergers, alliances/rivalries, bounded security pressure and
+  gang-controlled contraband; both frontends show relation scores, pressure and history (spec 008).
+- AI orchestration: configurable provider/model, budgets, rate limits, retries, cache and batch
+  limits; canonical epistemic contexts and one validation gate for single/batched decisions;
+  repaired decisions revalidated before apply; runtime telemetry exposed in both frontends (spec 011).
+- Long-run soak: 365-day instrumented run at ~632 ticks/sec with 27,041 events and bounded logs,
+  plus 730-day three-seed and save/load continuation coverage (spec 013).
+- Release docs: version, API, status, milestone, gameplay and changelog reconciled to the
+  actual 0.05 implementation; v5 save format unchanged (spec 014).
+- Fixed integration regressions found by the final gates: escape outcome auditing, guarded-fight
+  repair target, medical-request need relief, and legacy audit-label assertions.
+
+### Deferred beyond 0.05
+- Real navigation graph beyond the synthesized grid; full `KnowledgeStore` claims/provenance/standing;
+  council/shadow mode behavior beyond state; network-backed AI providers.
 
 ### Housekeeping (2026-11-23)
 - Removed obsolete root-level duplicate summaries (`IMPLEMENTATION_SUMMARY*.md`, `S0_STATUS.md`),

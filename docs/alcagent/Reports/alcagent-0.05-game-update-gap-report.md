@@ -1,16 +1,21 @@
 # Alcagent 0.05 Game-Side Update Gap Report
 
-- **Date:** 2026-11-23
+- **Date:** 2026-11-23 (historical gap audit; resolved items annotated below)
 - **Scope:** Game-side 0.05 update for `alcagent` (playable/observable prison simulation product). 
 - **Focus:** `alcagent`, `alc-ui`, `alc-world`, `alc-prisoner`, `alc-social`, `alc-warden`, `alc-guard`, `alc-economy`, `alc-events`. 
 - **Sumo included only where necessary:** engine/API gaps that block alcagent game features.
 - **Baseline checked:** workspace builds and tests pass; `cargo run -- --no-tui` runs a 30-day headless sim through `sumo::Sim`; default `alcagent` launches the ratatui TUI observer.
 
+> **Resolution note (2026-11-25):** the P0 UI/GUI/map blockers in this historical audit are
+> closed. `alc-gui` is a buildable workspace member, both frontends render `sumo::MapFrame`,
+> and the validated control/audit surfaces shipped in specs 002–007, 009, 010 and 012.
+> Remaining Wave 5 depth is outside the 0.05 exit criteria.
+
 ## Executive Summary
 
-Alcagent has a working **observer foundation** (CLI + headless run + 11-view ratatui TUI) and a broad set of **simulation primitives** (needs, schedules, intake, relationships, gangs, conflict, escape, parole, warden/economy/guards, event bus). It is **not yet at a 0.05 "Living Institution" game update**.
+Alcagent has a working **observer foundation** (CLI + headless run + 11-view ratatui TUI and egui GUI) and a broad set of **simulation primitives** (needs, schedules, intake, relationships, gangs, conflict, escape, parole, warden/economy/guards, event bus). The original gaps below were closed during the 0.05 Ralph wave.
 
-The main gap is not missing engine scaffolding; it is **game-system wiring, persistence/player-facing controls, deeper simulation lifecycles, and a major UI/GUI overhaul**. The current TUI map is still schematic and `alc-gui` is not a buildable workspace member, so a real game map and the GUI implementation are **0.05 blockers, not deferred polish**. The 0.05 update should prioritize: authoritative game-state mutation/control, auditable incidents/decisions, policy/construction/rehab/contraband/post-release lifecycles, save/load UX, a buildable GUI observer, and a real spatial map with cell/wing activity.
+The main gap was not missing engine scaffolding; it was **game-system wiring, persistence/player-facing controls, deeper simulation lifecycles, and a major UI/GUI overhaul**. Those items are now implemented: the TUI and GUI both render a spatial map, `alc-gui` is a buildable workspace member, and authoritative controls/audits/lifecycles land in the Ralph specs. This document is retained as the pre-resolution audit.
 
 ## Current Game-Side Baseline
 
@@ -18,8 +23,8 @@ The main gap is not missing engine scaffolding; it is **game-system wiring, pers
 |---|---|---|---|
 | Alcagent CLI/runtime | Clap CLI: global `--seed`, `--speed`, `--no-tui`; commands `observe` (default), `run <days>`, `docs`. TUI uses `EngineDriver: SimDriver`; headless runs `sumo::Sim` for N days and prints summary/recent events. | `crates/alcagent/src/main.rs` (`Cli`, `Cmd`, `EngineDriver`, `launch_tui`, `run_headless`) | Partial - no save/load, no scenario/config, no GUI/TUI feature flags beyond no-tui, no player controls. |
 | Observer UI shell | Read-only ratatui app with pause/resume, speed, 1-9 view switch, cursor selection, status bar. `SimDriver` consumes observation/summaries/events/map/stats; no raw `World` mutation. | `crates/alc-ui/src/lib.rs` (`ViewMode`, `UiState`), `crates/alc-ui/src/app.rs` (`SimDriver`, `App`, `run_tui`) | Good base - needs control actions and richer data contracts. |
-| Observer views | 11 views: Institution Overview, Prisoner, Gang, Staff, Warden, Financial, Event Timeline, Social Network, Map, Incident Reports, Decision Audit. Prisoner detail includes traits/needs/goals/schedule assignment/skills/memory. Map is still schematic; timeline is event log; financial is ledger. | `crates/alc-ui/src/views.rs` (`ALL_MODES`, `draw`, `render_*`) | Partial - incident/decision/policy/construction/rehab/contraband/post-release views exist, but cell-level game map is still missing. |
-| UI/GUI overhaul | Ratatui TUI is the only buildable observer. `alc-gui` exists as data/scaffolding but is not a workspace member and does not build. | `crates/alc-ui/src/*`, `crates/alc-gui/src/*`, `sumo::MapFrame` | Blocker - 0.05 requires a buildable GUI and a major UI overhaul, including a real game map. |
+| Observer views | 11 views: Institution Overview, Prisoner, Gang, Staff, Warden, Financial, Event Timeline, Social Network, Map, Incident Reports, Decision Audit. Prisoner detail includes traits/needs/goals/schedule assignment/skills/memory. Map is now spatial from `sumo::MapFrame`; timeline is event log; financial is ledger. | `crates/alc-ui/src/views.rs` (`ALL_MODES`, `draw`, `render_*`) | Resolved - incident/decision/policy/construction/rehab/contraband/post-release views and cell-level map exist. |
+| UI/GUI overhaul | Ratatui TUI and egui GUI are both buildable observers sharing `sumo::MapFrame` and validated controls. | `crates/alc-ui/src/*`, `crates/alc-gui/src/*`, `sumo::MapFrame` | Resolved - accepted in spec 002. |
 | World simulation core | Deterministic seeded world; bootstrap facilities/guards/24 prisoners; tick handles needs drift, guard duty sweep, schedule resolution, utility decisions with orchestrator gate + deterministic fallback, encounters, daily boundary (funding/expenses/decay/sentences/escapes/parole/warden actions/intake/gang maintenance). | `crates/alc-world/src/lib.rs` (`World`, `bootstrap`, `tick`, `drift_needs_step`, `resolve_schedules_step`, `make_decisions_step`, `resolve_encounters_step`, `on_day_boundary`) | Partial - core loop exists, but many 0.05 lifecycles are missing or shallow. |
 | Prisoner model | Identity, traits, condition, 29-need model, goals, schedule assignment, skills, memory summary; intake generation is correlated/deterministic; schedule resolution has 10 attendance outcomes. | `crates/alc-prisoner/src/lib.rs`, `needs.rs`, `schedule.rs`, `intake.rs` | Partial - needs/schedule rich, but player-facing inspection and lifecycle wiring need depth. |
 | Social/conflict/escape | Social graph, emergent gangs, conflict escalation/outcomes, escape motivation/consequences, role detection; world wires encounters, weekly gang formation/purge, daily escape attempts. | `alc-social/src/*.rs`, `alc-world/src/lib.rs` (`resolve_encounters_step`, `maybe_form_gang_step`, `resolve_escape_step`) | Partial - key systems exist but not fully integrated into a coherent auditable game loop. |
@@ -39,10 +44,10 @@ The main gap is not missing engine scaffolding; it is **game-system wiring, pers
 | Decision audit view | World keeps only latest `current_decisions`; UI has no decision log. | Decision/audit panel showing proposed/accepted/rejected/repaired decisions, reason, actor, time, policy/council rationale. | `crates/alc-world/src/lib.rs`, `crates/alc-ui/src/views.rs`, sumo decision log/proposal API | P0 |
 | Expansion/construction tools | Facilities are added instantly; no build queue/progress UI. | Expansion panel with catalog, cost/time/staff requirements, under-construction status, completion/cancel/failure feedback. | `crates/alc-warden/src/expansion.rs`, `crates/alc-world/src/lib.rs`, `crates/alc-ui/src/views.rs` | P1 |
 | Full schedule inspector | Prisoner view shows assignment, not resolved daily timeline. | Daily schedule timeline per prisoner/wing: resolved blocks, cancellations, attendance outcomes, reasons (lockdown, staff shortage, discipline, medical). | `crates/alc-prisoner/src/schedule.rs`, `crates/alc-world/src/lib.rs`, `crates/alc-ui/src/views.rs` | P1 |
-| Richer map/cell view | Map is still a schematic facility table + guard posts, not a real game map. | Cell/wing occupancy, prisoner/guard pawn placement, movement/path hints, incident overlays, facility condition/capacity/utilization; consume `sumo::MapFrame` in both TUI and GUI. | `crates/alc-world/src/lib.rs` (`prisoner_location`, `guard_location`), `crates/alc-ui/src/views.rs`, `crates/alc-gui/src/*`, `sumo::MapFrame` | **P0 / 0.05 blocker** |
+| Richer map/cell view | Map is still a schematic facility table + guard posts, not a real game map. | Cell/wing occupancy, prisoner/guard pawn placement, movement/path hints, incident overlays, facility condition/capacity/utilization; consume `sumo::MapFrame` in both TUI and GUI. | `crates/alc-world/src/lib.rs` (`prisoner_location`, `guard_location`), `crates/alc-ui/src/views.rs`, `crates/alc-gui/src/*`, `sumo::MapFrame` | Resolved in spec 002 |
 | Finance dashboard depth | Treasury/health/funding/ledger only. | Budget plan, variance/trend, payroll/maintenance/rehab/contraband costs, health-state explanation, forecast/warnings. | `crates/alc-economy/src/lib.rs`, `crates/alc-warden/src/finance.rs`, `crates/alc-ui/src/views.rs` | P1 |
 | Observer UX quality | Search/filter/bookmark/help/notification feed exist but are not fully verified for legibility and view scope. | Fix clipped panels/help/tab bar, unify search scope, stabilize selection across modes, and validate all controls at target terminal sizes. | `crates/alc-ui/src/app.rs`, `views.rs`, `lib.rs` | P1 |
-| Major UI/GUI overhaul + real game map | TUI has 11 views but the map is a facility table; `alc-gui` is non-buildable scaffolding. | Buildable GUI observer sharing DTOs and validated controls with the TUI; real spatial map with cell/wing occupancy, pawn positions for prisoners/guards, movement/path hints, incident overlays, facility condition/capacity/utilization, pan/zoom and hover detail. | `crates/alc-ui/src/views.rs`, `crates/alc-gui/src/*`, `crates/sumo/src/map_frame.rs`, `crates/alc-world/src/lib.rs` | **P0 / 0.05 blocker** |
+| Major UI/GUI overhaul + real game map | TUI has 11 views but the map is a facility table; `alc-gui` is non-buildable scaffolding. | Buildable GUI observer sharing DTOs and validated controls with the TUI; real spatial map with cell/wing occupancy, pawn positions for prisoners/guards, movement/path hints, incident overlays, facility condition/capacity/utilization, pan/zoom and hover detail. | `crates/alc-ui/src/views.rs`, `crates/alc-gui/src/*`, `crates/sumo/src/map_frame.rs`, `crates/alc-world/src/lib.rs` | Resolved in spec 002 |
 
 ### B. Core Simulation Gaps (Game Systems)
 
@@ -102,7 +107,7 @@ These are engine-side changes needed because alcagent is driven through `sumo::S
 - **Deliver:** Rehab enrollment/progress/outcomes; contraband market/discovery/discipline; post-release records and recidivism/reintegration hooks.
 - **Acceptance:** Prisoners can move through credible arcs: intake -> behavior -> rehab/discipline -> parole/post-release.
 
-### Slice 4 - Major UI/GUI Overhaul + Spatial & Social Depth (0.05 blocker)
+### Slice 4 - Major UI/GUI Overhaul + Spatial & Social Depth (resolved in spec 002)
 - **Goal:** Make the world feel physically and socially alive and observable in both supported frontends.
 - **Deliver:** Buildable `alc-gui` workspace member; shared DTO/control contract with the TUI; real game map using `sumo::MapFrame` with pawn positions, cell/wing rosters, movement/path hints, incident overlays and facility condition; fixed clipping/help/search/selection UX; schedule timeline, richer encounters/routines and knowledge/fog-of-war.
 - **Acceptance:** Observer can follow individuals and groups through place, time, relationships, and institutional response in the TUI and in the GUI, using the same validated controls and map data.
@@ -125,5 +130,5 @@ Alcagent can be considered 0.05-ready (game-side) when:
 2. **Auditability:** Major incidents and decisions are visible with cause, actors, validation, and outcome.
 3. **Lifecycle depth:** Construction, rehab, contraband, parole/post-release have end-to-end state transitions and events.
 4. **Observer quality:** The 11-view TUI exposes schedules, incidents, decisions, finance depth, and meaningful map/cell activity without clipped critical panels.
-5. **UI/GUI overhaul and real game map:** 0.05 requires a buildable GUI observer plus a major UI overhaul. The map must be a real spatial view with cell/wing occupancy, prisoner/guard pawn positions, movement/path hints, incident overlays, facility condition/capacity/utilization, pan/zoom and hover detail, driven from `sumo::MapFrame` and shared DTOs—not a facility table or schematic placeholder.
+5. **UI/GUI overhaul and real game map:** accepted in spec 002 — a buildable egui GUI observer and ratatui TUI both render a spatial view with cell/wing occupancy, pawn positions, movement hints, incident overlays, facility condition/capacity/utilization, pan/zoom and hover detail from `sumo::MapFrame`.
 6. **Stability:** Deterministic tests, save/load roundtrip, and long-run soaks pass with new 0.05 systems enabled.

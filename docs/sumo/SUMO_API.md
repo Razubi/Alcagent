@@ -8,7 +8,7 @@ forward in deterministic ticks. All world mutations are performed by the engine;
 *decisions*, which are validated and applied by the engine. AGENTS.md §19 ("Agents must not
 modify arbitrary simulation state") is enforced by this boundary.
 
-- **Crate:** `sumo` (`crates/sumo/`), version `0.1.0`, edition 2024, MSRV 1.85.
+- **Crate:** `sumo` (`crates/sumo/`), version `0.5.0-beta.1` (workspace version), edition 2024, MSRV 1.85.
 - **Add as a path dependency:** `sumo = { path = "crates/sumo" }`.
 - **Features:** `default = []`; `gui` is a stub (`SumoApp` unit struct and `launch_gui()`
   returning `Ok(())`) and is not recommended — use the `alc-ui` ratatui observer instead.
@@ -16,8 +16,8 @@ modify arbitrary simulation state") is enforced by this boundary.
   as of 2026-11-25.
 
 > The 0.05 gameplay systems (policy controls, decision/incident audit, queued construction,
-> daily rehab/contraband steps, parole and save format v5) have landed and are documented in
-> section 12. The workspace builds and tests green at commit `0739cab`.
+> daily rehab/contraband steps, parole, report-driven warden strategy and save format v5) have
+> landed and are documented in section 12. The workspace builds and tests green at commit `f525e76`.
 
 ---
 
@@ -275,13 +275,12 @@ sim.apply_rehab_progress(id, 60); // 60 minutes of program participation
 - `parole_due()` lists eligible prisoners (`sentence_served/sentence >= 0.6`, no discipline)
   without an engine ledger record. `start_parole_hearing`, `grant_parole`, `deny_parole`
   mutate the `ParoleLedger` and emit events. `parole_status(id)` and `sim.parole()` read it.
-- These APIs are **manual bookkeeping**: `World::resolve_parole_step()` runs its own daily
-  behavior/rehab/risk hearing and removes released prisoners. The engine ledger is not
-  consulted by that automatic path. `WardenAction::AdjustParoleRecommendation` lean is
-  recorded but not used by the world's release chance.
+- `World::resolve_parole_step()` reconciles its daily hearing into the engine ledger, and
+  `WardenAction::AdjustParoleRecommendation` lean is recorded on the prisoner record.
 - Rehab: `apply_rehab_progress(id, minutes)` relieves Purpose 0.05/min, Respect 0.04,
   Stimulation 0.04, Safety 0.03, Companionship 0.03; `rehab_score(id)` returns `1 - deficit/5`.
-  Full program enrollment/lifecycle is not yet wired into the world.
+  Enrollment, attendance, completion and failure are persisted in `World::rehab_records` and
+  surfaced through validated controls (spec 005).
 
 ---
 
@@ -360,7 +359,7 @@ tests in `crates/sumo/tests/` verify this.
 ## 11. Testing your integration
 
 ```powershell
-cargo test --workspace                       # 184 passed, 0 failed, 1 ignored
+cargo test --workspace                       # full workspace, including long-run soaks
 cargo test -p sumo --test engine_api          # time control
 cargo test -p sumo --test decisions           # decision pipeline
 cargo test -p sumo --test map_frame           # map snapshot
@@ -376,10 +375,9 @@ and [`../alcagent/Systems/engine-api.md`](../alcagent/Systems/engine-api.md).
 
 ---
 
-## 12. In-flight gameplay wave (2026-11-24, not yet stable)
+## 12. 0.05 gameplay APIs (stable)
 
-The following APIs exist in the working tree but are still being integrated. Treat them as
-unstable until the wave lands and the suite is green again.
+The following APIs shipped in the 0.05 Ralph wave and are covered by workspace tests.
 
 ### Policy controls
 
@@ -389,19 +387,20 @@ pub struct PolicySummary {
     pub lockdown: bool,
     pub security_level: f32,            // 0.0–1.0
     pub privileges_level: f32,          // 0.0–1.0
-    pub rehab_funding_multiplier: f32,  // 0.0–2.0
+    pub rehab_funding_multiplier: f32,  // 0.0–3.0
     pub intake_paused: bool,            // lockdown || security>=0.9 || manual pause
 }
 
 sim.policy_summary() -> PolicySummary
 sim.set_security_level(level: f32)      // clamped 0..1; emits PolicyChange
 sim.set_privileges_level(level: f32)
-sim.set_rehab_funding(multiplier: f32)  // clamped 0..2
+sim.set_rehab_funding(multiplier: f32)  // clamped 0..3
 sim.set_intake_paused(paused: bool)
 ```
 
 Security level also selects a policy band: ≥0.9 or lockdown → `Lockdown`, ≥0.7 → `Enhanced`,
-otherwise `Normal`. `World::policies` gains `intake_paused: bool` (serde-defaulted).
+otherwise `Normal`. `PolicySummary::intake_paused` is derived from lockdown, maximum security,
+and the engine's manual intake flag; it is not a separate persisted world field.
 
 ### Structured audit records
 
@@ -411,7 +410,8 @@ sim.record_decision_audit(record: DecisionAuditRecord)
 sim.incident_records() -> Vec<IncidentRecord>
 ```
 
-`DecisionAuditRecord { time, actor, source, action, summary, validation, reason }` — actor is
+`DecisionAuditRecord { time, actor, source, action, summary, validation, reason, rationale,
+repair_reason, outcome }` — actor is
 `"warden"`, `"prisoner:<id>"` or `"guard:<id>"`; source is `deterministic`, `council`, `shadow`
 or `agent`; validation is `accepted` / `repaired` / `rejected`. `IncidentRecord { id, at,
 kind, severity, location, involved_prisoners, cause, consequence, resolved }`.
@@ -442,3 +442,47 @@ status and security level. New `EventKind` variants: `RehabilitationProgress`,
 `SAVE_FORMAT_VERSION` is **5**: v4 added structured parole decisions/conditions/release times;
 v5 persists the full parole ledger and post-release reconciliation. Older v1/v3/v4 saves are
 migrated by `alc_persistence`. `Economy::spend(...)` charges construction costs.
+
+### Warden strategy
+
+```rust
+sim.warden_strategy_snapshot() -> alc_warden::WardenStrategySnapshot
+sim.decide_warden_strategy() -> alc_warden::StrategyDecision
+sim.warden_strategy_cycle() -> Vec<WardenAction>
+sim.apply_strategy_decision(decision, source) -> WardenAction
+```
+
+The snapshot is assembled only from observer DTOs and delivered guard-report ids, so strategy
+cannot read raw prisoner/gang state. Conflicts, finance state and rationale are persisted in
+`DecisionAuditRecord` and in the world-owned `WardenAuditLog`; both frontends render the latest
+decision. `PolicyMode::Deterministic` keeps the original arbitration path; Council and Shadow
+use the report-driven strategy while Shadow still applies the deterministic baseline.
+
+### AI orchestration runtime (spec 011)
+
+```rust
+use alc_core::config::AiConfig;
+
+let mut sim = sumo::Sim::new_with_config(seed, &AiConfig::default());
+let mut loaded = sumo::Sim::load_with_config("saves/campaign", &AiConfig::default())?;
+
+sim.deliver_decision_batch(vec![(prisoner_id, decision)]) -> DecisionBatchOutcome;
+sim.ai_runtime_snapshot() -> alc_agents::AiRuntimeSnapshot;
+```
+
+`AiConfig` now carries provider/model selection, per-agent and global token ceilings, rate-limit
+burst/refill, retry count, cache TTL/size, batch size, decision timeout and memory-context cap.
+All later fields are serde-defaulted, so older config files still load. Runtime policy is applied
+at construction/load and is deliberately not persisted in the v5 bincode world; the save layout is
+unchanged. Unknown providers/models degrade to deterministic utility decisions without network
+access or panics.
+
+`DecisionRequest`/`ProviderContext` carry a bounded, sorted epistemic context with separate
+`direct_knowledge`, `rumor`, `suspicion`, `belief` and `confirmed_fact` buckets. A deterministic
+context hash invalidates cached or pending decisions when observations change. `deliver_decision`
+and `deliver_decision_batch` share one canonical validation gate: contexts are captured before
+mutation, repaired decisions are revalidated, rejected decisions never mutate world state, and
+world-tick fallbacks are audited as `world_tick_fallback`/`deterministic_fallback`. Batch size,
+cache entries, context memories and audit DTOs are bounded. `AiRuntimeSnapshot` exposes the active
+provider/model, budgets, rate tokens, cache hits/misses, retries, provider failures, batch counts
+and tier decisions to both frontends.

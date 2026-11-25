@@ -41,7 +41,7 @@ cargo test -p sumo --test chaos_soak -- --nocapture   # 730-day, 3 seeds
 cargo test -p sumo --test integration_wave4           # end-to-end engine flow
 ```
 
-Current baseline: 184 passed, 0 failed, 1 ignored (the 10k-entry log stress test).
+Current baseline (2026-11-25): 439 passed, 0 failed, 1 ignored (the 10k-entry log stress test).
 
 ## Crate map (14 workspace members)
 
