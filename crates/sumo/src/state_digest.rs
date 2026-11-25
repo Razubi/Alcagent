@@ -71,7 +71,7 @@ impl Hasher for StableHasher {
 
     /// Raw byte writes (used by derived `Hash` for structs with `&[u8]` etc.).
     /// We do not add a length prefix here because callers hash fixed-layout
-    /// values; variable-length strings are handled by `write_str` below.
+    /// values; variable-length strings use `Hasher::write_str`.
     fn write(&mut self, bytes: &[u8]) {
         self.write_bytes(bytes);
     }
@@ -127,11 +127,6 @@ impl Hasher for StableHasher {
         self.write_bytes(&i.to_be_bytes());
     }
 
-    fn write_str(&mut self, s: &str) {
-        // Match `str::hash`, which writes the UTF-8 bytes followed by 0xff.
-        self.write_bytes(s.as_bytes());
-        self.write_byte(0xff);
-    }
 }
 
 /// Compute a deterministic hash of the engine state for trace verification.

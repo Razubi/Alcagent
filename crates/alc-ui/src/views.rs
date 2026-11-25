@@ -728,10 +728,26 @@ fn render_prisoner_detail(frame: &mut Frame, area: Rect, p: &PrisonerSummary, da
         tail.push(plain("  no rehab catalog available"));
     } else {
         let sel_idx = ui.selected_rehab.unwrap_or(0) as usize % data.rehab_program_catalog.len();
+        let on_hold = p.schedule.disciplinary_status;
+        tail.push(plain(format!(
+            "  eligibility: {} · funding {:.2}x · {} program(s)",
+            if on_hold { "on hold (disciplinary)" } else { "open" },
+            data.policy.rehab_funding_multiplier,
+            data.rehab_program_catalog.len()
+        )));
         for (i, prog) in data.rehab_program_catalog.iter().enumerate() {
             let marker = if i == sel_idx { ">" } else { " " };
             let enrolled = data.rehab_summaries.iter().any(|r| r.prisoner_id == p.id && r.program_key == prog.key);
-            tail.push(plain(format!("{marker}{}{}", prog.name, if enrolled { " [enrolled]" } else { "" })));
+            let rollup = data.rehab_overview.programs.iter().find(|r| r.key == prog.key);
+            let seats = rollup.map(|r| r.enrolled).unwrap_or(0);
+            tail.push(plain(format!(
+                "{marker}{} diff {:.0}% seats {} {}{}",
+                prog.name,
+                prog.difficulty * 100.0,
+                seats,
+                if enrolled { "[enrolled]" } else { "" },
+                if on_hold && !enrolled { " [HOLD]" } else { "" }
+            )));
         }
     }
     let mut rehab_rows: Vec<_> = data.rehab_summaries.iter().filter(|r| r.prisoner_id == p.id).collect();
@@ -1246,15 +1262,45 @@ fn render_financial(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
         .map(|(_, v)| *v)
         .sum();
 
-    // Recent daily net (last 7 days).
+    // Recent daily net (last 7 days) plus 30-day variance and forecast.
     let max_day = e.ledger.iter().map(|l| l.at_secs / 86_400).max().unwrap_or(0);
     let mut daily_lines: Vec<Line<'static>> = Vec::new();
+    let mut net_7: i64 = 0;
     for i in 0..7u64 {
         let day = max_day.saturating_sub(6 - i);
         let net: i64 = e.ledger.iter().filter(|l| l.at_secs / 86_400 == day).map(|l| l.amount.0).sum();
+        net_7 += net;
         let style = if net >= 0 { Style::default().fg(Color::Green) } else { Style::default().fg(Color::Red) };
         daily_lines.push(Line::from(Span::styled(format!("D{} {:+.2}", day, net as f64 / 100.0), style)));
     }
+    let day_30_start = max_day.saturating_sub(29);
+    let net_30: i64 = e.ledger.iter().filter(|l| l.at_secs / 86_400 >= day_30_start).map(|l| l.amount.0).sum();
+    let avg_daily = net_30 as f64 / 30.0 / 100.0;
+    let forecast_7 = e.cash_major + avg_daily * 7.0;
+    let forecast_30 = e.cash_major + avg_daily * 30.0;
+
+    // Cost groups for an at-a-glance expense breakdown.
+    let mut cost_groups: Vec<(&'static str, i64)> = Vec::new();
+    for (acct, net) in &accounts {
+        if *net >= 0 { continue; }
+        let group = match acct {
+            alc_economy::Account::Salaries | alc_economy::Account::Admin => "Payroll/admin",
+            alc_economy::Account::Maintenance | alc_economy::Account::Utilities
+            | alc_economy::Account::Water | alc_economy::Account::Supplies
+            | alc_economy::Account::Construction => "Facilities/ops",
+            alc_economy::Account::Food | alc_economy::Account::Medical => "Care/food",
+            alc_economy::Account::Rehabilitation | alc_economy::Account::Education => "Rehab/education",
+            alc_economy::Account::SecurityEquipment => "Security",
+            alc_economy::Account::Transportation => "Transport",
+            _ => "Other",
+        };
+        if let Some(entry) = cost_groups.iter_mut().find(|(g, _)| *g == group) {
+            entry.1 += *net;
+        } else {
+            cost_groups.push((group, *net));
+        }
+    }
+    cost_groups.sort_by(|a, b| b.1.cmp(&a.1));
 
     let mut warnings: Vec<String> = Vec::new();
     if e.health < 0.3 {
@@ -1264,6 +1310,12 @@ fn render_financial(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
     }
     if e.cash_major < 0.0 {
         warnings.push("WARNING: negative treasury".to_string());
+    }
+    if avg_daily < 0.0 {
+        warnings.push(format!("CAUTION: 30d net {:+.2}/day", avg_daily));
+    }
+    if e.funding_per_prisoner_per_day <= 0.0 {
+        warnings.push("WARNING: no per-prisoner funding".to_string());
     }
     if warnings.is_empty() {
         warnings.push("No financial warnings.".to_string());
@@ -1279,6 +1331,9 @@ fn render_financial(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
         kv("Expenses (all-time)", format!("${:.2}", expense_total as f64 / 100.0)),
         kv("Net (all-time)", format!("${:.2}", (revenue_total + expense_total) as f64 / 100.0)),
         kv("Budget (30d proj/d)", format!("inc ${:.0} exp ${:.0} net ${:.0}", data.budget_snapshot.projected_daily_revenue, data.budget_snapshot.projected_daily_expense, data.budget_snapshot.projected_daily_revenue - data.budget_snapshot.projected_daily_expense)),
+        kv("Trend", format!("7d {:+.2} · 30d {:+.2} · avg {:+.2}/d", net_7 as f64 / 100.0, net_30 as f64 / 100.0, avg_daily)),
+        kv("Forecast cash", format!("7d ${:.2} · 30d ${:.2}", forecast_7, forecast_30)),
+        kv("Health drivers", format!("cash {} · 30d avg {} · funding {}", if e.cash_major < 0.0 { "negative" } else { "positive" }, if avg_daily < 0.0 { "deficit" } else { "surplus" }, if e.funding_per_prisoner_per_day <= 0.0 { "off" } else { "on" })),
         kv("Warnings", warnings.join(" · ")),
     ];
     frame.render_widget(
@@ -1302,7 +1357,15 @@ fn render_financial(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
     if accounts.is_empty() {
         breakdown_lines.push(plain("No ledger entries yet."));
     }
-    breakdown_lines.push(plain("--- Recent daily net (last 7 days) ---"));
+    breakdown_lines.push(plain("--- Cost groups (all-time) ---"));
+    if cost_groups.is_empty() {
+        breakdown_lines.push(plain("  no expenses recorded"));
+    } else {
+        for (group, net) in cost_groups.iter().take(6) {
+            breakdown_lines.push(kv(*group, format!("${:.2}", *net as f64 / -100.0)));
+        }
+    }
+    breakdown_lines.push(plain(format!("--- Daily net / forecast (30d avg {:+.2}/d) ---", avg_daily)));
     for l in daily_lines {
         breakdown_lines.push(l);
     }
@@ -1789,6 +1852,15 @@ fn render_incidents(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
             if chain.len() > 16 { break; }
         }
         let outcome = if r.resolved { "resolved" } else { "open / unresolved" };
+        let witnesses = if r.witnesses.is_empty() {
+            "none".to_string()
+        } else {
+            r.witnesses
+                .iter()
+                .map(|id| names.get(id).cloned().unwrap_or_else(|| format!("P{id}")))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         let mut d = vec![
             kv("ID", r.id.to_string()),
             kv("Kind", r.kind.clone()),
@@ -1797,13 +1869,38 @@ fn render_incidents(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
             kv("Disposition", r.disposition.clone()),
             kv("Location", if r.location.is_empty() { "unknown".into() } else { r.location.clone() }),
             kv("Participants", participants),
-            kv("Witnesses", "n/a in IncidentRecord DTO".to_string()),
-            kv("Response actions", "n/a in IncidentRecord DTO".to_string()),
+            kv("Witnesses", witnesses),
             kv("Outcome", outcome.to_string()),
         ];
         d.push(plain("--- Causal chain ---"));
         for link in chain {
             d.push(plain(format!("  {link}")));
+        }
+        if !r.causal_chain.is_empty() {
+            d.push(plain("--- Causal links (structured) ---"));
+            for link in r.causal_chain.iter().take(8) {
+                d.push(plain(format!(
+                    "  {} #{}: {}",
+                    if link.is_incident { "incident" } else { "event" },
+                    link.source_id,
+                    truncate(&link.description, 60)
+                )));
+            }
+        }
+        d.push(plain("--- Response actions ---"));
+        if r.response_actions.is_empty() {
+            d.push(plain("  none recorded"));
+        } else {
+            for action in r.response_actions.iter().take(8) {
+                d.push(plain(format!(
+                    "  {:?} by {:?} at {} — {} ({})",
+                    action.action,
+                    action.responder,
+                    action.at,
+                    truncate(&action.description, 48),
+                    if action.success { "ok" } else { "failed" }
+                )));
+            }
         }
         // Per-prisoner incident history filtering: if a prisoner selected, show their history; else show for participants.
         let history_ids: Vec<u64> = if let Some(pid) = ui.selected_prisoner {

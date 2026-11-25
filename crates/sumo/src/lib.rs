@@ -466,9 +466,8 @@ impl Sim {
         if self.world.current_decisions.contains_key(&prisoner_id) {
             return None;
         }
-        // Use the single authoritative validation context so dry-runs agree
-        // with the real decision pipeline (R2 acceptance).
-        let ctx = crate::decisions::validation_context(&self.world, prisoner_id);
+        // Validation uses the single authoritative context inside
+        // `validate_with_engine_rules`, so dry-runs agree with delivery (R2).
 
         // Generate a rationale based on the prisoner's traits and needs.
         let rationale = self.generate_rationale(prisoner, decision_type, target);
@@ -516,10 +515,8 @@ impl Sim {
             };
         }
 
-        // Use the single authoritative validation context.
-        let ctx = crate::decisions::validation_context(&self.world, prisoner_id);
-
-        // Build the decision from the proposal and validate.
+        // Validation uses the single authoritative context inside
+        // `validate_with_engine_rules`, so dry-runs agree with delivery.
         let decision = proposal.decision_type.to_decision(proposal.target);
         crate::decisions::validate_with_engine_rules(&self.world, prisoner_id, &decision)
     }
@@ -769,6 +766,11 @@ impl Sim {
             progress_days: p.progress_days,
             cost: p.cost,
             started_day: p.started_day,
+            status: p.status,
+            terminal_reason: p.terminal_reason.clone(),
+            staff_allocated: p.staff_allocated,
+            materials_ready: p.materials_ready,
+            prereqs_met: p.prereqs_met,
         }).collect()
     }
 

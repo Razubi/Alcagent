@@ -46,18 +46,12 @@ pub struct UiState {
     pub search: String,
     /// Bookmarked/pinned entity ids (persist across mode changes).
     pub bookmarks: Vec<u64>,
-    pub pinned: Vec<u64>,
-    pub pinned_entities: Vec<u64>,
-    pub pins: Vec<u64>,
-    /// Recent notification feed (observer-facing).
+    /// Recent observer-facing notifications (bounded).
     pub notifications: Vec<String>,
-    pub notification_feed: Vec<String>,
-    pub notification_log: Vec<String>,
-    pub recent_notifications: Vec<String>,
-    /// Pause the simulation automatically on critical events.
+    /// Pause the simulation automatically on critical incidents.
     pub pause_on_critical: bool,
-    pub pause_on_critical_event: bool,
-    pub pause_on_critical_events: bool,
+    /// Whether free-text search input is active.
+    pub search_active: bool,
     /// Declarative incident query (0.05); [`UiState::filter`] is the accessor.
     pub incident_filter: sumo::incidents::IncidentFilter,
     /// Optional decision validation filter: "accepted", "repaired", "rejected", or None.
@@ -80,6 +74,10 @@ impl UiState {
             selected_rehab: None,
             selected_contraband: None,
             search: String::new(),
+            search_active: false,
+            bookmarks: Vec::new(),
+            notifications: Vec::new(),
+            pause_on_critical: false,
             incident_filter: sumo::incidents::IncidentFilter::all(),
             decision_validation_filter: None,
             show_help: false,

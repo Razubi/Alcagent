@@ -483,8 +483,6 @@ pub fn evaluate_candidates(world: &World, id: PrisonerId) -> Vec<DecisionProposa
     let Some(prisoner) = world.prisoners.iter().find(|p| p.id == id) else {
         return Vec::new();
     };
-    let ctx = validation_context(world, id);
-
     let current = world.prisoner_location.get(&id).copied();
     let mut candidates: Vec<(DecisionType, Option<PrisonerId>)> = Vec::new();
 

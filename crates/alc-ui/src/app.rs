@@ -124,6 +124,8 @@ pub trait SimDriver {
     fn resolve_contraband_case(&mut self, _case_id: u64) -> bool { false }
     /// Resolve a structured incident by id (0.05 control).
     fn resolve_incident(&mut self, _incident_id: u64) -> bool { false }
+    /// Enqueue a construction project (0.05 control). Returns the project id.
+    fn enqueue_construction(&mut self, _kind: alc_world::FacilityKind, _wing: u32, _capacity: u32) -> u64 { 0 }
     /// Cancel a construction project (0.05 control).
     fn cancel_construction(&mut self, _project_id: u64, _reason: &str) -> bool { false }
     /// Mark a construction project failed (0.05 control).
@@ -180,6 +182,7 @@ pub struct App {
     save_dir: std::path::PathBuf,
     autosave_days: u64,
     status_msg: Option<String>,
+    construction_kind_index: usize,
 }
 
 impl App {
@@ -193,6 +196,7 @@ impl App {
             save_dir: opts.save_dir,
             autosave_days: opts.autosave_days,
             status_msg: None,
+            construction_kind_index: 0,
         };
         // The engine starts paused by default; mirror our playback state.
         let engine_speed = if app.paused {
@@ -236,7 +240,13 @@ impl App {
 
     /// Post a transient observer-facing status/notification message.
     pub fn notify(&mut self, msg: impl Into<String>) {
-        self.status_msg = Some(msg.into());
+        let msg = msg.into();
+        self.ui.notifications.push(msg.clone());
+        if self.ui.notifications.len() > 32 {
+            let drain = self.ui.notifications.len() - 32;
+            self.ui.notifications.drain(..drain);
+        }
+        self.status_msg = Some(msg);
     }
 
     /// Manual save through the driver (TUI `S` key / CLI parity).
@@ -499,6 +509,24 @@ impl App {
     }
 
     fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        if self.ui.search_active {
+            match code {
+                KeyCode::Esc | KeyCode::Enter => {
+                    self.ui.search_active = false;
+                    self.notify(format!("Search: {:?}", self.ui.search));
+                }
+                KeyCode::Backspace => {
+                    self.ui.search.pop();
+                }
+                KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
+                    if self.ui.search.len() < 64 {
+                        self.ui.search.push(c);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
         if modifiers.contains(KeyModifiers::CONTROL) {
             if code == KeyCode::Char('c') || code == KeyCode::Char('C') {
                 self.should_quit = true;

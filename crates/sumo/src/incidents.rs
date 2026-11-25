@@ -6,7 +6,7 @@
 
 use serde::{Serialize, Deserialize};
 use alc_core::{PrisonerId, SimTime};
-use alc_events::EventKind;
+use alc_events::{EventKind, WorldEvent};
 
 /// Unique identifier for an incident.
 pub type IncidentId = u64;

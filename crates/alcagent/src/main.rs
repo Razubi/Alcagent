@@ -112,6 +112,7 @@ impl SimDriver for EngineDriver {
     fn contraband_cases(&self) -> Vec<sumo::ContrabandCaseSummary> { self.0.contraband_summaries() }
     fn resolve_contraband_case(&mut self, case_id: u64) -> bool { self.0.resolve_contraband_case(case_id) }
     fn resolve_incident(&mut self, incident_id: u64) -> bool { self.0.resolve_incident(incident_id) }
+    fn enqueue_construction(&mut self, kind: alc_world::FacilityKind, wing: u32, capacity: u32) -> u64 { self.0.enqueue_construction(kind, wing, capacity) }
     fn cancel_construction(&mut self, project_id: u64, reason: &str) -> bool { self.0.cancel_construction(project_id, reason) }
     fn fail_construction(&mut self, project_id: u64, reason: &str) -> bool { self.0.fail_construction(project_id, reason) }
     fn advance_construction(&mut self, project_id: u64, days: u32) -> bool { self.0.advance_construction(project_id, days) }

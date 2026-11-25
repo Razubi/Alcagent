@@ -3,6 +3,7 @@ use crate::autosave::AutosaveScheduler;
 use crate::incidents;
 use crate::parole::{ParoleLedger, ParoleStatus};
 use alc_core::{PrisonerId, SimTime};
+use alc_events::WorldEvent;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -121,6 +122,12 @@ pub struct IncidentRecord {
     pub cause: Option<u64>,
     /// Consequence incident id.
     pub consequence: Option<u64>,
+    /// Structured causal links leading to this incident.
+    pub causal_chain: Vec<incidents::CausalLink>,
+    /// Witnesses (prisoner ids).
+    pub witnesses: Vec<u64>,
+    /// Response actions taken by staff.
+    pub response_actions: Vec<incidents::ResponseAction>,
     /// Disposition.
     pub disposition: String,
     /// Resolved flag.
@@ -138,6 +145,9 @@ impl From<&incidents::Incident> for IncidentRecord {
             involved_prisoners: incident.involved_prisoners.iter().map(|p| p.raw()).collect(),
             cause: incident.cause,
             consequence: incident.consequence,
+            causal_chain: incident.causal_chain.clone(),
+            witnesses: incident.witnesses.iter().map(|w| w.raw()).collect(),
+            response_actions: incident.response_actions.clone(),
             disposition: format!("{:?}", incident.disposition),
             resolved: incident.resolved,
         }
