@@ -4,7 +4,7 @@
 **To:** Sumo AI team (owner of `crates/sumo`)
 **Status:** OPEN — nothing here is implemented; aligned with the finalized beta-0.05 update list and next-version plan.
 **Blocks:** Wave 4 cards WRLD-01, UI-01, UI-02, UI-05, NPC-02, NPC-03, QA-01, QA-02
-**Related:** `docs/Project/PROJECT.md` (Wave 3 baseline), `docs/Communication/Note's/wave4-support-needed.md`
+**Related:** `../Project/PROJECT.md` (Wave 3 baseline), `../Communication/Note's/wave4-support-needed.md`
 
 ## Summary
 
@@ -27,7 +27,7 @@ None of these require an external AI model or provider.
 This request is the engine-support layer of the **beta 0.05** update line
 (`Design/Planning/beta-0.05.md`) and the **next-version** plan
 (`Design/Engine/sumo-next.md`). It consolidates the merged findings of the
-Phase-1 audit (`Reports/audit-report.md`, `../sumo/docs/Reports/sumo-audit.md`, `../sumo/docs/Reports/testing.md`)
+Phase-1 audit (`Reports/audit-report.md`, `../sumo/../Reports/sumo-audit.md`, `../sumo/../Reports/testing.md`)
 and the deep-research pass, and absorbs the cross-team framing from
 `Communication/Note's/wave4-support-needed.md` (ordering traps, ownership split).
 

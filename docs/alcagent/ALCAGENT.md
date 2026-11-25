@@ -1,7 +1,7 @@
 # `alcagent` CLI & TUI Reference
 
 `alcagent` is the operator binary for Project Alcagent: it launches either the interactive
-terminal observer or a headless simulation run, using the [`sumo`](SUMO_ENGINE.md) engine for
+terminal observer or a headless simulation run, using the [`sumo`](../sumo/SUMO_ENGINE.md) engine for
 every world/game function. The canonical engine docs also live in the standalone `../sumo` repo.
 
 > The **complete** gameplay, systems and controls manual is

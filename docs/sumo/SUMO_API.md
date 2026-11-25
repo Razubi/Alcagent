@@ -367,8 +367,8 @@ cargo test -p sumo --test chaos_soak -- --nocapture  # 730-day, 3 seeds
 The ignored test (`logs_over_limit_are_detected`) is a 10k-entry stress case. All tests use
 fixed seeds and id/time-derived RNG streams; none require a network connection or an AI model.
 
-For design rationale, see [`Design/Engine/sumo-engine.md`](Design/Engine/sumo-engine.md)
-and [`Systems/engine-api.md`](Systems/engine-api.md).
+For design rationale, see [`../../../sumo/docs/Design/Engine/sumo-engine.md`](../../../sumo/docs/Design/Engine/sumo-engine.md)
+and [`../../../sumo/docs/Systems/engine-api.md`](../../../sumo/docs/Systems/engine-api.md).
 
 ---
 

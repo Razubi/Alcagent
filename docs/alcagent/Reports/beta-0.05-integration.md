@@ -31,11 +31,11 @@ Notes:
 
 ## 4. Docs changed
 
-- `docs/Project/design-status.md` — beta-0.05 status section + test count.
-- `docs/Project/version-milestones.md` — current version/test count note.
-- `docs/Systems/capabilities.md`, `rehab.md`, `engine-api.md` — status notes.
+- `../Project/design-status.md` — beta-0.05 status section + test count.
+- `../Project/version-milestones.md` — current version/test count note.
+- `../Systems/capabilities.md`, `rehab.md`, `engine-api.md` — status notes.
 - `CHANGELOG.md` — created with beta-0.05 entry.
-- `docs/Reports/beta-0.05-integration.md` — this report.
+- `../Reports/beta-0.05-integration.md` — this report.
 
 ## 5. Remaining gaps (severity-ranked)
 

@@ -1,4 +1,4 @@
-# Guard Duty Loop (`docs/Systems/guard-loop.md`)
+# Guard Duty Loop (`../Systems/guard-loop.md`)
 
 Guards are autonomous agents (`alc_guard::Guard`, `crates/alc-guard/src/lib.rs`). Their duty cycle is `Guard::duty_loop` / `Guard::duty_tick`, driven during `World::tick` (`g.duty_tick(&observed, guard_policy, &mut rng)`) or called manually via `Sim::guard_duty_cycle()` / `Sim::run_guard_duty()`.
 

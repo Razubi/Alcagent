@@ -3,7 +3,7 @@
 This is the product-side manual for **Project Alcagent**: a deterministic, autonomous prison
 simulation you can watch evolve or run headlessly. It documents *what happens in the world* and
 *how to observe/control it*. The engine that powers all of this is `sumo` — see
-[`SUMO_ENGINE.md`](SUMO_ENGINE.md) for its design and [`SUMO_API.md`](SUMO_API.md) to embed or
+[`SUMO_ENGINE.md`](../sumo/SUMO_ENGINE.md) for its design and [`SUMO_API.md`](../sumo/SUMO_API.md) to embed or
 extend the simulation in Rust. Canonical engine docs also live in the standalone `../sumo` repo.
 
 > **Status (2026-11-24):** the base simulation is stable (last green baseline: 184 tests passed,
@@ -249,8 +249,8 @@ expose causality and actor/source/validation for debugging.
 ## 6. See also
 
 - [`ALCAGENT.md`](ALCAGENT.md) — CLI/TUI operator reference (flags, keys, views).
-- [`SUMO_ENGINE.md`](SUMO_ENGINE.md) — engine product & system design.
-- [`SUMO_API.md`](SUMO_API.md) — engine API guide.
+- [`SUMO_ENGINE.md`](../sumo/SUMO_ENGINE.md) — engine product & system design.
+- [`SUMO_API.md`](../sumo/SUMO_API.md) — engine API guide.
 - [`Design/`](Design/) — game system design documents (in this repo).
 - [`Systems/`](Systems/) — game-domain interface contracts (in this repo).
-- [`agents.md`](../agents.md) — the master development directive.
+- [`agents.md`](../../agents.md) — the master development directive.

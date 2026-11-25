@@ -12,7 +12,7 @@ Maps each design document to implemented state. Maintained docs only; status ref
 | `Design/Core/warden-system.md` | `alc-warden`, `alc-guard`, `alc-economy` | Warden traits/objectives/arbitration, guard duty loop/authority/shifts, money ledger/health, 12-building expansion catalog. Fog of war = inbox of report IDs (no full KnowledgeStore). |
 | `Design/Core/ai-agent-systems.md` | `alc-agents` | 14 decisions, 8-stage validation, 4-layer memory, orchestrator/token/rate limiting, personality `Disposition`. |
 | `Design/Engine/sumo-engine.md` | `sumo`, `alc-world` | `Sim` owns `World`: time, decisions, observation/stats, events, save/load/autosave, invariants. Engine validates; agents never mutate world directly. |
-| `Design/Planning/beta-0.05.md` / `Design/Engine/sumo-next.md` | planned/in progress | Wave 4 work; see `docs/Communication/Sumo-AI-Team/NEXT-UPDATE-SUPPORT.md`. |
+| `Design/Planning/beta-0.05.md` / `Design/Engine/sumo-next.md` | planned/in progress | Wave 4 work; see `../Communication/Sumo-AI-Team/NEXT-UPDATE-SUPPORT.md`. |
 
 ## Verified implemented (current codebase)
 
@@ -24,7 +24,7 @@ Maps each design document to implemented state. Maintained docs only; status ref
 
 ## Present but not fully integrated
 
-- **Wave 4 additions (landed):** engine R1–R7 surface is present (`Sim::map_frame`, `propose_decision`, policy modes, structured incident logs, extended invariants/state digest, driver event wiring); persistence converter edits were applied and the workspace is green. See `docs/Communication/Note's/wave4-implementation-status.md`.
+- **Wave 4 additions (landed):** engine R1–R7 surface is present (`Sim::map_frame`, `propose_decision`, policy modes, structured incident logs, extended invariants/state digest, driver event wiring); persistence converter edits were applied and the workspace is green. See `../Communication/Note's/wave4-implementation-status.md`.
 - **Contraband/rehab** library modules exist (`alc-social::contraband`, `alc-social::rehab`) but full world-tick lifecycle wiring is incomplete.
 - **Post-release tracking** partial (sumo engine-side helpers; persistent community outcomes not fully wired).
 - **`alc-gui`** crate exists at `crates/alc-gui` but is not a workspace member and does not build standalone.
@@ -59,6 +59,6 @@ Integration coverage: `crates/sumo/tests/integration_wave4.rs` adds four tests
 (full 30-day flow with invariants/map/save-load/trace, warden-action event
 emission, guard report → warden inbox, shadow-mode safety). All four pass; the
 full workspace is green (184 passed, 0 failed, 1 ignored). See
-`docs/Communication/Note's/wave4-implementation-status.md` for the R1–R7
+`../Communication/Note's/wave4-implementation-status.md` for the R1–R7
 breakdown and how the two world-level bugs these tests exposed (stale social
 dyads after release; world-tick policy drift) were fixed during integration.

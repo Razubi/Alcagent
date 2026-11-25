@@ -1,6 +1,6 @@
 # Version Milestones — Project Alcagent
 
-**Ownership:** docs only; kept in sync with project state (`docs/Project/PROJECT.md`).
+**Ownership:** docs only; kept in sync with project state (`../Project/PROJECT.md`).
 
 ## Current version
 
@@ -12,8 +12,8 @@
 - **Active work:** Wave 4 — intentions, council of drives, memory-driven choices, navigation
   graph, real-time pawn positions, structured conflicts, live map. Engine surface R1–R7 is
   largely implemented; Wave 5 items remain. See
-  `docs/Communication/Note's/wave4-implementation-status.md` and
-  `docs/Communication/Sumo-AI-Team/NEXT-UPDATE-SUPPORT.md`.
+  `../Communication/Note's/wave4-implementation-status.md` and
+  `../Communication/Sumo-AI-Team/NEXT-UPDATE-SUPPORT.md`.
 - Note: root `Cargo.toml` workspace `version` is `0.1.0`; reconciliation with the 0.05 label
   is pending.
 
@@ -25,7 +25,7 @@
 
 ## Version 0.1 beta — planned scope
 
-Derived from `docs/Project/design-status.md` and the Wave 4 requests.
+Derived from `../Project/design-status.md` and the Wave 4 requests.
 
 ### Already resolved (not in 0.1 beta scope)
 
@@ -48,5 +48,5 @@ sustainability fixes.
 
 - `cargo build --workspace` and `cargo test --workspace` green.
 - Long-duration soak runs (≥365 days; 730-day chaos/determinism coverage) stable.
-- `docs/Project/design-status.md`, `docs/Systems/*.md`, `PROJECT.md` re-audited.
+- `../Project/design-status.md`, `../Systems/*.md`, `PROJECT.md` re-audited.
 - Save format version/migration handled for new state; `CHANGELOG.md` updated at release.

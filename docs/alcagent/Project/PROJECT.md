@@ -2,14 +2,14 @@
 
 Master Directive lives in `AGENTS.md` (mirror of the original `agents.md` directive).
 
-**Canonical docs:** `docs/Project/` (status, milestones, design-status), `docs/Systems/` (interfaces), `docs/Design/` (intent/plans), `docs/Reports/` (findings), `docs/Communication/` (AI-to-AI handoffs).
+**Canonical docs:** `../Project/` (status, milestones, design-status), `../Systems/` (interfaces), `../Design/` (intent/plans), `../Reports/` (findings), `../Communication/` (AI-to-AI handoffs).
 **Release/change notes:** `CHANGELOG.md` at repo root.
 
 ## Status (version 0.05 — active development / Wave 4)
 
 The simulation is playable and the workspace **builds**. The current work wave (Wave 4) is adding
 intentions, a council of drives, memory-driven choices, a navigation graph, real-time pawn
-positions, structured conflicts and a live map (see `docs/Communication/Sumo-AI-Team/NEXT-UPDATE-SUPPORT.md`).
+positions, structured conflicts and a live map (see `../Communication/Sumo-AI-Team/NEXT-UPDATE-SUPPORT.md`).
 
 **Verified 2026-11-23:**
 - `cargo build --workspace` / `cargo test --workspace` — **green**. 184 tests passed,
@@ -34,21 +34,21 @@ cargo run -- --help           # CLI + TUI keybindings
 ## Current milestone
 
 - **Current version:** 0.05
-- **Next milestone:** **0.1 beta** — scope in `docs/Project/version-milestones.md`.
+- **Next milestone:** **0.1 beta** — scope in `../Project/version-milestones.md`.
 
 ## Where to look
 
 | Topic | Document |
 |---|---|
-| Current status/design cross-reference | `docs/Project/design-status.md` |
-| Version history and milestones | `docs/Project/version-milestones.md` |
-| Engine API | `docs/Systems/engine-api.md` |
-| Guard/warden/parole/rehab contracts | `docs/Systems/` |
-| Design intent | `docs/Design/` |
-| Wave 4 engine support requests | `docs/Communication/Sumo-AI-Team/NEXT-UPDATE-SUPPORT.md` |
-| Cross-team Wave 4 note | `docs/Communication/Note's/wave4-support-needed.md` |
-| Wave 4 implementation status (driver/integration pass) | `docs/Communication/Note's/wave4-implementation-status.md` |
-| Audit and soak reports | `docs/Reports/` |
+| Current status/design cross-reference | `../Project/design-status.md` |
+| Version history and milestones | `../Project/version-milestones.md` |
+| Engine API | `../Systems/engine-api.md` |
+| Guard/warden/parole/rehab contracts | `../Systems/` |
+| Design intent | `../Design/` |
+| Wave 4 engine support requests | `../Communication/Sumo-AI-Team/NEXT-UPDATE-SUPPORT.md` |
+| Cross-team Wave 4 note | `../Communication/Note's/wave4-support-needed.md` |
+| Wave 4 implementation status (driver/integration pass) | `../Communication/Note's/wave4-implementation-status.md` |
+| Audit and soak reports | `../Reports/` |
 
 ## Wave 4 driver / integration pass (added by Integration & Docs engineer)
 

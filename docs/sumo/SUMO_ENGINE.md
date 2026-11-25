@@ -180,4 +180,4 @@ editor. These are the subject of the deep research report; nothing is implemente
 | [`SUMO_ENGINE.md`](SUMO_ENGINE.md) | This document: product and system design |
 | [`Design/Engine/`](Design/Engine/) | Engine design rationale |
 | [`Systems/`](Systems/) | Event contract, guard loop, warden cycle, determinism, etc. |
-| [`agents.md`](../agents.md) | Master development directive |
+| [`agents.md`](../../agents.md) | Master development directive |

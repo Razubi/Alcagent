@@ -1,4 +1,4 @@
-# Warden Cycle (`docs/Systems/warden-cycle.md`)
+# Warden Cycle (`../Systems/warden-cycle.md`)
 
 The warden is an independent AI agent (`alc_warden::Warden`). The engine drives its cycle: `Sim::warden_cycle()` runs `alc_warden::arbitrate` and applies the action with `Sim::apply_warden_action`; `Sim::warden_pending()` reads pending actions.
 

@@ -59,7 +59,7 @@ Fixes applied (minimal, additive):
 
 ## 5. The new project: `sumo` (the simulation engine)
 
-**Design:** `docs/Design/Engine/sumo-engine.md` (written in Phase 2).
+**Design:** `../Design/Engine/sumo-engine.md` (written in Phase 2).
 **Implementation:** `crates/sumo/` — `Sim` owns `alc_world::World` and drives it:
 
 - **Time control** — `tick`, `run_until(target)`, `speed` (`TimeSpeed`).
@@ -77,8 +77,8 @@ Dependencies: all `alc-*` crates (`alc-core`, `alc-world`, `alc-agents`, `alc-pr
 
 ## 6. Discrepancies and notes
 
-- `architecture-report.md (removed)` is **stale** relative to the code (describes a different `SimTime`/`WorldView` model than `alc-core`/`alc-world`). Not updated; superseded by `docs/Reports/audit-report.md` + `docs/Design/Engine/sumo-engine.md`.
-- `docs/Design/*.md` (prison-simulation, social-systems, warden-system, ai-agent-systems) are design docs ahead of code; kept as-is.
+- `architecture-report.md (removed)` is **stale** relative to the code (describes a different `SimTime`/`WorldView` model than `alc-core`/`alc-world`). Not updated; superseded by `../Reports/audit-report.md` + `../Design/Engine/sumo-engine.md`.
+- `../Design/*.md` (prison-simulation, social-systems, warden-system, ai-agent-systems) are design docs ahead of code; kept as-is.
 - The real `alc-agents` API is richer than an early read suggested: 8-stage validation pipeline, memory, orchestrator, `DecisionOutcome` etc. (read fresh during audit).
 - Save format: v1 kept; new `World.gangs`/`next_gang_id` fields are `#[serde(default)]` so v1 saves load.
 
@@ -97,4 +97,4 @@ Dependencies: all `alc-*` crates (`alc-core`, `alc-world`, `alc-agents`, `alc-pr
 
 - Wire `sumo` into `alcagent` (use `Sim` instead of direct `World`) — planned incrementally.
 - Add an engine `lib` unit-test for `Sim::report`/autosave scheduling cadence.
-- Re-audit `docs/Design/` docs once `sumo` lands; delete or mark stale `architecture-report.md (removed)`.
+- Re-audit `../Design/` docs once `sumo` lands; delete or mark stale `architecture-report.md (removed)`.

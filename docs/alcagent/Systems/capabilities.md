@@ -1,4 +1,4 @@
-# Capabilities (`docs/Systems/capabilities.md`)
+# Capabilities (`../Systems/capabilities.md`)
 
 Design note for the W3 backlog item: capabilities, contraband and rehabilitation
 engine integration. New public API documented fully in [`engine-api.md`](engine-api.md).

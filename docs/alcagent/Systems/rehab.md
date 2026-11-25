@@ -1,4 +1,4 @@
-# Rehabilitation (`docs/Systems/rehab.md`)
+# Rehabilitation (`../Systems/rehab.md`)
 
 **Status (beta-0.05, 2026-11-20):** `alc-social::rehab` (program state machine) and
 `Sim::apply_rehab_progress`/`Sim::rehab_score` (simplified needs relief) are implemented.
@@ -9,7 +9,7 @@ Full wiring — `Sim::set_rehab_program`, `World::programs`, daily `rehab_tick`,
 
 - `Sim::apply_rehab_progress(id: PrisonerId, minutes: u64) -> f32` — deterministic relief applied to the five satisfied needs per minute of program participation: Purpose −0.05m, Respect −0.04m, Stimulation −0.04m, Safety −0.03m, Companionship −0.03m (each clamped at 0). Returns `Sim::rehab_score(id)`.
 - `Sim::rehab_score(id) -> f32` — `1.0 − (deficit / 5.0)` over the aggregates `(purpose, respect, stimulation, safety, companionship)` (each a 0..1 satisfaction level).
-- Policy hooks: `WardenAction::ChangePolicy { policy: "rehab_funding", value: f64 }` — `policies.rehab_funding_multiplier` (0.2..3.0; see `docs/Systems/warden-cycle.md`).
+- Policy hooks: `WardenAction::ChangePolicy { policy: "rehab_funding", value: f64 }` — `policies.rehab_funding_multiplier` (0.2..3.0; see `../Systems/warden-cycle.md`).
 
 ## Needs engine (`alc-prisoner::Needs`)
 
@@ -44,4 +44,4 @@ Key operations:
 
 ## Rehab-related events
 
-`EventKind::RehabilitationSuccess` and `EventKind::ProgramEnrolled` are defined in the event taxonomy for rehab completion/enrollment lifecycle tracking (see `docs/Systems/event-contract.md`).
+`EventKind::RehabilitationSuccess` and `EventKind::ProgramEnrolled` are defined in the event taxonomy for rehab completion/enrollment lifecycle tracking (see `../Systems/event-contract.md`).
