@@ -140,8 +140,21 @@ pub fn invariant_intention_target_exists_and_is_legal(world: &World) -> bool {
     violations.is_empty()
 }
 
-/// Invariant 3: Every incident must have a complete, internally consistent
-/// causal record (unique ids, resolvable cause/consequence links).
+/// Invariant 3: Every incident must have an internally consistent causal record.
+///
+/// The old rule ("every conflict incident must have a cause and a consequence")
+/// forced producers to write self-referential placeholders (`cause ==
+/// consequence == own id`), which hid the absence of real causality. This
+/// invariant now checks only *honest* structure:
+///
+/// * every sidecar id is unique;
+/// * any non-`None` `cause`/`consequence` resolves to an existing incident id;
+/// * no incident points to itself as both cause and consequence (or, more
+///   strictly, as either one);
+/// * a conflict-kind incident is not fully orphaned — it must carry at least
+///   one piece of causal context (a resolvable cause, a consequence, or a
+///   non-empty `causal_chain`). `cause`/`consequence` may be `None`; only the
+///   complete absence of causal information is rejected.
 ///
 /// Actor-id liveness is deliberately not checked: incidents are historical
 /// records and routinely reference prisoners who have since left the facility.
@@ -160,39 +173,8 @@ pub fn invariant_every_incident_has_cause_and_consequence(sim: &Sim) -> bool {
     }
 
     for incident in sim.incident_sidecar() {
-        // (b) Conflict-kind events must record both a cause and a consequence.
-        if matches!(
-            incident.kind,
-            EventKind::Fight
-                | EventKind::Argument
-                | EventKind::Threat
-                | EventKind::GangClash
-                | EventKind::Theft
-                | EventKind::Protests
-        ) {
-            if incident.cause.is_none() {
-                violations.push(format!(
-                    "incident {} ({:?}) has no cause",
-                    incident.id, incident.kind
-                ));
-            }
-            if incident.consequence.is_none() {
-                violations.push(format!(
-                    "incident {} ({:?}) has no consequence",
-                    incident.id, incident.kind
-                ));
-            }
-        }
-
-        // NOTE: actor-id liveness is intentionally NOT checked here. Incidents
-        // are historical records; a fight involving a prisoner who has since
-        // been released/transferred/dead remains a valid record. The bounded
-        // sidecar spans months, so participants routinely leave the facility.
-        // R6's structural guarantees are unique ids and resolvable causality
-        // chains, checked below.
-
-        // (c) Every non-None cause/consequence id must resolve to an existing
-        // incident id in the sidecar.
+        // (b) Any non-None cause/consequence id must resolve to an existing
+        // incident id in the sidecar. `None` is always legitimate.
         if let Some(cause) = incident.cause {
             if !ids.contains(&cause) {
                 violations.push(format!(
@@ -209,14 +191,45 @@ pub fn invariant_every_incident_has_cause_and_consequence(sim: &Sim) -> bool {
                 ));
             }
         }
-    }
 
-    // (d) Actor-existence check is intentionally limited to the *sidecar*
-    // incidents' current participants below; historical WorldEvents in the
-    // incident log legitimately reference prisoners who have since been
-    // released/transferred/dead. Requiring those old actor ids to still exist
-    // would flag normal history as corruption. The structural causality checks
-    // (a)-(c) above are the authoritative R6 guarantees.
+        // (c) No self-referential causality. This catches the legacy
+        // placeholder (cause == consequence == own id) and any stricter
+        // one-sided self-loop.
+        if incident.cause == Some(incident.id) || incident.consequence == Some(incident.id) {
+            violations.push(format!(
+                "incident {} has self-referential cause/consequence",
+                incident.id
+            ));
+        }
+
+        // (d) A conflict incident must have *some* causal context. A real
+        // cause is NOT required: an incident with `cause: None` and
+        // `consequence: None` is valid as long as it records a causal chain
+        // (e.g. a provenance link to its originating world event). Fully
+        // orphaned conflict records are rejected.
+        if matches!(
+            incident.kind,
+            EventKind::Fight
+                | EventKind::Argument
+                | EventKind::Threat
+                | EventKind::GangClash
+                | EventKind::Theft
+                | EventKind::Protests
+        ) && incident.cause.is_none()
+            && incident.consequence.is_none()
+            && incident.causal_chain.is_empty()
+        {
+            violations.push(format!(
+                "incident {} ({:?}) is orphaned: no cause, consequence, or causal chain",
+                incident.id, incident.kind
+            ));
+        }
+
+        // NOTE: actor-id liveness is intentionally NOT checked here. Incidents
+        // are historical records; a fight involving a prisoner who has since
+        // been released/transferred/dead remains a valid record. The bounded
+        // sidecar spans months, so participants routinely leave the facility.
+    }
 
     violations.is_empty()
 }

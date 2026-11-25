@@ -291,9 +291,9 @@ impl Sim {
 
     /// Copy newly-emitted conflict events into the engine incident log and
     /// structured sidecar (C1). Non-conflict events stay on the world bus only
-    /// so the engine audit store remains bounded and meaningful. Conflict
-    /// incidents use a self-referential cause/consequence pair until a real
-    /// chain is built (same convention as `decisions::deliver`).
+    /// so the engine audit store remains bounded and meaningful. Causal links
+    /// are derived from the event's `causes` and from prior incidents sharing a
+    /// participant or kind — no self-referential placeholders.
     fn pump_events_into_engine_log(&mut self, after_id: u64) {
         use alc_events::EventKind;
         let new: Vec<WorldEvent> = self
@@ -334,13 +334,6 @@ impl Sim {
                 .max()
                 .unwrap_or(0)
                 + 1;
-            let involved_prisoners = event
-                .actors
-                .iter()
-                .copied()
-                .filter(|&a| self.world.prisoners.iter().any(|p| p.id.raw() == a))
-                .map(alc_core::PrisonerId)
-                .collect();
             let severity = match event.kind {
                 EventKind::Fight | EventKind::GangClash | EventKind::EscapeSucceeded | EventKind::Death => 0.9,
                 EventKind::EscapeAttempt | EventKind::MedicalEmergency | EventKind::TransferOut => 0.7,
@@ -348,21 +341,14 @@ impl Sim {
                 EventKind::ConstructionComplete => 0.2,
                 _ => 0.4,
             };
-            self.engine_state.incident_sidecar.push(incidents::Incident {
-                id,
-                kind: event.kind,
-                cause: Some(id),
-                consequence: Some(id),
-                causal_chain: Vec::new(),
-                timestamp: event.at,
-                location: format!("facility {}", event.actors.first().copied().unwrap_or(0)),
-                involved_prisoners,
-                witnesses: Vec::new(),
-                severity,
-                disposition: incidents::IncidentDisposition::None,
-                response_actions: Vec::new(),
-                resolved: false,
-            });
+            let location = format!("facility {}", event.actors.first().copied().unwrap_or(0));
+            let known_prisoners: Vec<alc_core::PrisonerId> =
+                self.world.prisoners.iter().map(|p| p.id).collect();
+            let prior = self.engine_state.incident_sidecar.clone();
+            let incident = incidents::incident_from_world_event(
+                &event, id, &prior, &known_prisoners, severity, location,
+            );
+            self.engine_state.incident_sidecar.push(incident);
             self.engine_state.incidents.push(event);
         }
         self.trim_engine_logs();
@@ -490,7 +476,7 @@ impl Sim {
         // Build a temporary Decision from the DecisionType and target,
         // then validate it through the pipeline.
         let decision = decision_type.to_decision(target);
-        let estimated_outcome = alc_agents::validate_decision(&decision, &ctx);
+        let estimated_outcome = crate::decisions::validate_with_engine_rules(&self.world, prisoner_id, &decision);
         let trace_hash_before = self.trace_hash();
 
         // Brain-inspector enrichment: attach evaluator drives, confidence and
@@ -535,7 +521,7 @@ impl Sim {
 
         // Build the decision from the proposal and validate.
         let decision = proposal.decision_type.to_decision(proposal.target);
-        alc_agents::validate_decision(&decision, &ctx)
+        crate::decisions::validate_with_engine_rules(&self.world, prisoner_id, &decision)
     }
 
     /// Generate a free-text rationale for why a prisoner would choose a

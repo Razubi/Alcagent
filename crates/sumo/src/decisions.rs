@@ -549,7 +549,7 @@ pub fn evaluate_candidates(world: &World, id: PrisonerId) -> Vec<DecisionProposa
         .into_iter()
         .map(|(decision_type, target)| {
             let decision = decision_type.to_decision(target);
-            let estimated_outcome = alc_agents::validate_decision(&decision, &ctx);
+            let estimated_outcome = validate_with_engine_rules(world, id, &decision);
             let scores = score_for(prisoner, decision_type);
             let confidence = proposal_confidence(&scores, &estimated_outcome, need_pressure);
             let rationale = candidate_rationale(prisoner, decision_type, target, &scores);
@@ -929,7 +929,20 @@ fn current_facility(world: &World, id: PrisonerId) -> Option<u64> {
 }
 
 /// Engine-side validation rules (Directive §19 world-state / authority layers).
-fn engine_rules(world: &World, id: PrisonerId, d: &Decision) -> (bool, ValidationResult) {
+/// Validate a decision through BOTH the agent validator and the engine rules.
+/// All public validation surfaces (delivery, proposals, dry-runs and candidate
+/// evaluation) use this so they agree on the outcome for the same world state.
+pub(crate) fn validate_with_engine_rules(world: &World, id: PrisonerId, decision: &Decision) -> ValidationResult {
+    let ctx = validation_context(world, id);
+    let base = alc_agents::validate_decision(decision, &ctx);
+    match base {
+        ValidationResult::Rejected { .. } => base,
+        ValidationResult::Repaired(_) => base,
+        ValidationResult::Accepted(_) => engine_rules(world, id, decision).1,
+    }
+}
+
+pub(crate) fn engine_rules(world: &World, id: PrisonerId, d: &Decision) -> (bool, ValidationResult) {
     let reject = |reason: String| (false, ValidationResult::Rejected { reason });
     let ok = || (true, ValidationResult::Accepted(d.clone()));
     match &d.action {

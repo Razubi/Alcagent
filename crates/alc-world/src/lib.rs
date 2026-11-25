@@ -325,6 +325,11 @@ pub struct World {
     /// saves from before this field loadable.
     #[serde(default)]
     pub post_release_records: Vec<PostReleaseRecord>,
+
+    /// World-side reintegration/recidivism outcomes, one per departure.
+    #[serde(default)]
+    pub post_release_outcomes: Vec<PostReleaseOutcomeRecord>,
+
     /// Monotonically increasing id for `post_release_records`.
     #[serde(default)]
     pub next_post_release_id: u64,
@@ -392,9 +397,12 @@ impl World {
             lockdown_since_day: 0,
             construction_queue: Vec::new(),
             post_release_records: Vec::new(),
+            post_release_outcomes: Vec::new(),
             next_post_release_id: 1,
             contraband_state: HashMap::new(),
             resolved_contraband_at: std::collections::BTreeMap::new(),
+            contraband_cases: Vec::new(),
+            next_contraband_case_id: 1,
             rehab_records: HashMap::new(),
             last_transfer_day: 0,
         };
@@ -1255,6 +1263,29 @@ impl World {
         }
     }
 
+    /// Deterministically derive high-level reintegration outcomes from a
+    /// departure seed. Sentence progress and rehabilitation improve the odds;
+    /// escape departures carry an additional violation risk. Kept pure so the
+    /// engine can recompute outcomes without consulting an AI model.
+    fn derive_post_release_outcomes(
+        seed: u64,
+        prisoner_id: u64,
+        reason: &str,
+        sentence_days: u32,
+        served_days: u32,
+        rehab_progress: f32,
+    ) -> (bool, bool, bool, bool) {
+        let mut rng = RngStream::new(seed, prisoner_id ^ 0x9E37_79B9_7F4A_7C15);
+        let served_fraction = (served_days as f32 / sentence_days.max(1) as f32).clamp(0.0, 1.0);
+        let stability = (served_fraction * 0.55 + rehab_progress.clamp(0.0, 1.0) * 0.45).clamp(0.0, 0.95);
+        let penalty = if reason == "escape" { 0.3 } else { 0.0 };
+        let employment = rng.chance((stability * 0.85 + 0.05).min(0.95) as f64);
+        let housing = rng.chance((stability * 0.8 + 0.1).min(0.95) as f64);
+        let violation = rng.chance((0.32 - stability * 0.27 + penalty).clamp(0.02, 0.9) as f64);
+        let return_to_custody = violation && rng.chance(0.55);
+        (employment, housing, violation, return_to_custody)
+    }
+
     /// Record a post-release entry (id, name, reason, day, sentence info,
     /// basic outcome seed) and emit an auditable `Release` event + history
     /// entry. Called when prisoners leave via parole, escape, death or
@@ -1263,6 +1294,18 @@ impl World {
         let Some(p) = self.prisoners.iter().find(|p| p.id == pid) else { return; };
         let outcome_seed = RngStream::new(self.seed, pid.raw() ^ (self.days_simulated << 12) ^ 0x0E5C_A9E1)
             .next_u64();
+        let rehab_progress = self
+            .rehab_records
+            .get(&pid)
+            .map(|records| {
+                let done = records.iter().filter(|r| r.completed).count() as f32;
+                let attended: u32 = records.iter().map(|r| r.attendance_days).sum();
+                (done * 0.6 + (attended.min(180) as f32 / 180.0) * 0.4).clamp(0.0, 1.0)
+            })
+            .unwrap_or(0.0);
+        let (employment, housing, violation, return_to_custody) =
+            Self::derive_post_release_outcomes(outcome_seed, pid.raw(), reason,
+                p.sentence_days, p.sentence_served_days, rehab_progress);
         let rec = PostReleaseRecord {
             id: self.next_post_release_id,
             prisoner_id: pid.raw(),
@@ -1276,7 +1319,23 @@ impl World {
                 escape_motivation_at_exit: p.escape_motivation(),
             },
             outcome_seed,
+            employment,
+            housing,
+            violation,
+            return_to_custody,
         };
+        self.post_release_outcomes.push(PostReleaseOutcomeRecord {
+            id: self.next_post_release_id,
+            post_release_id: rec.id,
+            prisoner_id: pid.raw(),
+            name: p.name.clone(),
+            day: self.days_simulated,
+            outcome_seed,
+            employment,
+            housing,
+            violation,
+            return_to_custody,
+        });
         self.next_post_release_id += 1;
         self.post_release_records.push(rec.clone());
         let ev = WorldEvent::new(0, self.time, EventKind::Release,
@@ -1641,6 +1700,53 @@ impl World {
         st.discovered_count += 1;
         st.flagged_days += 1;
         let inv_count = st.inventory.get(&found.item).copied().unwrap_or(0);
+
+        // World-authoritative case record: each discovery produces a durable
+        // audit entry with disposition and a severity-scaled sanction.
+        use alc_social::contraband::{
+            ConfiscationDisposition, ContrabandCaseRecord, DisciplinaryAction,
+        };
+        let disposition = if found.severity >= 0.8 {
+            ConfiscationDisposition::Evidence
+        } else if found.severity >= 0.4 {
+            ConfiscationDisposition::Seized
+        } else {
+            ConfiscationDisposition::Destroyed
+        };
+        let disciplinary_action = if found.severity >= 0.8 {
+            Some(DisciplinaryAction::Isolation {
+                duration_days: (3.0 + found.severity * 7.0) as u32,
+            })
+        } else if found.severity >= 0.5 {
+            Some(DisciplinaryAction::LossOfPrivileges {
+                level: found.severity,
+                duration_days: 7,
+            })
+        } else {
+            Some(DisciplinaryAction::Warning)
+        };
+        let case_id = self.next_contraband_case_id;
+        self.next_contraband_case_id = self.next_contraband_case_id.saturating_add(1);
+        let summary = format!(
+            "Case {case_id}: {:?} found on prisoner {} by guard {} (severity {:.2}, {} in inventory)",
+            found.item, holder.raw(), found.guard.raw(), found.severity, inv_count
+        );
+        self.contraband_cases.push(ContrabandCaseRecord {
+            case_id,
+            discovered_at: self.time,
+            discovering_guard: found.guard,
+            holder,
+            item: found.item,
+            severity: found.severity,
+            disposition,
+            disciplinary_action,
+            summary,
+        });
+        // Keep the durable case log bounded for long-running simulations.
+        if self.contraband_cases.len() > 512 {
+            let drain = self.contraband_cases.len() - 512;
+            self.contraband_cases.drain(..drain);
+        }
 
         let found_ev = WorldEvent::new(0, self.time, EventKind::ContrabandFound,
             format!("Guard {} found {:?} on prisoner {} [flags: true; {} {:?} in inventory; severity {:.2}]",
@@ -2168,6 +2274,17 @@ mod tests {
         assert_eq!(rec.sentence_info.classification, classification);
         assert!(w.events.recent().any(|e| e.kind == EventKind::Release));
         assert!(w.history.iter().any(|e| e.kind == EventKind::Release));
+        // Deterministic reintegration outcome is recorded alongside the exit.
+        assert_eq!(w.post_release_outcomes.len(), 1);
+        let outcome = &w.post_release_outcomes[0];
+        assert_eq!(outcome.post_release_id, rec.id);
+        assert_eq!(outcome.prisoner_id, id.raw());
+        assert_eq!(outcome.outcome_seed, rec.outcome_seed);
+        assert_eq!(outcome.employment, rec.employment);
+        assert_eq!(outcome.housing, rec.housing);
+        assert_eq!(outcome.violation, rec.violation);
+        assert_eq!(outcome.return_to_custody, rec.return_to_custody);
+        assert!(!outcome.return_to_custody || outcome.violation);
     }
 
     #[test]
@@ -2222,6 +2339,19 @@ mod tests {
         assert!(w.contraband_state.get(&id).unwrap().flags_confiscated);
         assert_eq!(w.contraband_inventory_count(id, &ContrabandItem::Weapons), 1);
         assert!(w.events.recent().any(|e| e.kind == EventKind::ContrabandFound));
+        // A durable world case record is created for every discovery.
+        assert_eq!(w.contraband_cases.len(), 1);
+        let case_id = {
+            let case = &w.contraband_cases[0];
+            assert_eq!(case.case_id, 1);
+            assert_eq!(case.holder, id);
+            assert_eq!(case.item, ContrabandItem::Weapons);
+            assert!(case.summary.contains("Case 1"));
+            assert!(case.disciplinary_action.is_some());
+            case.case_id
+        };
+        w.resolve_contraband_case(case_id, w.time);
+        assert!(w.resolved_contraband_at.contains_key(&case_id));
 
         // Inventory movement through the world state.
         w.move_contraband(id, &ContrabandItem::Weapons, -1);
