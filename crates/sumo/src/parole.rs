@@ -5,7 +5,7 @@
 //! validation is pure and deterministic so identical worlds produce identical
 //! records and identical save bytes.
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use alc_core::{PrisonerId, SimTime};
@@ -73,7 +73,8 @@ impl ParoleConditions {
     pub fn deterministic(id: PrisonerId, risk: f32, rehab: f32) -> Self {
         let r = risk.clamp(0.0, 1.0);
         let h = rehab.clamp(0.0, 1.0);
-        let seed = id.raw()
+        let seed = id
+            .raw()
             .wrapping_mul(0x9E37_79B9_7F4A_7C15)
             .wrapping_add((r * 1000.0) as u64)
             .rotate_left(13)
@@ -203,7 +204,11 @@ mod tests {
         assert!(a.supervision_months >= 1 && a.supervision_months <= 60);
         assert!(a.curfew, "high-risk grants carry a curfew");
 
-        let mut raw = ParoleConditions { reporting_per_month: 99, supervision_months: 0, ..Default::default() };
+        let mut raw = ParoleConditions {
+            reporting_per_month: 99,
+            supervision_months: 0,
+            ..Default::default()
+        };
         assert!(!raw.is_normalized());
         raw.normalize();
         assert!(raw.is_normalized());

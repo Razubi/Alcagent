@@ -39,11 +39,21 @@ impl FinanceHealthState {
     /// Plain-language description of what the state means for the institution.
     pub fn description(self) -> &'static str {
         match self {
-            FinanceHealthState::Healthy => "Cash comfortably covers operating expenses; no constraints.",
-            FinanceHealthState::Watch => "Finances are stable but worth monitoring; avoid discretionary spending.",
-            FinanceHealthState::Tight => "Cash is strained; defer non-essential construction and hiring.",
-            FinanceHealthState::Critical => "Cash is critically low; emergency expense reduction required.",
-            FinanceHealthState::Receivership => "Insolvent; the institution is under receivership and cannot spend freely.",
+            FinanceHealthState::Healthy => {
+                "Cash comfortably covers operating expenses; no constraints."
+            }
+            FinanceHealthState::Watch => {
+                "Finances are stable but worth monitoring; avoid discretionary spending."
+            }
+            FinanceHealthState::Tight => {
+                "Cash is strained; defer non-essential construction and hiring."
+            }
+            FinanceHealthState::Critical => {
+                "Cash is critically low; emergency expense reduction required."
+            }
+            FinanceHealthState::Receivership => {
+                "Insolvent; the institution is under receivership and cannot spend freely."
+            }
         }
     }
 
@@ -157,18 +167,58 @@ impl AnnualBudgetPlan {
         Self {
             fiscal_year_label: fiscal_year_label.into(),
             revenue_forecast: vec![
-                BudgetLine::new("Per-capita funding", Money::from_major(1_200_000), BudgetLineKind::Revenue),
-                BudgetLine::new("Grants & supplements", Money::from_major(150_000), BudgetLineKind::Revenue),
-                BudgetLine::new("Contracts & programs", Money::from_major(120_000), BudgetLineKind::Revenue),
+                BudgetLine::new(
+                    "Per-capita funding",
+                    Money::from_major(1_200_000),
+                    BudgetLineKind::Revenue,
+                ),
+                BudgetLine::new(
+                    "Grants & supplements",
+                    Money::from_major(150_000),
+                    BudgetLineKind::Revenue,
+                ),
+                BudgetLine::new(
+                    "Contracts & programs",
+                    Money::from_major(120_000),
+                    BudgetLineKind::Revenue,
+                ),
             ],
             expense_forecast: vec![
-                BudgetLine::new("Staff salaries", Money::from_major(900_000), BudgetLineKind::Expense),
-                BudgetLine::new("Food & water", Money::from_major(180_000), BudgetLineKind::Expense),
-                BudgetLine::new("Utilities & supplies", Money::from_major(120_000), BudgetLineKind::Expense),
-                BudgetLine::new("Medical & welfare", Money::from_major(90_000), BudgetLineKind::Expense),
-                BudgetLine::new("Maintenance & security", Money::from_major(80_000), BudgetLineKind::Expense),
-                BudgetLine::new("Programs & education", Money::from_major(70_000), BudgetLineKind::Expense),
-                BudgetLine::new("Administration & transport", Money::from_major(50_000), BudgetLineKind::Expense),
+                BudgetLine::new(
+                    "Staff salaries",
+                    Money::from_major(900_000),
+                    BudgetLineKind::Expense,
+                ),
+                BudgetLine::new(
+                    "Food & water",
+                    Money::from_major(180_000),
+                    BudgetLineKind::Expense,
+                ),
+                BudgetLine::new(
+                    "Utilities & supplies",
+                    Money::from_major(120_000),
+                    BudgetLineKind::Expense,
+                ),
+                BudgetLine::new(
+                    "Medical & welfare",
+                    Money::from_major(90_000),
+                    BudgetLineKind::Expense,
+                ),
+                BudgetLine::new(
+                    "Maintenance & security",
+                    Money::from_major(80_000),
+                    BudgetLineKind::Expense,
+                ),
+                BudgetLine::new(
+                    "Programs & education",
+                    Money::from_major(70_000),
+                    BudgetLineKind::Expense,
+                ),
+                BudgetLine::new(
+                    "Administration & transport",
+                    Money::from_major(50_000),
+                    BudgetLineKind::Expense,
+                ),
             ],
             opening_reserve_minor: opening_reserve.0,
             notes: Vec::new(),
@@ -263,18 +313,14 @@ impl AnnualBudgetPlan {
                 variance_minor: l.variance_minor(),
                 variance_ratio: l.variance_ratio(),
             })
-            .chain(
-                self.expense_forecast
-                    .iter()
-                    .map(|l| LineVariance {
-                        label: l.label.clone(),
-                        kind: l.kind,
-                        forecast_minor: l.forecast_minor,
-                        actual_minor: l.actual_minor,
-                        variance_minor: l.variance_minor(),
-                        variance_ratio: l.variance_ratio(),
-                    }),
-            )
+            .chain(self.expense_forecast.iter().map(|l| LineVariance {
+                label: l.label.clone(),
+                kind: l.kind,
+                forecast_minor: l.forecast_minor,
+                actual_minor: l.actual_minor,
+                variance_minor: l.variance_minor(),
+                variance_ratio: l.variance_ratio(),
+            }))
             .collect();
         lines.sort_by(|a, b| b.variance_minor.abs().cmp(&a.variance_minor.abs()));
         lines

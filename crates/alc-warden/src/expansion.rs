@@ -73,7 +73,10 @@ pub fn building_catalog() -> Vec<BuildingSpec> {
             cost_minor: 48_000_000, // $480k
             build_days: 120,
             capacity: 48,
-            staff_required: vec![StaffRequirement::new("Officer", 4), StaffRequirement::new("Sergeant", 1)],
+            staff_required: vec![
+                StaffRequirement::new("Officer", 4),
+                StaffRequirement::new("Sergeant", 1),
+            ],
             prerequisites: vec!["power_headroom", "perimeter_integrity"],
         },
         BuildingSpec {
@@ -103,7 +106,10 @@ pub fn building_catalog() -> Vec<BuildingSpec> {
             cost_minor: 24_000_000,
             build_days: 60,
             capacity: 120,
-            staff_required: vec![StaffRequirement::new("Cook", 3), StaffRequirement::new("Officer", 1)],
+            staff_required: vec![
+                StaffRequirement::new("Cook", 3),
+                StaffRequirement::new("Officer", 1),
+            ],
             prerequisites: vec!["water", "power_headroom"],
         },
         BuildingSpec {
@@ -112,7 +118,10 @@ pub fn building_catalog() -> Vec<BuildingSpec> {
             cost_minor: 31_000_000,
             build_days: 80,
             capacity: 30,
-            staff_required: vec![StaffRequirement::new("Instructor", 1), StaffRequirement::new("Officer", 2)],
+            staff_required: vec![
+                StaffRequirement::new("Instructor", 1),
+                StaffRequirement::new("Officer", 2),
+            ],
             prerequisites: vec!["kitchen", "power_headroom"],
         },
         BuildingSpec {
@@ -130,7 +139,10 @@ pub fn building_catalog() -> Vec<BuildingSpec> {
             cost_minor: 39_000_000,
             build_days: 100,
             capacity: 24,
-            staff_required: vec![StaffRequirement::new("Instructor", 2), StaffRequirement::new("Officer", 1)],
+            staff_required: vec![
+                StaffRequirement::new("Instructor", 2),
+                StaffRequirement::new("Officer", 1),
+            ],
             prerequisites: vec!["administrative_building"],
         },
         BuildingSpec {
@@ -139,7 +151,10 @@ pub fn building_catalog() -> Vec<BuildingSpec> {
             cost_minor: 44_000_000,
             build_days: 110,
             capacity: 0,
-            staff_required: vec![StaffRequirement::new("Administrator", 2), StaffRequirement::new("Officer", 1)],
+            staff_required: vec![
+                StaffRequirement::new("Administrator", 2),
+                StaffRequirement::new("Officer", 1),
+            ],
             prerequisites: vec!["power_headroom"],
         },
         BuildingSpec {
@@ -148,7 +163,10 @@ pub fn building_catalog() -> Vec<BuildingSpec> {
             cost_minor: 50_000_000,
             build_days: 110,
             capacity: 12,
-            staff_required: vec![StaffRequirement::new("Officer", 3), StaffRequirement::new("Sergeant", 1)],
+            staff_required: vec![
+                StaffRequirement::new("Officer", 3),
+                StaffRequirement::new("Sergeant", 1),
+            ],
             prerequisites: vec!["cell_block", "perimeter_integrity"],
         },
         BuildingSpec {
@@ -256,8 +274,16 @@ impl AttentionBudget {
     }
 
     /// Suggested costs for common decision classes.
-    pub fn tactical_cost() -> f32 { 2.0 }
-    pub fn strategic_cost() -> f32 { 12.0 }
-    pub fn crisis_cost() -> f32 { 20.0 }
-    pub fn investigation_weekly_cost() -> f32 { 4.0 }
+    pub fn tactical_cost() -> f32 {
+        2.0
+    }
+    pub fn strategic_cost() -> f32 {
+        12.0
+    }
+    pub fn crisis_cost() -> f32 {
+        20.0
+    }
+    pub fn investigation_weekly_cost() -> f32 {
+        4.0
+    }
 }

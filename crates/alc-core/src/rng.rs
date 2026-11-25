@@ -18,13 +18,19 @@ impl RngStream {
     pub fn new(root_seed: u64, id: u64) -> Self {
         let mut hasher = root_seed ^ id.rotate_left(32);
         hasher = hasher.wrapping_mul(0x9E37_79B9_7F4A_7C15);
-        Self { stream: id, state: hasher as u128 }
+        Self {
+            stream: id,
+            state: hasher as u128,
+        }
     }
 
     pub fn fork(&self, label: u64) -> Self {
         let mut child = self.state ^ (label as u128);
         child = child.wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        Self { stream: label, state: child }
+        Self {
+            stream: label,
+            state: child,
+        }
     }
 
     pub fn next_u64(&mut self) -> u64 {

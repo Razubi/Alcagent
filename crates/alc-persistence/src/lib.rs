@@ -25,10 +25,10 @@
 //! serde-default compatible layouts are stamped forward when decodable.
 //! Version 5 appends parole decision conditions/reasons/release times.
 
-use alc_core::config::Config;
-use alc_events::WorldEvent;
 use alc_agents::Decision;
 use alc_core::SimTime;
+use alc_core::config::Config;
+use alc_events::WorldEvent;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
@@ -298,11 +298,18 @@ pub enum SaveError {
     /// bincode header (when available) so callers can tell a corrupt save
     /// from an incompatible format version.
     #[error("deserialize save (version {version:?}): {detail}")]
-    Deserialize { version: Option<u32>, detail: String },
+    Deserialize {
+        version: Option<u32>,
+        detail: String,
+    },
     #[error("version mismatch: found {found}, expected {expected}")]
     VersionMismatch { found: u32, expected: u32 },
     #[error("migration not implemented for version {found} -> {expected}: {reason}")]
-    MigrationUnsupported { found: u32, expected: u32, reason: String },
+    MigrationUnsupported {
+        found: u32,
+        expected: u32,
+        reason: String,
+    },
 }
 
 pub struct SaveManager {
@@ -314,7 +321,10 @@ pub struct SaveManager {
 
 impl SaveManager {
     pub fn new(dir: impl AsRef<Path>) -> Self {
-        Self { dir: dir.as_ref().to_path_buf(), last_autosave_day: AtomicU64::new(0) }
+        Self {
+            dir: dir.as_ref().to_path_buf(),
+            last_autosave_day: AtomicU64::new(0),
+        }
     }
 
     /// Atomic save: write to tmp then rename.
@@ -328,14 +338,22 @@ impl SaveManager {
     /// the temp file (data + metadata) and only then rename it over
     /// `world.bin`. A crash before the rename therefore leaves the previous
     /// complete save intact.
-    pub fn save_with_engine(&self, world: &alc_world::World, engine_state: Option<EngineState>) -> Result<(), SaveError> {
+    pub fn save_with_engine(
+        &self,
+        world: &alc_world::World,
+        engine_state: Option<EngineState>,
+    ) -> Result<(), SaveError> {
         fs::create_dir_all(&self.dir)?;
         let header = SaveHeader {
             version: SAVE_FORMAT_VERSION,
             created_at_secs: world.time.as_secs(),
             population: world.prisoners.len() as u32,
         };
-        let sf = SaveFile { header, world: world.clone(), engine_state };
+        let sf = SaveFile {
+            header,
+            world: world.clone(),
+            engine_state,
+        };
         let bytes = bincode::serialize(&sf).map_err(|e| SaveError::Serialize(e.to_string()))?;
         let tmp = self.dir.join("world.tmp");
         {
@@ -711,12 +729,18 @@ mod tests {
 
         assert_eq!(loaded.seed, world.seed);
         assert_eq!(loaded.time, world.time);
-        assert_eq!(loaded.speed, world.speed, "World.speed must survive the save");
+        assert_eq!(
+            loaded.speed, world.speed,
+            "World.speed must survive the save"
+        );
         assert_eq!(loaded.prisoners.len(), world.prisoners.len());
         assert_eq!(loaded.guards.len(), world.guards.len());
         assert_eq!(loaded.facilities.len(), world.facilities.len());
         assert_eq!(loaded.economy.cash, world.economy.cash);
-        assert_eq!(loaded.orchestrator.consumed_today, world.orchestrator.consumed_today);
+        assert_eq!(
+            loaded.orchestrator.consumed_today,
+            world.orchestrator.consumed_today
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -727,7 +751,11 @@ mod tests {
         // loadable save.
         let dir = unique_dir("atomic-write");
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("world.tmp"), b"stale bytes from an interrupted save").unwrap();
+        fs::write(
+            dir.join("world.tmp"),
+            b"stale bytes from an interrupted save",
+        )
+        .unwrap();
 
         let manager = SaveManager::new(&dir);
         let world = alc_world::World::new(0xA70_0D);
@@ -748,21 +776,37 @@ mod tests {
         let mut world = alc_world::World::new(1);
         world.days_simulated = 3;
 
-        assert!(!manager.autosave_with_engine_if_due(&world, None, 7).unwrap());
+        assert!(
+            !manager
+                .autosave_with_engine_if_due(&world, None, 7)
+                .unwrap()
+        );
         assert!(!Path::new(&dir).join("world.bin").exists());
 
         world.days_simulated = 7;
-        assert!(manager.autosave_with_engine_if_due(&world, None, 7).unwrap());
+        assert!(
+            manager
+                .autosave_with_engine_if_due(&world, None, 7)
+                .unwrap()
+        );
         assert!(Path::new(&dir).join("world.bin").exists());
         // Repeated calls on the same due day must not rewrite the save.
-        assert!(!manager.autosave_with_engine_if_due(&world, None, 7).unwrap());
+        assert!(
+            !manager
+                .autosave_with_engine_if_due(&world, None, 7)
+                .unwrap()
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn migrate_accepts_current_version() {
         let sf = SaveFile {
-            header: SaveHeader { version: SAVE_FORMAT_VERSION, created_at_secs: 1, population: 0 },
+            header: SaveHeader {
+                version: SAVE_FORMAT_VERSION,
+                created_at_secs: 1,
+                population: 0,
+            },
             world: alc_world::World::new(7),
             engine_state: None,
         };
@@ -772,11 +816,18 @@ mod tests {
     #[test]
     fn migrate_rejects_unknown_versions() {
         let sf = SaveFile {
-            header: SaveHeader { version: SAVE_FORMAT_VERSION + 5, created_at_secs: 1, population: 0 },
+            header: SaveHeader {
+                version: SAVE_FORMAT_VERSION + 5,
+                created_at_secs: 1,
+                population: 0,
+            },
             world: alc_world::World::new(7),
             engine_state: None,
         };
-        assert!(matches!(migrate(sf), Err(SaveError::VersionMismatch { .. })));
+        assert!(matches!(
+            migrate(sf),
+            Err(SaveError::VersionMismatch { .. })
+        ));
     }
 
     #[test]
@@ -968,7 +1019,11 @@ mod tests {
         v3_engine.post_release.insert(5, true);
 
         let sf = SaveFileV3 {
-            header: SaveHeader { version: 3, created_at_secs: 12, population: 1 },
+            header: SaveHeader {
+                version: 3,
+                created_at_secs: 12,
+                population: 1,
+            },
             world: world.clone(),
             engine_state: Some(v3_engine),
         };
@@ -991,12 +1046,20 @@ mod tests {
     #[test]
     fn migrate_rejects_version_zero_with_clear_reason() {
         let sf = SaveFile {
-            header: SaveHeader { version: 0, created_at_secs: 1, population: 0 },
+            header: SaveHeader {
+                version: 0,
+                created_at_secs: 1,
+                population: 0,
+            },
             world: alc_world::World::new(7),
             engine_state: None,
         };
         match migrate(sf) {
-            Err(SaveError::MigrationUnsupported { found, expected, reason }) => {
+            Err(SaveError::MigrationUnsupported {
+                found,
+                expected,
+                reason,
+            }) => {
                 assert_eq!(found, 0);
                 assert_eq!(expected, SAVE_FORMAT_VERSION);
                 assert!(reason.contains("not a valid save format version"));
@@ -1016,7 +1079,11 @@ mod tests {
         // serde-defaulted, so this is a faithful stand-in for a v2 save whose
         // sub-fields did not yet exist.
         let legacy_tagged = SaveFile {
-            header: SaveHeader { version: 2, created_at_secs: 1, population: 0 },
+            header: SaveHeader {
+                version: 2,
+                created_at_secs: 1,
+                population: 0,
+            },
             world: world.clone(),
             engine_state: None,
         };
@@ -1043,7 +1110,11 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
 
         let v1 = SaveFileV1 {
-            header: SaveHeader { version: 1, created_at_secs: 1, population: 0 },
+            header: SaveHeader {
+                version: 1,
+                created_at_secs: 1,
+                population: 0,
+            },
             world: world.clone(),
         };
         let bytes = bincode::serialize(&v1).unwrap();
@@ -1063,7 +1134,11 @@ mod tests {
         let manager = SaveManager::new(&dir);
         fs::create_dir_all(&dir).unwrap();
         let sf = SaveFile {
-            header: SaveHeader { version: SAVE_FORMAT_VERSION + 3, created_at_secs: 1, population: 0 },
+            header: SaveHeader {
+                version: SAVE_FORMAT_VERSION + 3,
+                created_at_secs: 1,
+                population: 0,
+            },
             world: alc_world::World::new(7),
             engine_state: None,
         };
@@ -1087,7 +1162,10 @@ mod tests {
         match &err {
             SaveError::Deserialize { version, detail } => {
                 assert_eq!(*version, Some(0xEF_BE_AD_DE));
-                assert!(detail.contains("newer build"), "unexpected detail: {detail}");
+                assert!(
+                    detail.contains("newer build"),
+                    "unexpected detail: {detail}"
+                );
             }
             other => panic!("expected Deserialize error, got {other:?}"),
         }
@@ -1117,59 +1195,83 @@ mod tests {
         // Post-release / rehab / contraband records
         if let Some(prisoner) = world.prisoners.first().cloned() {
             let pid_u64 = prisoner.id;
-            world.post_release_records.push(alc_world::PostReleaseRecord {
-                id: world.next_post_release_id,
-                prisoner_id: pid_u64.raw(),
-                name: prisoner.name.clone(),
-                reason: "transfer".to_string(),
-                day: 3,
-                sentence_info: alc_world::PostReleaseSentenceInfo {
-                    sentence_days: prisoner.sentence_days,
-                    sentence_served_days: prisoner.sentence_served_days,
-                    classification: prisoner.classification,
-                    escape_motivation_at_exit: 0.1,
-                },
-                outcome_seed: 42,
-                employment: true,
-                housing: false,
-                violation: false,
-                return_to_custody: false,
-            });
+            world
+                .post_release_records
+                .push(alc_world::PostReleaseRecord {
+                    id: world.next_post_release_id,
+                    prisoner_id: pid_u64.raw(),
+                    name: prisoner.name.clone(),
+                    reason: "transfer".to_string(),
+                    day: 3,
+                    sentence_info: alc_world::PostReleaseSentenceInfo {
+                        sentence_days: prisoner.sentence_days,
+                        sentence_served_days: prisoner.sentence_served_days,
+                        classification: prisoner.classification,
+                        escape_motivation_at_exit: 0.1,
+                    },
+                    outcome_seed: 42,
+                    employment: true,
+                    housing: false,
+                    violation: false,
+                    return_to_custody: false,
+                });
             world.next_post_release_id += 1;
-            world.rehab_records.entry(pid_u64).or_default().push(alc_world::RehabProgramRecord {
-                program: alc_social::RehabProgram::Education,
-                enrolled_day: 1,
-                progress_days: 2,
-                progress_sum: 0.2,
-                completed: false,
-                dropped: false,
-                attendance_days: 2,
-                last_attended_day: Some(2),
-                failure_reason: None,
-            });
-            world.contraband_state.entry(pid_u64).or_default().flags_confiscated = true;
-        world.resolve_contraband_case(77, alc_core::SimTime::from_secs(3600));
+            world
+                .rehab_records
+                .entry(pid_u64)
+                .or_default()
+                .push(alc_world::RehabProgramRecord {
+                    program: alc_social::RehabProgram::Education,
+                    enrolled_day: 1,
+                    progress_days: 2,
+                    progress_sum: 0.2,
+                    completed: false,
+                    dropped: false,
+                    attendance_days: 2,
+                    last_attended_day: Some(2),
+                    failure_reason: None,
+                });
+            world
+                .contraband_state
+                .entry(pid_u64)
+                .or_default()
+                .flags_confiscated = true;
+            world.resolve_contraband_case(77, alc_core::SimTime::from_secs(3600));
         }
 
         manager.save(&world).unwrap();
         let loaded = manager.load().unwrap();
 
-        assert_eq!(loaded.construction_queue.len(), world.construction_queue.len());
+        assert_eq!(
+            loaded.construction_queue.len(),
+            world.construction_queue.len()
+        );
         let lp = &loaded.construction_queue[0];
         assert_eq!(lp.id, pid);
         assert_eq!(lp.status, alc_world::ConstructionStatus::InProgress);
         assert_eq!(lp.progress_days, 2);
         assert!(lp.staff_allocated && lp.materials_ready && lp.prereqs_met);
 
-        assert_eq!(loaded.post_release_records.len(), world.post_release_records.len());
+        assert_eq!(
+            loaded.post_release_records.len(),
+            world.post_release_records.len()
+        );
         assert_eq!(loaded.post_release_records[0].reason, "transfer");
         assert_eq!(loaded.next_post_release_id, world.next_post_release_id);
 
         let loaded_rehab: usize = loaded.rehab_records.values().map(|v| v.len()).sum();
         let world_rehab: usize = world.rehab_records.values().map(|v| v.len()).sum();
         assert_eq!(loaded_rehab, world_rehab);
-        assert!(loaded.contraband_state.values().any(|s| s.flags_confiscated));
-        assert_eq!(loaded.resolved_contraband_at.get(&77).copied(), Some(alc_core::SimTime::from_secs(3600)));
+        assert!(
+            loaded
+                .contraband_state
+                .values()
+                .any(|s| s.flags_confiscated)
+        );
+        assert_eq!(
+            loaded.resolved_contraband_at.get(&77).copied(),
+            Some(alc_core::SimTime::from_secs(3600))
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

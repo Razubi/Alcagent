@@ -22,7 +22,10 @@ const SOAK_SEEDS: [u64; 3] = [0xA1C_0A_6E_17_0, 1, 2026];
 /// Assert the engine's own invariant checker is clean.
 fn assert_engine_invariants(sim: &Sim, label: &str) {
     let errs = sim.check_invariants();
-    assert!(errs.is_empty(), "{label}: engine invariants violated: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "{label}: engine invariants violated: {errs:?}"
+    );
 }
 
 /// Assert the extra physical-state invariants the engine checker does not
@@ -32,7 +35,10 @@ fn assert_physical_state(sim: &Sim, label: &str) {
 
     let pop = w.population();
     let cap = w.capacity();
-    assert!(pop <= cap, "{label}: population {pop} exceeds capacity {cap}");
+    assert!(
+        pop <= cap,
+        "{label}: population {pop} exceeds capacity {cap}"
+    );
 
     // Every stored need pressure is a finite number in [0, 1]. A NaN here
     // poisons utility comparisons and guard tension for the rest of the run.
@@ -89,7 +95,10 @@ fn assert_physical_state(sim: &Sim, label: &str) {
         w.economy.cash.as_major().is_finite(),
         "{label}: economy budget is non-finite"
     );
-    assert!(w.economy.health().is_finite(), "{label}: economy health is non-finite");
+    assert!(
+        w.economy.health().is_finite(),
+        "{label}: economy health is non-finite"
+    );
 
     // Bounded history must never silently grow past its configured cap.
     assert!(
@@ -118,7 +127,11 @@ fn run(seed: u64, days: u64) -> Sim {
 /// check that the event *sequence* is reproducible too.
 fn fingerprint(seed: u64, days: u64) -> (u32, usize, u64) {
     let sim = run(seed, days);
-    (sim.world().population(), sim.events().len(), sim.trace_hash())
+    (
+        sim.world().population(),
+        sim.events().len(),
+        sim.trace_hash(),
+    )
 }
 
 #[test]
@@ -151,7 +164,11 @@ fn chaos_soak_730_days_three_seeds() {
             sim.world().policies.security_level,
             sim.world().policies.lockdown,
             sim.events().len(),
-            if errs.is_empty() { "clean".to_string() } else { format!("{errs:?}") },
+            if errs.is_empty() {
+                "clean".to_string()
+            } else {
+                format!("{errs:?}")
+            },
         );
     }
 
@@ -165,8 +182,16 @@ fn chaos_soak_730_days_three_seeds() {
 fn same_seed_reproduces_event_count_population_and_trace() {
     let a = fingerprint(0xA1C_0A_6E_17_0, 10);
     let b = fingerprint(0xA1C_0A_6E_17_0, 10);
-    assert_eq!(a.0, b.0, "same seed changed final population: {} vs {}", a.0, b.0);
-    assert_eq!(a.1, b.1, "same seed changed event count: {} vs {}", a.1, b.1);
+    assert_eq!(
+        a.0, b.0,
+        "same seed changed final population: {} vs {}",
+        a.0, b.0
+    );
+    assert_eq!(
+        a.1, b.1,
+        "same seed changed event count: {} vs {}",
+        a.1, b.1
+    );
     assert_eq!(a.2, b.2, "same seed changed trace hash: {} vs {}", a.2, b.2);
 }
 
@@ -205,7 +230,11 @@ fn save_load_after_year_continues_invariant_clean_and_deterministic() {
 
     // A loaded world must not merely avoid crashing: it must replay the same
     // deterministic trajectory (RNG is seeded from world time/ids, §21).
-    assert_eq!(loaded.world().time, original.world().time, "clock diverged after load");
+    assert_eq!(
+        loaded.world().time,
+        original.world().time,
+        "clock diverged after load"
+    );
     assert_eq!(
         loaded.days_simulated(),
         original.days_simulated(),
@@ -221,8 +250,16 @@ fn save_load_after_year_continues_invariant_clean_and_deterministic() {
         original.world().economy.cash.0,
         "budget diverged after load"
     );
-    assert_eq!(loaded.events().len(), original.events().len(), "event count diverged after load");
-    assert_eq!(loaded.trace_hash(), original.trace_hash(), "event trace diverged after load");
+    assert_eq!(
+        loaded.events().len(),
+        original.events().len(),
+        "event count diverged after load"
+    );
+    assert_eq!(
+        loaded.trace_hash(),
+        original.trace_hash(),
+        "event trace diverged after load"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -240,13 +277,29 @@ fn event_kinds_are_diverse_after_a_year() {
     }
     println!("event distribution after 365 days: {counts:?}");
 
-    assert!(counts.len() >= 10, "too few distinct event kinds: {counts:?}");
-    for kind in ["RelationshipShift", "Rumor", "Argument", "ParoleHearing", "PolicyChange", "SecurityResponse"] {
-        assert!(counts.contains_key(kind), "no {kind} events in a full year: {counts:?}");
+    assert!(
+        counts.len() >= 10,
+        "too few distinct event kinds: {counts:?}"
+    );
+    for kind in [
+        "RelationshipShift",
+        "Rumor",
+        "Argument",
+        "ParoleHearing",
+        "PolicyChange",
+        "SecurityResponse",
+    ] {
+        assert!(
+            counts.contains_key(kind),
+            "no {kind} events in a full year: {counts:?}"
+        );
     }
     // Guard reports must not swamp all other activity combined.
     let security = counts.get("SecurityResponse").copied().unwrap_or(0)
         + counts.get("GuardReport").copied().unwrap_or(0);
     let total: usize = counts.values().sum();
-    assert!(security * 2 < total, "guard events dominate: {security}/{total}: {counts:?}");
+    assert!(
+        security * 2 < total,
+        "guard events dominate: {security}/{total}: {counts:?}"
+    );
 }

@@ -18,7 +18,7 @@
 //! historical `trace_hash_v2` values are not part of the persistent save format
 //! and are only meaningful for comparing runs made with the same build.
 
-use crate::{EngineState, PolicyState, ParoleLedger};
+use crate::{EngineState, ParoleLedger, PolicyState};
 use alc_agents::{Decision, DecisionAction};
 use std::hash::{Hash, Hasher};
 
@@ -41,7 +41,9 @@ struct StableHasher {
 
 impl StableHasher {
     fn new() -> Self {
-        Self { state: FNV_OFFSET_BASIS }
+        Self {
+            state: FNV_OFFSET_BASIS,
+        }
     }
 
     /// Mix a single byte into the running FNV-1a state.
@@ -122,7 +124,6 @@ impl Hasher for StableHasher {
     fn write_isize(&mut self, i: isize) {
         self.write_bytes(&i.to_be_bytes());
     }
-
 }
 
 /// Compute a deterministic hash of the engine state for trace verification.
@@ -224,15 +225,25 @@ fn hash_decision(dec: &Decision, hasher: &mut impl Hasher) {
             with.hash(hasher);
             item.hash(hasher);
         }
-        DecisionAction::Comply => { 4u8.hash(hasher); }
-        DecisionAction::Refuse => { 5u8.hash(hasher); }
-        DecisionAction::EscapeAttempt => { 6u8.hash(hasher); }
-        DecisionAction::RequestMedical => { 7u8.hash(hasher); }
+        DecisionAction::Comply => {
+            4u8.hash(hasher);
+        }
+        DecisionAction::Refuse => {
+            5u8.hash(hasher);
+        }
+        DecisionAction::EscapeAttempt => {
+            6u8.hash(hasher);
+        }
+        DecisionAction::RequestMedical => {
+            7u8.hash(hasher);
+        }
         DecisionAction::JoinGang { gang } => {
             8u8.hash(hasher);
             gang.hash(hasher);
         }
-        DecisionAction::LeaveGang => { 9u8.hash(hasher); }
+        DecisionAction::LeaveGang => {
+            9u8.hash(hasher);
+        }
         DecisionAction::LeadGang { gang } => {
             10u8.hash(hasher);
             gang.hash(hasher);
@@ -242,7 +253,9 @@ fn hash_decision(dec: &Decision, hasher: &mut impl Hasher) {
             about.hash(hasher);
             content.hash(hasher);
         }
-        DecisionAction::None => { 12u8.hash(hasher); }
+        DecisionAction::None => {
+            12u8.hash(hasher);
+        }
     }
 }
 
@@ -360,7 +373,11 @@ pub fn compute_world_digest(world: &alc_world::World) -> u64 {
     world.policies.lockdown.hash(&mut hasher);
     world.policies.security_level.to_bits().hash(&mut hasher);
     world.policies.privileges_level.to_bits().hash(&mut hasher);
-    world.policies.rehab_funding_multiplier.to_bits().hash(&mut hasher);
+    world
+        .policies
+        .rehab_funding_multiplier
+        .to_bits()
+        .hash(&mut hasher);
 
     // Economy
     world.economy.cash.0.hash(&mut hasher);
@@ -496,7 +513,10 @@ pub fn compute_world_digest(world: &alc_world::World) -> u64 {
         r.sentence_info.sentence_days.hash(&mut hasher);
         r.sentence_info.sentence_served_days.hash(&mut hasher);
         format!("{:?}", r.sentence_info.classification).hash(&mut hasher);
-        r.sentence_info.escape_motivation_at_exit.to_bits().hash(&mut hasher);
+        r.sentence_info
+            .escape_motivation_at_exit
+            .to_bits()
+            .hash(&mut hasher);
         r.outcome_seed.hash(&mut hasher);
         r.employment.hash(&mut hasher);
         r.housing.hash(&mut hasher);

@@ -4,7 +4,7 @@
 //! [`Command`]s. Rendering never touches `sumo::Sim`; handlers only enqueue
 //! commands that are applied here through validated engine control methods.
 
-use crate::{data, map_view, panels, screens, settings, ViewMode};
+use crate::{ViewMode, data, map_view, panels, screens, settings};
 use alc_core::{PrisonerId, TimeSpeed};
 use alc_warden::WardenAction;
 use eframe::egui;
@@ -283,7 +283,8 @@ impl App {
             }
             SetIntakePaused(paused) => {
                 self.sim.set_intake_paused(paused);
-                self.state.status = Some(format!("Intake {}", if paused { "paused" } else { "open" }));
+                self.state.status =
+                    Some(format!("Intake {}", if paused { "paused" } else { "open" }));
             }
             SetPolicyMode(mode) => {
                 self.sim.set_policy_mode(mode);
@@ -294,7 +295,11 @@ impl App {
                 self.sim.apply_warden_action(action);
                 self.state.status = Some(format!("Warden action applied: {label}"));
             }
-            EnqueueConstruction { kind, wing, capacity } => {
+            EnqueueConstruction {
+                kind,
+                wing,
+                capacity,
+            } => {
                 let id = self.sim.enqueue_construction(kind, wing, capacity);
                 self.state.status = Some(format!("Queued {} construction #{id}", kind.display()));
             }
@@ -388,8 +393,15 @@ impl App {
                     if ok { "granted" } else { "rejected" }
                 ));
             }
-            RecordPostRelease { prisoner, release_type, risk, plan } => {
-                let _ = self.sim.record_post_release(prisoner, &release_type, risk, plan);
+            RecordPostRelease {
+                prisoner,
+                release_type,
+                risk,
+                plan,
+            } => {
+                let _ = self
+                    .sim
+                    .record_post_release(prisoner, &release_type, risk, plan);
                 self.state.status = Some(format!(
                     "Post-release recorded for prisoner {} ({release_type})",
                     prisoner.raw()
@@ -398,10 +410,11 @@ impl App {
         }
         self.revision += 1;
         if persist {
-            self.state.to_settings(self.sim.speed()).save(&self.settings_path);
+            self.state
+                .to_settings(self.sim.speed())
+                .save(&self.settings_path);
         }
     }
-
 }
 
 impl eframe::App for App {
@@ -457,7 +470,6 @@ impl eframe::App for App {
             self.apply(command);
         }
     }
-
 }
 
 /// Launch the native observer window with a fresh simulation from `seed`.
@@ -511,15 +523,27 @@ mod tests {
         let mut app = App::new(0xC0FFEE_02);
         let pid = app.sim.world().prisoners[0].id;
         let total = app.sim.world().prisoners[0].sentence_days;
-        if let Some(p) = app.sim.world_mut().prisoners.iter_mut().find(|p| p.id == pid) {
+        if let Some(p) = app
+            .sim
+            .world_mut()
+            .prisoners
+            .iter_mut()
+            .find(|p| p.id == pid)
+        {
             p.sentence_served_days = (total * 7 / 10).max(1);
             p.schedule.disciplinary_status = false;
         }
 
         app.apply(Command::StartParole(pid));
-        assert_eq!(app.sim.parole_status(pid), Some(sumo::ParoleStatus::Scheduled));
+        assert_eq!(
+            app.sim.parole_status(pid),
+            Some(sumo::ParoleStatus::Scheduled)
+        );
         app.apply(Command::GrantParole(pid));
-        assert_eq!(app.sim.parole_status(pid), Some(sumo::ParoleStatus::Granted));
+        assert_eq!(
+            app.sim.parole_status(pid),
+            Some(sumo::ParoleStatus::Granted)
+        );
         assert!(app.sim.parole_conditions(pid).is_some());
 
         let audit_before = app.sim.decision_audit_log().len();
@@ -528,20 +552,36 @@ mod tests {
         assert_eq!(app.sim.parole_released_at(pid), Some(app.sim.world().time));
         assert!(app.sim.decision_audit_log().len() > audit_before);
 
-        let project = app.sim.enqueue_construction(alc_world::FacilityKind::Medical, 1, 10);
+        let project = app
+            .sim
+            .enqueue_construction(alc_world::FacilityKind::Medical, 1, 10);
         app.apply(Command::ApproveConstruction(project));
         assert_eq!(
-            app.sim.construction_queue().into_iter().find(|p| p.id == project).unwrap().status,
+            app.sim
+                .construction_queue()
+                .into_iter()
+                .find(|p| p.id == project)
+                .unwrap()
+                .status,
             alc_world::ConstructionStatus::Approved
         );
         let violations = app.sim.check_invariants();
-        assert!(violations.is_empty(), "parole/construction commands left violations: {violations:?}");
+        assert!(
+            violations.is_empty(),
+            "parole/construction commands left violations: {violations:?}"
+        );
     }
 
     #[test]
     fn tick_rates_are_bounded_and_ordered() {
         assert_eq!(App::ticks_per_second(TimeSpeed::Paused), 0.0);
-        assert!(App::ticks_per_second(TimeSpeed::RealTime) < App::ticks_per_second(TimeSpeed::FastForward));
-        assert!(App::ticks_per_second(TimeSpeed::FastForward) < App::ticks_per_second(TimeSpeed::Extreme));
+        assert!(
+            App::ticks_per_second(TimeSpeed::RealTime)
+                < App::ticks_per_second(TimeSpeed::FastForward)
+        );
+        assert!(
+            App::ticks_per_second(TimeSpeed::FastForward)
+                < App::ticks_per_second(TimeSpeed::Extreme)
+        );
     }
 }

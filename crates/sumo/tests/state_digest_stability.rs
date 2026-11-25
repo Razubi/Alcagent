@@ -37,8 +37,14 @@ fn digest_is_identical_for_two_identical_sims() {
         b.tick();
     }
 
-    assert_eq!(compute_state_digest(&a.engine_state), compute_state_digest(&b.engine_state));
-    assert_eq!(compute_world_digest(&a.world), compute_world_digest(&b.world));
+    assert_eq!(
+        compute_state_digest(&a.engine_state),
+        compute_state_digest(&b.engine_state)
+    );
+    assert_eq!(
+        compute_world_digest(&a.world),
+        compute_world_digest(&b.world)
+    );
     assert_eq!(compute_full_state_digest(&a), compute_full_state_digest(&b));
 }
 

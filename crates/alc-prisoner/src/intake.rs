@@ -192,7 +192,9 @@ pub fn generate_intake_with(rng: &mut RngStream, id: PrisonerId) -> Prisoner {
         } else {
             0.0
         },
-        mental_health: clamp01(rng.range(0.45, 0.95) as f32 - (1.0 - p.traits.emotional_stability) * 0.2),
+        mental_health: clamp01(
+            rng.range(0.45, 0.95) as f32 - (1.0 - p.traits.emotional_stability) * 0.2,
+        ),
         hope,
     };
 
@@ -342,7 +344,6 @@ impl RelationshipDeltaSeed {
             ..Self::default()
         }
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -399,7 +400,10 @@ impl Default for ArrivalSocialHooks {
 /// Compute arrival suggestions for a cohort of newcomers against the current
 /// population. Pure and deterministic: the Social system decides whether to
 /// apply any of these (Directive §2 — agents propose, engine validates).
-pub fn arrival_social_hooks(profiles: &[Prisoner], existing: &[Prisoner]) -> Vec<ArrivalSocialHooks> {
+pub fn arrival_social_hooks(
+    profiles: &[Prisoner],
+    existing: &[Prisoner],
+) -> Vec<ArrivalSocialHooks> {
     profiles.iter().map(|p| hooks_for(p, existing)).collect()
 }
 
@@ -421,7 +425,9 @@ fn hooks_for(newcomer: &Prisoner, existing: &[Prisoner]) -> ArrivalSocialHooks {
             out.friendship_seeds.push(RelationshipSeed {
                 from: newcomer.id,
                 to: other.id,
-                delta: RelationshipDeltaSeed::friendship_seed(0.4 + newcomer.traits.sociability * 0.4),
+                delta: RelationshipDeltaSeed::friendship_seed(
+                    0.4 + newcomer.traits.sociability * 0.4,
+                ),
                 reason: format!("shared {kind:?} background"),
             });
         }
@@ -434,8 +440,16 @@ fn hooks_for(newcomer: &Prisoner, existing: &[Prisoner]) -> ArrivalSocialHooks {
             let challenge = newcomer.traits.leadership > 0.7 && other.traits.leadership > 0.6;
             if opposed || aggressive || challenge {
                 let intensity = (if opposed { 0.4 } else { 0.0 })
-                    + (if aggressive { newcomer.traits.aggression * 0.4 } else { 0.0 })
-                    + (if challenge { newcomer.traits.leadership * 0.4 } else { 0.0 });
+                    + (if aggressive {
+                        newcomer.traits.aggression * 0.4
+                    } else {
+                        0.0
+                    })
+                    + (if challenge {
+                        newcomer.traits.leadership * 0.4
+                    } else {
+                        0.0
+                    });
                 out.rivalry_seeds.push(RivalrySeed {
                     newcomer: newcomer.id,
                     other: other.id,
@@ -453,10 +467,7 @@ fn hooks_for(newcomer: &Prisoner, existing: &[Prisoner]) -> ArrivalSocialHooks {
     }
 
     // Gang-join candidates inferred from gangs already present inside (§5.3).
-    let mut gangs: Vec<u64> = existing
-        .iter()
-        .filter_map(|p| p.gang_affiliation)
-        .collect();
+    let mut gangs: Vec<u64> = existing.iter().filter_map(|p| p.gang_affiliation).collect();
     gangs.sort_unstable();
     gangs.dedup();
     if newcomer.gang_affiliation.is_none() {
@@ -490,7 +501,8 @@ fn hooks_for(newcomer: &Prisoner, existing: &[Prisoner]) -> ArrivalSocialHooks {
         + newcomer.needs.total_pressure() * 0.30
         + safety_pressure * 0.20)
         .clamp(0.0, 1.0);
-    out.resource_demand_delta = 1.0 + newcomer.needs.medical_need * 0.5 + newcomer.condition.illness * 0.5;
+    out.resource_demand_delta =
+        1.0 + newcomer.needs.medical_need * 0.5 + newcomer.condition.illness * 0.5;
     out
 }
 

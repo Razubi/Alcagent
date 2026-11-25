@@ -24,11 +24,11 @@ pub mod memory;
 pub mod orchestrator;
 
 pub use decision::{
-    ACTION_CATALOG, ActionCandidate, Decision, DecisionAction, DecisionValidator, DefaultValidator, Legality,
-    RawDecision, RawTarget, Rejection, Role, ValidationContext, ValidationResult, ValidationStage,
-    clamp_and_repair, normalize_action, parse_raw_decision, run_validation_json,
+    ACTION_CATALOG, ActionCandidate, Decision, DecisionAction, DecisionValidator, DefaultValidator,
+    Legality, RawDecision, RawTarget, Rejection, Role, ValidationContext, ValidationResult,
+    ValidationStage, clamp_and_repair, normalize_action, parse_raw_decision, run_validation_json,
     run_validation_pipeline, validate_authority, validate_decision, validate_format,
-    validate_legality, validate_resources, validate_semantic, validate_safety,
+    validate_legality, validate_resources, validate_safety, validate_semantic,
     validate_world_state,
 };
 pub use disposition::{Disposition, trait_bias};

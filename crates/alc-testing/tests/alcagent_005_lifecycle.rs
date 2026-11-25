@@ -117,7 +117,10 @@ fn construction_cancel_and_failure_keep_invariants_clean() {
     assert_eq!(cancelled.status, ConstructionStatus::Cancelled);
     assert_eq!(cancelled.terminal_reason.as_deref(), Some("test cancel"));
     assert!(
-        world.history.iter().any(|e| e.kind == EventKind::ConstructionCancelled),
+        world
+            .history
+            .iter()
+            .any(|e| e.kind == EventKind::ConstructionCancelled),
         "cancel should emit ConstructionCancelled"
     );
 
@@ -137,11 +140,23 @@ fn construction_cancel_and_failure_keep_invariants_clean() {
         .find(|p| p.id == failed_id)
         .expect("failed project retained for audit");
     assert_eq!(failed.status, ConstructionStatus::Failed);
-    assert!(failed.terminal_reason.as_deref().unwrap_or_default().contains("admin"));
     assert!(
-        world.history.iter().any(|e| e.kind == EventKind::ConstructionFailed),
+        failed
+            .terminal_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("admin")
+    );
+    assert!(
+        world
+            .history
+            .iter()
+            .any(|e| e.kind == EventKind::ConstructionFailed),
         "missing prerequisite should emit ConstructionFailed"
     );
     check_world_invariants(&world, &mut violations);
-    assert!(violations.is_empty(), "construction failure path tripped invariants: {violations:?}");
+    assert!(
+        violations.is_empty(),
+        "construction failure path tripped invariants: {violations:?}"
+    );
 }

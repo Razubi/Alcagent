@@ -123,8 +123,18 @@ impl MapFrame {
         let facility_ids: Vec<u64> = world.facilities.iter().map(|f| f.id.0).collect();
         let mut edges = Vec::new();
         if facility_ids.len() == 2 {
-            edges.push(NavEdge { from: facility_ids[0], to: facility_ids[1], sightline: true, restricted: false });
-            edges.push(NavEdge { from: facility_ids[1], to: facility_ids[0], sightline: true, restricted: false });
+            edges.push(NavEdge {
+                from: facility_ids[0],
+                to: facility_ids[1],
+                sightline: true,
+                restricted: false,
+            });
+            edges.push(NavEdge {
+                from: facility_ids[1],
+                to: facility_ids[0],
+                sightline: true,
+                restricted: false,
+            });
         } else if facility_ids.len() > 2 {
             for i in 0..facility_ids.len() {
                 let next = (i + 1) % facility_ids.len();
@@ -152,7 +162,10 @@ impl MapFrame {
                 .copied()
                 .unwrap_or(FacilityId(0))
                 .raw();
-            let (x, y) = facility_positions.get(&facility_id).copied().unwrap_or((100.0, 100.0));
+            let (x, y) = facility_positions
+                .get(&facility_id)
+                .copied()
+                .unwrap_or((100.0, 100.0));
 
             let activity = Self::determine_activity(prisoner, world);
             let intention = world
@@ -195,7 +208,10 @@ impl MapFrame {
                 .copied()
                 .unwrap_or(FacilityId(0))
                 .raw();
-            let (x, y) = facility_positions.get(&facility_id).copied().unwrap_or((100.0, 100.0));
+            let (x, y) = facility_positions
+                .get(&facility_id)
+                .copied()
+                .unwrap_or((100.0, 100.0));
 
             let activity = Self::determine_guard_activity(guard);
             let mood = Some((guard.morale - guard.stress * 0.5).clamp(0.0, 1.0));

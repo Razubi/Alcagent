@@ -197,9 +197,7 @@ impl DriveWeights {
                     + 0.30 * t.authoritarian_tendencies
                     + 0.15 * (1.0 - t.compassion),
             ),
-            finance: clamp(
-                0.30 + 0.85 * t.financial_discipline + 0.15 * (1.0 - t.risk_tolerance),
-            ),
+            finance: clamp(0.30 + 0.85 * t.financial_discipline + 0.15 * (1.0 - t.risk_tolerance)),
             morale: clamp(0.35 + 0.75 * t.staff_loyalty + 0.25 * t.competence),
             welfare: clamp(
                 0.30 + 0.85 * t.compassion + 0.20 * t.reform_orientation
@@ -211,8 +209,7 @@ impl DriveWeights {
                     - 0.25 * t.authoritarian_tendencies,
             ),
             stability: clamp(
-                0.40 + 0.70 * t.competence + 0.20 * (1.0 - t.risk_tolerance)
-                    + 0.10 * t.strictness,
+                0.40 + 0.70 * t.competence + 0.20 * (1.0 - t.risk_tolerance) + 0.10 * t.strictness,
             ),
         }
     }
@@ -402,15 +399,11 @@ pub fn candidate_actions(world: &World) -> Vec<WardenAction> {
     if view.facility_wear >= 0.2 {
         // Worst-off facility first; ties resolve to the lowest facility id
         // because `facilities` is append-ordered by id.
-        if let Some(worst) = world
-            .facilities
-            .iter()
-            .min_by(|a, b| {
-                a.condition
-                    .partial_cmp(&b.condition)
-                    .unwrap_or(Ordering::Equal)
-            })
-        {
+        if let Some(worst) = world.facilities.iter().min_by(|a, b| {
+            a.condition
+                .partial_cmp(&b.condition)
+                .unwrap_or(Ordering::Equal)
+        }) {
             candidates.push(WardenAction::ImproveInfrastructure {
                 facility: worst.id.0,
             });
@@ -750,7 +743,10 @@ mod tests {
             },
         );
         for score in scores {
-            assert!((score - 0.5).abs() < f32::EPSILON, "expected 0.5, got {score}");
+            assert!(
+                (score - 0.5).abs() < f32::EPSILON,
+                "expected 0.5, got {score}"
+            );
         }
     }
 

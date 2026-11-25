@@ -7,8 +7,8 @@
 //! pipeline, so the test covers the whole `alc-agents` decision path.
 
 use alc_agents::{
-    ActionCandidate, Decision, DecisionAction, Disposition, Legality, Role, ValidationContext, ValidationResult,
-    fallback_utility_decision_with_disposition, validate_decision,
+    ActionCandidate, Decision, DecisionAction, Disposition, Legality, Role, ValidationContext,
+    ValidationResult, fallback_utility_decision_with_disposition, validate_decision,
 };
 use alc_core::PrisonerId;
 use alc_prisoner::{DriftActivity, NeedDriftContext, NeedTag, Needs, generate_intake};
@@ -65,27 +65,42 @@ fn candidates_for(needs: &Needs, nearby: u64) -> Vec<ActionCandidate> {
     let level = level.clamp(0.0, 1.0);
     let motivated = match need {
         NeedTag::Hunger | NeedTag::Thirst => Some(ActionCandidate::new(
-            Decision::new(DecisionAction::MoveTo { target_facility: 11 }),
+            Decision::new(DecisionAction::MoveTo {
+                target_facility: 11,
+            }),
             0.2 + level,
         )),
         NeedTag::Sleep | NeedTag::Fatigue => Some(ActionCandidate::new(
-            Decision::new(DecisionAction::MoveTo { target_facility: 12 }),
+            Decision::new(DecisionAction::MoveTo {
+                target_facility: 12,
+            }),
             0.2 + level,
         )),
         NeedTag::Stimulation => Some(ActionCandidate::new(
-            Decision::new(DecisionAction::MoveTo { target_facility: 13 }),
+            Decision::new(DecisionAction::MoveTo {
+                target_facility: 13,
+            }),
             0.2 + level,
         )),
-        NeedTag::Medical => Some(ActionCandidate::new(Decision::new(DecisionAction::RequestMedical), 0.2 + level * 1.3)),
+        NeedTag::Medical => Some(ActionCandidate::new(
+            Decision::new(DecisionAction::RequestMedical),
+            0.2 + level * 1.3,
+        )),
         NeedTag::Companionship => Some(ActionCandidate::new(
             Decision::new(DecisionAction::Socialize { with: nearby }),
             0.2 + level,
         )),
-        NeedTag::Safety => Some(ActionCandidate::new(Decision::new(DecisionAction::Comply), 0.2 + level)),
+        NeedTag::Safety => Some(ActionCandidate::new(
+            Decision::new(DecisionAction::Comply),
+            0.2 + level,
+        )),
         NeedTag::Respect => Some(
-            ActionCandidate::new(Decision::new(DecisionAction::Fight { target: nearby }), 0.15 + level * 0.5)
-                .with_risk(0.85)
-                .with_legality(Legality::IllegalButPossible),
+            ActionCandidate::new(
+                Decision::new(DecisionAction::Fight { target: nearby }),
+                0.15 + level * 0.5,
+            )
+            .with_risk(0.85)
+            .with_legality(Legality::IllegalButPossible),
         ),
         _ => None,
     };
@@ -94,11 +109,20 @@ fn candidates_for(needs: &Needs, nearby: u64) -> Vec<ActionCandidate> {
     if let Some(c) = motivated {
         out.push(c);
     }
-    out.push(ActionCandidate::new(Decision::new(DecisionAction::Comply), 0.25));
+    out.push(ActionCandidate::new(
+        Decision::new(DecisionAction::Comply),
+        0.25,
+    ));
     if needs.medical_need > 0.6 {
-        out.push(ActionCandidate::new(Decision::new(DecisionAction::RequestMedical), 0.55));
+        out.push(ActionCandidate::new(
+            Decision::new(DecisionAction::RequestMedical),
+            0.55,
+        ));
     }
-    out.push(ActionCandidate::new(Decision::new(DecisionAction::None), 0.05));
+    out.push(ActionCandidate::new(
+        Decision::new(DecisionAction::None),
+        0.05,
+    ));
     out
 }
 
@@ -171,6 +195,9 @@ fn needs_driven_decisions_vary_across_a_simulated_day() {
         seen.len()
     );
     for expected in ["request_medical", "socialize", "move_to", "comply"] {
-        assert!(seen.contains(expected), "never chose {expected}: {timeline:?}");
+        assert!(
+            seen.contains(expected),
+            "never chose {expected}: {timeline:?}"
+        );
     }
 }

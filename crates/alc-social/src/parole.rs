@@ -1,7 +1,7 @@
 //! Parole board review and decisions (Directive §15).
 
-use serde::{Deserialize, Serialize};
 use alc_core::SimTime;
+use serde::{Deserialize, Serialize};
 
 /// Conditions that may be attached to a parole grant.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -17,16 +17,9 @@ pub enum ParoleCondition {
 /// Outcome of a parole board review.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ParoleDecision {
-    Grant {
-        conditions: Vec<ParoleCondition>,
-    },
-    Deny {
-        reason: String,
-    },
-    Defer {
-        reason: String,
-        review_days: u32,
-    },
+    Grant { conditions: Vec<ParoleCondition> },
+    Deny { reason: String },
+    Defer { reason: String, review_days: u32 },
 }
 
 /// Minimal prisoner information for a parole review.
@@ -87,7 +80,12 @@ pub struct PostReleaseRecord {
 /// Uses prisoner attributes and sentence characteristics to produce a
 /// reproducible 0..1 score. This is a stub/simple model; real implementations
 /// would use risk assessment matrices and psychological evaluation.
-pub fn recidivism_score(subject: &ParoleSubject, behavior: f32, rehab: f32, months_in_custody: u32) -> f32 {
+pub fn recidivism_score(
+    subject: &ParoleSubject,
+    behavior: f32,
+    rehab: f32,
+    months_in_custody: u32,
+) -> f32 {
     let behavior = behavior.clamp(0.0, 1.0);
     let rehab = rehab.clamp(0.0, 1.0);
     let served = subject.served_fraction();
@@ -107,7 +105,8 @@ pub fn recidivism_score(subject: &ParoleSubject, behavior: f32, rehab: f32, mont
     // Time in custody reduces risk of immediate reoffending
     let custody_stabilization = (months_in_custody as f32 / 12.0).min(1.0) * 0.1;
 
-    let risk = base_risk - rehab_mitigation - behavior_mitigation + aggression_enhancement - custody_stabilization;
+    let risk = base_risk - rehab_mitigation - behavior_mitigation + aggression_enhancement
+        - custody_stabilization;
     risk.clamp(0.0, 1.0)
 }
 
@@ -180,7 +179,10 @@ impl ParoleBoard {
             } else {
                 "further observation period recommended".into()
             };
-            ParoleDecision::Defer { reason, review_days }
+            ParoleDecision::Defer {
+                reason,
+                review_days,
+            }
         } else {
             let reason = if risk > 0.7 {
                 "risk assessment too high for release".into()

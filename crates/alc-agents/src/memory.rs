@@ -167,7 +167,12 @@ pub struct MemoryRecord {
 }
 
 impl MemoryRecord {
-    pub fn new(layer: MemoryLayer, kind: MemoryKind, summary: impl Into<String>, about: u64) -> Self {
+    pub fn new(
+        layer: MemoryLayer,
+        kind: MemoryKind,
+        summary: impl Into<String>,
+        about: u64,
+    ) -> Self {
         Self {
             id: 0,
             layer,
@@ -376,7 +381,11 @@ pub struct MemoryQuery {
 
 impl MemoryQuery {
     pub fn new(about: u64) -> Self {
-        Self { about: Some(about), top_k: 8, ..Default::default() }
+        Self {
+            about: Some(about),
+            top_k: 8,
+            ..Default::default()
+        }
     }
 
     pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
@@ -470,11 +479,8 @@ impl LayeredMemory {
 
     /// Relevant long-term then short-term records about an entity.
     pub fn recall_relevant(&self, about: u64) -> Vec<&MemoryRecord> {
-        let mut out: Vec<&MemoryRecord> = self
-            .long_term
-            .iter()
-            .filter(|r| r.about == about)
-            .collect();
+        let mut out: Vec<&MemoryRecord> =
+            self.long_term.iter().filter(|r| r.about == about).collect();
         out.extend(self.short_term.iter().filter(|r| r.about == about));
         out
     }
@@ -489,7 +495,11 @@ impl LayeredMemory {
             .chain(self.long_term.iter())
             .chain(self.institutional.iter())
             .filter(|r| query.about.map_or(true, |about| r.about == about))
-            .filter(|r| query.since_secs.map_or(true, |since| r.created_at_secs >= since))
+            .filter(|r| {
+                query
+                    .since_secs
+                    .map_or(true, |since| r.created_at_secs >= since)
+            })
             .filter(|r| r.importance >= query.min_importance)
             .filter(|r| {
                 query.tags.is_empty()
@@ -498,7 +508,10 @@ impl LayeredMemory {
                         .iter()
                         .any(|t| r.tags.iter().any(|rt| rt.eq_ignore_ascii_case(t)))
             })
-            .map(|r| RankedMemory { record: r, score: r.retrieval_score(query, query.now_secs, half_life) })
+            .map(|r| RankedMemory {
+                record: r,
+                score: r.retrieval_score(query, query.now_secs, half_life),
+            })
             .collect();
         ranked.sort_by(|a, b| {
             b.score
@@ -553,13 +566,27 @@ impl LayeredMemory {
 
         // 3. Decay and forget.
         self.decay(now_secs);
-        self.long_term.retain(|r| r.effective_importance(now_secs, cfg.decay_half_life_secs) >= cfg.forget_threshold);
-        self.short_term.retain(|r| r.effective_importance(now_secs, cfg.decay_half_life_secs) >= cfg.forget_threshold);
+        self.long_term.retain(|r| {
+            r.effective_importance(now_secs, cfg.decay_half_life_secs) >= cfg.forget_threshold
+        });
+        self.short_term.retain(|r| {
+            r.effective_importance(now_secs, cfg.decay_half_life_secs) >= cfg.forget_threshold
+        });
         self.sensory.clear();
 
         // 4. Enforce capacity caps by evicting the lowest-value records.
-        enforce_cap(&mut self.long_term, cfg.long_term_max_records, now_secs, cfg.decay_half_life_secs);
-        enforce_cap(&mut self.short_term, cfg.short_term_slots, now_secs, cfg.decay_half_life_secs);
+        enforce_cap(
+            &mut self.long_term,
+            cfg.long_term_max_records,
+            now_secs,
+            cfg.decay_half_life_secs,
+        );
+        enforce_cap(
+            &mut self.short_term,
+            cfg.short_term_slots,
+            now_secs,
+            cfg.decay_half_life_secs,
+        );
         // Institutional history Used to grow forever; every save got larger.
         enforce_cap(
             &mut self.institutional,
@@ -581,10 +608,9 @@ impl LayeredMemory {
         {
             let age = record.age_secs(now_secs).max(1) as f32;
             let rehearsal = (1.0 + record.rehearsal_count as f32 * 0.05).min(2.0);
-            record.importance = (record.importance
-                * 0.5f32.powf(age / half_life.max(1) as f32)
-                * rehearsal)
-                .clamp(0.0, 1.0);
+            record.importance =
+                (record.importance * 0.5f32.powf(age / half_life.max(1) as f32) * rehearsal)
+                    .clamp(0.0, 1.0);
         }
     }
 
@@ -630,9 +656,14 @@ fn merge_records(records: &mut Vec<MemoryRecord>) {
                 let source = records[read].clone();
                 let target = &mut records[idx];
                 target.importance = target.importance.max(source.importance);
-                target.emotional_intensity = target.emotional_intensity.max(source.emotional_intensity);
-                target.rehearsal_count = target.rehearsal_count.saturating_add(1).max(source.rehearsal_count);
-                target.last_accessed_secs = target.last_accessed_secs.max(source.last_accessed_secs);
+                target.emotional_intensity =
+                    target.emotional_intensity.max(source.emotional_intensity);
+                target.rehearsal_count = target
+                    .rehearsal_count
+                    .saturating_add(1)
+                    .max(source.rehearsal_count);
+                target.last_accessed_secs =
+                    target.last_accessed_secs.max(source.last_accessed_secs);
                 merged = true;
                 break;
             }
@@ -701,9 +732,9 @@ impl MemoryStore for LayeredMemory {
 /// scoring, decay, consolidation and ranked recall are additive.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Memory {
-    pub sensory: Vec<EpistemicRecord>,     // last tick
-    pub short_term: Vec<EpistemicRecord>, // recent interactions
-    pub long_term: Vec<EpistemicRecord>,  // consolidated important events
+    pub sensory: Vec<EpistemicRecord>,       // last tick
+    pub short_term: Vec<EpistemicRecord>,    // recent interactions
+    pub long_term: Vec<EpistemicRecord>,     // consolidated important events
     pub institutional: Vec<EpistemicRecord>, // shared, access-controlled history
 }
 
@@ -756,7 +787,11 @@ impl Memory {
             .chain(self.sensory.iter())
             .chain(self.institutional.iter())
             .filter(|r| query.about.map_or(true, |about| r.about == about))
-            .filter(|r| query.since_secs.map_or(true, |since| r.created_at_secs >= since))
+            .filter(|r| {
+                query
+                    .since_secs
+                    .map_or(true, |since| r.created_at_secs >= since)
+            })
             .filter(|r| r.importance() >= query.min_importance)
             .map(|r| {
                 let recency = if query.now_secs <= r.created_at_secs {
@@ -809,7 +844,9 @@ impl Memory {
         let mut promoted = Vec::new();
         let mut retained = Vec::new();
         for rec in self.short_term.drain(..) {
-            if rec.importance() >= cfg.long_term_threshold || rec.kind == EpistemicKind::ConfirmedFact {
+            if rec.importance() >= cfg.long_term_threshold
+                || rec.kind == EpistemicKind::ConfirmedFact
+            {
                 promoted.push(rec);
             } else {
                 retained.push(rec);
@@ -831,7 +868,11 @@ impl Memory {
         enforce_epistemic_cap(&mut self.long_term, cfg.long_term_max_records, now_secs);
         enforce_epistemic_cap(&mut self.short_term, cfg.short_term_slots, now_secs);
         enforce_epistemic_cap(&mut self.sensory, cfg.sensory_slots, now_secs);
-        enforce_epistemic_cap(&mut self.institutional, cfg.institutional_max_records, now_secs);
+        enforce_epistemic_cap(
+            &mut self.institutional,
+            cfg.institutional_max_records,
+            now_secs,
+        );
     }
 
     /// Remove records matching the predicate from every layer.
@@ -918,8 +959,16 @@ mod tests {
     #[test]
     fn remember_routes_confirmed_facts_to_long_term() {
         let mut memory = Memory::default();
-        memory.remember(EpistemicRecord::new(EpistemicKind::DirectKnowledge, 1, "saw a fight"));
-        memory.remember(EpistemicRecord::new(EpistemicKind::ConfirmedFact, 1, "lockdown announced"));
+        memory.remember(EpistemicRecord::new(
+            EpistemicKind::DirectKnowledge,
+            1,
+            "saw a fight",
+        ));
+        memory.remember(EpistemicRecord::new(
+            EpistemicKind::ConfirmedFact,
+            1,
+            "lockdown announced",
+        ));
         assert_eq!(memory.short_term.len(), 1);
         assert_eq!(memory.long_term.len(), 1);
         assert_eq!(memory.recall_relevant(1).len(), 2);
@@ -943,10 +992,19 @@ mod tests {
 
     #[test]
     fn consolidation_promotes_and_bounds() {
-        let cfg = MemoryConfig { short_term_slots: 2, long_term_max_records: 3, ..Default::default() };
+        let cfg = MemoryConfig {
+            short_term_slots: 2,
+            long_term_max_records: 3,
+            ..Default::default()
+        };
         let mut memory = LayeredMemory::with_config(cfg);
         for i in 0..10 {
-            let mut record = MemoryRecord::new(MemoryLayer::ShortTerm, MemoryKind::Episodic, format!("event {i}"), i);
+            let mut record = MemoryRecord::new(
+                MemoryLayer::ShortTerm,
+                MemoryKind::Episodic,
+                format!("event {i}"),
+                i,
+            );
             record.importance = if i < 5 { 0.9 } else { 0.1 };
             record.created_at_secs = 1_000;
             memory.store(record);
@@ -969,7 +1027,12 @@ mod tests {
         fresh.created_at_secs = 10_000;
         memory.store(fresh);
 
-        let query = MemoryQuery { about: Some(5), top_k: 2, now_secs: 10_000, ..Default::default() };
+        let query = MemoryQuery {
+            about: Some(5),
+            top_k: 2,
+            now_secs: 10_000,
+            ..Default::default()
+        };
         let ranked = memory.retrieve(&query);
         assert_eq!(ranked.len(), 2);
         assert!(ranked[0].score >= ranked[1].score);
@@ -977,7 +1040,10 @@ mod tests {
 
     #[test]
     fn institutional_memory_is_bounded_across_many_consolidations() {
-        let cfg = MemoryConfig { institutional_max_records: 5, ..Default::default() };
+        let cfg = MemoryConfig {
+            institutional_max_records: 5,
+            ..Default::default()
+        };
         let mut layered = LayeredMemory::with_config(cfg);
         for day in 0..20u64 {
             for i in 0..10 {
@@ -993,8 +1059,11 @@ mod tests {
             }
             layered.consolidate(day * 86_400);
         }
-        assert!(layered.institutional.len() <= cfg.institutional_max_records,
-            "institutional layer grew to {}", layered.institutional.len());
+        assert!(
+            layered.institutional.len() <= cfg.institutional_max_records,
+            "institutional layer grew to {}",
+            layered.institutional.len()
+        );
         assert!(layered.is_bounded(cfg.institutional_max_records + cfg.short_term_slots));
 
         let mut plain = Memory::new();
@@ -1009,8 +1078,11 @@ mod tests {
             plain.record_institutional(r);
         }
         plain.consolidate(86_400);
-        assert!(plain.institutional.len() <= MemoryConfig::default().institutional_max_records,
-            "institutional memory grew to {}", plain.institutional.len());
+        assert!(
+            plain.institutional.len() <= MemoryConfig::default().institutional_max_records,
+            "institutional memory grew to {}",
+            plain.institutional.len()
+        );
         assert!(plain.is_bounded(600));
     }
 
@@ -1035,11 +1107,20 @@ mod tests {
             layered.store(r);
         }
         layered.consolidate(1_000);
-        let kept: Vec<&str> = layered.long_term.iter().map(|r| r.summary.as_str()).collect();
+        let kept: Vec<&str> = layered
+            .long_term
+            .iter()
+            .map(|r| r.summary.as_str())
+            .collect();
         assert_eq!(kept.len(), 2);
-        assert!(kept.contains(&"event-1") && kept.contains(&"event-3"),
-            "eviction discarded the strongest memories: {kept:?}");
-        assert!(!kept.contains(&"event-0"), "weakest memory survived: {kept:?}");
+        assert!(
+            kept.contains(&"event-1") && kept.contains(&"event-3"),
+            "eviction discarded the strongest memories: {kept:?}"
+        );
+        assert!(
+            !kept.contains(&"event-0"),
+            "weakest memory survived: {kept:?}"
+        );
 
         let mut plain = Memory::new();
         for i in 0..10u64 {
@@ -1054,9 +1135,17 @@ mod tests {
             plain.remember(r);
         }
         plain.consolidate(1_000);
-        assert_eq!(plain.short_term.len(), MemoryConfig::default().short_term_slots);
-        assert!(!plain.short_term.iter().any(|r| r.content == "observation-0"),
-            "weakest epistemic record survived eviction");
+        assert_eq!(
+            plain.short_term.len(),
+            MemoryConfig::default().short_term_slots
+        );
+        assert!(
+            !plain
+                .short_term
+                .iter()
+                .any(|r| r.content == "observation-0"),
+            "weakest epistemic record survived eviction"
+        );
     }
 
     #[test]

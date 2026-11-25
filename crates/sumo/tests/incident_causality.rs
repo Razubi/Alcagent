@@ -5,9 +5,9 @@
 
 use alc_core::{PrisonerId, SimTime};
 use alc_events::{EventKind, WorldEvent};
-use sumo::incidents::{incident_from_world_event, CausalLink, Incident};
-use sumo::invariants::invariant_every_incident_has_cause_and_consequence;
 use sumo::Sim;
+use sumo::incidents::{CausalLink, Incident, incident_from_world_event};
+use sumo::invariants::invariant_every_incident_has_cause_and_consequence;
 
 fn known() -> Vec<PrisonerId> {
     vec![PrisonerId(1), PrisonerId(2), PrisonerId(7)]
@@ -45,9 +45,7 @@ fn event_cause_string_becomes_a_real_world_event_link() {
 
     // Provenance link to the event itself is always present.
     assert!(inc.causal_chain.iter().any(|l| {
-        !l.is_incident
-            && l.source_id == e.id
-            && l.description.contains("originating event")
+        !l.is_incident && l.source_id == e.id && l.description.contains("originating event")
     }));
 
     // Witnesses/involved are filtered to known prisoners only.
@@ -86,10 +84,11 @@ fn no_incident_is_self_referential() {
     assert!(!(inc.cause == Some(inc.id) && inc.consequence == Some(inc.id)));
 
     // A generated id must never be reused as a self-link in the chain either.
-    assert!(inc
-        .causal_chain
-        .iter()
-        .all(|l| !(l.is_incident && l.source_id == inc.id)));
+    assert!(
+        inc.causal_chain
+            .iter()
+            .all(|l| !(l.is_incident && l.source_id == inc.id))
+    );
 }
 
 #[test]
@@ -105,13 +104,27 @@ fn invariant_accepts_legitimate_no_cause_incidents() {
 #[test]
 fn invariant_rejects_dangling_cause_and_self_reference() {
     let mut sim = Sim::new(2);
-    let mut bad = incident_from_world_event(&event(EventKind::Fight, vec![]), 1, &[], &known(), 0.9, "yard".into());
+    let mut bad = incident_from_world_event(
+        &event(EventKind::Fight, vec![]),
+        1,
+        &[],
+        &known(),
+        0.9,
+        "yard".into(),
+    );
     bad.cause = Some(9999); // dangling
     sim.record_sidecar_incident(bad);
     assert!(!invariant_every_incident_has_cause_and_consequence(&sim));
 
     let mut sim2 = Sim::new(3);
-    let mut self_ref = incident_from_world_event(&event(EventKind::Fight, vec![]), 7, &[], &known(), 0.9, "yard".into());
+    let mut self_ref = incident_from_world_event(
+        &event(EventKind::Fight, vec![]),
+        7,
+        &[],
+        &known(),
+        0.9,
+        "yard".into(),
+    );
     self_ref.cause = Some(7);
     self_ref.consequence = Some(7);
     sim2.record_sidecar_incident(self_ref);
@@ -129,7 +142,8 @@ fn invariant_rejects_dangling_incident_chain_link() {
         0.9,
         "yard".into(),
     );
-    bad.causal_chain.push(CausalLink::incident(9_999, "missing prior"));
+    bad.causal_chain
+        .push(CausalLink::incident(9_999, "missing prior"));
     sim.record_sidecar_incident(bad);
     assert!(
         !invariant_every_incident_has_cause_and_consequence(&sim),

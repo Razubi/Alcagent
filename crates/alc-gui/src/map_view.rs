@@ -60,7 +60,9 @@ impl MapViewState {
         }
         let w = (max_x - min_x).max(200.0);
         let h = (max_y - min_y).max(160.0);
-        self.zoom = ((size.x - 40.0) / w).min((size.y - 40.0) / h).clamp(0.25, 4.0);
+        self.zoom = ((size.x - 40.0) / w)
+            .min((size.y - 40.0) / h)
+            .clamp(0.25, 4.0);
         let cx = (min_x + max_x) * 0.5;
         let cy = (min_y + max_y) * 0.5;
         self.pan = Vec2::new(size.x * 0.5 - cx * self.zoom, size.y * 0.5 - cy * self.zoom);
@@ -74,7 +76,10 @@ pub fn show(ui: &mut egui::Ui, ctx: &mut panels::RenderCtx<'_>) {
     let observer = &mut *ctx.state;
 
     if !observer.map.initialized {
-        let size = Vec2::new(ui.available_width().max(400.0) - 300.0, ui.available_height().max(240.0));
+        let size = Vec2::new(
+            ui.available_width().max(400.0) - 300.0,
+            ui.available_height().max(240.0),
+        );
         observer.map.fit(&snap.map, size);
     }
 
@@ -192,8 +197,12 @@ fn draw_canvas(painter: &egui::Painter, rect: Rect, snap: &data::Snapshot, state
     // Navigation edges and movement hints (drawn beneath the nodes).
     if state.show_edges {
         for edge in &snap.map.edges {
-            let Some(&from) = positions.get(&edge.from) else { continue };
-            let Some(&to) = positions.get(&edge.to) else { continue };
+            let Some(&from) = positions.get(&edge.from) else {
+                continue;
+            };
+            let Some(&to) = positions.get(&edge.to) else {
+                continue;
+            };
             let colour = if edge.restricted {
                 Color32::from_rgba_unmultiplied(255, 140, 90, 110)
             } else if edge.sightline {
@@ -201,12 +210,19 @@ fn draw_canvas(painter: &egui::Painter, rect: Rect, snap: &data::Snapshot, state
             } else {
                 Color32::from_rgba_unmultiplied(150, 150, 170, 90)
             };
-            painter.line_segment([local(from, state, rect), local(to, state, rect)], Stroke::new(1.5, colour));
+            painter.line_segment(
+                [local(from, state, rect), local(to, state, rect)],
+                Stroke::new(1.5, colour),
+            );
         }
         for pawn in snap.map.prisoners.iter().chain(snap.map.guards.iter()) {
             if let (Some(_progress), Some(target)) = (pawn.edge_progress, pawn.target_node) {
-                let Some(&from) = positions.get(&pawn.node_id) else { continue };
-                let Some(&to) = positions.get(&target) else { continue };
+                let Some(&from) = positions.get(&pawn.node_id) else {
+                    continue;
+                };
+                let Some(&to) = positions.get(&target) else {
+                    continue;
+                };
                 painter.line_segment(
                     [local(from, state, rect), local(to, state, rect)],
                     Stroke::new(3.0, Color32::from_rgba_unmultiplied(255, 255, 255, 45)),
@@ -232,7 +248,8 @@ fn draw_canvas(painter: &egui::Painter, rect: Rect, snap: &data::Snapshot, state
         let center = local((f.x, f.y), state, rect);
         let box_size = facility_size(state.zoom);
         let r = Rect::from_center_size(center, box_size);
-        let selected = state.selected_facility == Some(f.id) || state.hovered_facility == Some(f.id);
+        let selected =
+            state.selected_facility == Some(f.id) || state.hovered_facility == Some(f.id);
         let fill = if f.locked {
             Color32::from_rgba_unmultiplied(90, 40, 45, 235)
         } else {
@@ -246,7 +263,12 @@ fn draw_canvas(painter: &egui::Painter, rect: Rect, snap: &data::Snapshot, state
         } else {
             theme::FACILITY
         };
-        painter.rect_stroke(r, 5.0, Stroke::new(if selected { 2.5 } else { 1.5 }, stroke_colour), StrokeKind::Middle);
+        painter.rect_stroke(
+            r,
+            5.0,
+            Stroke::new(if selected { 2.5 } else { 1.5 }, stroke_colour),
+            StrokeKind::Middle,
+        );
 
         if state.show_labels {
             let s = state.zoom.clamp(0.7, 1.4);
@@ -261,7 +283,12 @@ fn draw_canvas(painter: &egui::Painter, rect: Rect, snap: &data::Snapshot, state
             painter.text(
                 r.min + Vec2::new(6.0 * s, 19.0 * s),
                 Align2::LEFT_TOP,
-                format!("W{} · {} prisoners · {} guards", f.wing, f.prisoners.len(), f.guards.len()),
+                format!(
+                    "W{} · {} prisoners · {} guards",
+                    f.wing,
+                    f.prisoners.len(),
+                    f.guards.len()
+                ),
                 FontId::proportional(9.0 * s),
                 theme::MUTED,
             );
@@ -301,7 +328,11 @@ fn draw_canvas(painter: &egui::Painter, rect: Rect, snap: &data::Snapshot, state
             continue;
         }
         let radius = 4.5 * state.zoom.clamp(0.7, 2.0);
-        let colour = if pawn.is_prisoner { theme::PRISONER } else { theme::GUARD };
+        let colour = if pawn.is_prisoner {
+            theme::PRISONER
+        } else {
+            theme::GUARD
+        };
         let selected = state.selected_pawn == Some((pawn.is_prisoner, pawn.id));
         let hovered = state.hovered_pawn == Some((pawn.is_prisoner, pawn.id));
         if selected || hovered {
@@ -314,7 +345,11 @@ fn draw_canvas(painter: &egui::Painter, rect: Rect, snap: &data::Snapshot, state
                 Align2::LEFT_CENTER,
                 &pawn.name,
                 FontId::proportional(9.0),
-                if pawn.is_prisoner { theme::PRISONER } else { theme::GUARD },
+                if pawn.is_prisoner {
+                    theme::PRISONER
+                } else {
+                    theme::GUARD
+                },
             );
         }
     }
@@ -329,7 +364,9 @@ fn draw_inspector(
     let selected_incident = &mut observer.selected_incident;
     let state = &mut observer.map;
     ui.add(egui::Label::new(
-        egui::RichText::new("Map Inspector").strong().color(theme::ACCENT),
+        egui::RichText::new("Map Inspector")
+            .strong()
+            .color(theme::ACCENT),
     ));
     ui.horizontal(|ui| {
         if ui.button("Fit").clicked() {
@@ -352,17 +389,27 @@ fn draw_inspector(
         .hovered_pawn
         .or(state.selected_pawn)
         .and_then(|(is_prisoner, id)| {
-            let list = if is_prisoner { &snap.map.prisoners } else { &snap.map.guards };
+            let list = if is_prisoner {
+                &snap.map.prisoners
+            } else {
+                &snap.map.guards
+            };
             list.iter().find(|p| p.id == id)
         });
     if let Some(pawn) = pawn {
         ui.add(egui::Label::new(
-            egui::RichText::new(&pawn.name).strong().color(theme::ACCENT),
+            egui::RichText::new(&pawn.name)
+                .strong()
+                .color(theme::ACCENT),
         ));
         theme::kv(
             ui,
             "Role",
-            if pawn.is_prisoner { "Prisoner" } else { "Guard" },
+            if pawn.is_prisoner {
+                "Prisoner"
+            } else {
+                "Guard"
+            },
         );
         let facility = snap.facilities.iter().find(|f| f.id == pawn.node_id);
         theme::kv(
@@ -402,7 +449,9 @@ fn draw_inspector(
     let facility_id = state.hovered_facility.or(state.selected_facility);
     if let Some(f) = facility_id.and_then(|id| snap.facilities.iter().find(|f| f.id == id)) {
         ui.add(egui::Label::new(
-            egui::RichText::new(f.label()).strong().color(theme::FACILITY),
+            egui::RichText::new(f.label())
+                .strong()
+                .color(theme::FACILITY),
         ));
         theme::kv(ui, "Capacity", f.capacity.to_string());
         theme::kv(ui, "Utilisation", data::pct(f.utilisation()));
@@ -417,7 +466,9 @@ fn draw_inspector(
                     .find(|p| p.id.raw() == *id)
                     .map_or_else(|| format!("prisoner #{id}"), |p| p.name.clone());
                 ui.add(egui::Label::new(
-                    egui::RichText::new(format!("● {name}")).color(theme::PRISONER).small(),
+                    egui::RichText::new(format!("● {name}"))
+                        .color(theme::PRISONER)
+                        .small(),
                 ));
             }
             for id in &f.guards {
@@ -427,11 +478,15 @@ fn draw_inspector(
                     .find(|g| g.id == *id)
                     .map_or_else(|| format!("guard #{id}"), |g| g.name.clone());
                 ui.add(egui::Label::new(
-                    egui::RichText::new(format!("◆ {name}")).color(theme::GUARD).small(),
+                    egui::RichText::new(format!("◆ {name}"))
+                        .color(theme::GUARD)
+                        .small(),
                 ));
             }
             if f.prisoners.is_empty() && f.guards.is_empty() {
-                ui.add(egui::Label::new(egui::RichText::new("No pawns at this node").color(theme::MUTED)));
+                ui.add(egui::Label::new(
+                    egui::RichText::new("No pawns at this node").color(theme::MUTED),
+                ));
             }
         });
     } else {
@@ -443,15 +498,23 @@ fn draw_inspector(
     ui.separator();
     panels::section(ui, "Legend", |ui| {
         ui.horizontal(|ui| {
-            ui.add(egui::Label::new(egui::RichText::new("●").color(theme::PRISONER)));
+            ui.add(egui::Label::new(
+                egui::RichText::new("●").color(theme::PRISONER),
+            ));
             ui.label("Prisoner");
-            ui.add(egui::Label::new(egui::RichText::new("◆").color(theme::GUARD)));
+            ui.add(egui::Label::new(
+                egui::RichText::new("◆").color(theme::GUARD),
+            ));
             ui.label("Guard");
         });
         ui.horizontal(|ui| {
-            ui.add(egui::Label::new(egui::RichText::new("■").color(theme::FACILITY)));
+            ui.add(egui::Label::new(
+                egui::RichText::new("■").color(theme::FACILITY),
+            ));
             ui.label("Facility");
-            ui.add(egui::Label::new(egui::RichText::new("■").color(theme::LOCKED)));
+            ui.add(egui::Label::new(
+                egui::RichText::new("■").color(theme::LOCKED),
+            ));
             ui.label("Locked");
         });
     });

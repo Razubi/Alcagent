@@ -80,7 +80,11 @@ pub fn trait_bias(disposition: &Disposition, decision: &Decision) -> f32 {
     // Non-finite trait values are treated as unknown (neutral), so a bad save
     // or model output can never inject NaN into decision utilities.
     let c = |v: f32| {
-        if v.is_finite() { v.clamp(0.0, 1.0) - 0.5 } else { 0.0 }
+        if v.is_finite() {
+            v.clamp(0.0, 1.0) - 0.5
+        } else {
+            0.0
+        }
     };
     let discipline = c(disposition.discipline);
     let impulsive = c(disposition.impulsiveness);
@@ -109,7 +113,9 @@ pub fn trait_bias(disposition: &Disposition, decision: &Decision) -> f32 {
         }
         DecisionAction::LeadGang { .. } => 0.20 * leadership + 0.15 * ambition,
         // Movement/medical attention are need-driven, not personality-driven.
-        DecisionAction::MoveTo { .. } | DecisionAction::RequestMedical | DecisionAction::None => 0.0,
+        DecisionAction::MoveTo { .. } | DecisionAction::RequestMedical | DecisionAction::None => {
+            0.0
+        }
     };
     bias.clamp(-0.5, 0.5)
 }
@@ -152,7 +158,10 @@ mod tests {
         let mut hopeful = d;
         hopeful.hope = 0.9;
         let calm = trait_bias(&hopeful, &Decision::new(DecisionAction::EscapeAttempt));
-        assert!(desperate > calm, "desperation should push escape: {desperate} vs {calm}");
+        assert!(
+            desperate > calm,
+            "desperation should push escape: {desperate} vs {calm}"
+        );
     }
 
     #[test]
@@ -163,9 +172,16 @@ mod tests {
             ..Default::default()
         };
         // NaN clamps to 0.0 and +inf clamps to 1.0; no panic, no NaN leak.
-        for action in [Decision::new(DecisionAction::Comply), Decision::new(DecisionAction::Refuse), Decision::new(DecisionAction::Fight { target: 1 })] {
+        for action in [
+            Decision::new(DecisionAction::Comply),
+            Decision::new(DecisionAction::Refuse),
+            Decision::new(DecisionAction::Fight { target: 1 }),
+        ] {
             let b = trait_bias(&extreme, &action);
-            assert!(b.is_finite() && (-0.5..=0.5).contains(&b), "{action:?}: {b}");
+            assert!(
+                b.is_finite() && (-0.5..=0.5).contains(&b),
+                "{action:?}: {b}"
+            );
         }
     }
 }

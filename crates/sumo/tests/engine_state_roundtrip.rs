@@ -6,7 +6,9 @@
 use alc_agents::{Decision, DecisionAction};
 use alc_core::{PrisonerId, SimTime};
 use alc_events::{EventKind, WorldEvent};
-use sumo::incidents::{CausalLink, Incident, IncidentDisposition, Responder, ResponseAction, ResponseActionKind};
+use sumo::incidents::{
+    CausalLink, Incident, IncidentDisposition, Responder, ResponseAction, ResponseActionKind,
+};
 use sumo::parole::ParoleStatus;
 use sumo::state_digest::compute_full_state_digest;
 use sumo::{PolicyMode, Sim};
@@ -62,29 +64,47 @@ fn engine_state_roundtrip_preserves_all_subfields() {
     let mut sim = Sim::new(0xC0FF_EE01);
 
     // Grab a real prisoner id from the simulation.
-    let pid = sim.world().prisoners.first().expect("bootstrap prisoners").id;
+    let pid = sim
+        .world()
+        .prisoners
+        .first()
+        .expect("bootstrap prisoners")
+        .id;
 
     // Populate every engine-state subfield through the public API.
     sim.parole_mut().status.insert(pid, ParoleStatus::Scheduled);
     sim.parole_mut().adjustments.insert(pid, 0.75);
-    sim.parole_mut().hearing_at.insert(pid, SimTime::from_secs(999));
+    sim.parole_mut()
+        .hearing_at
+        .insert(pid, SimTime::from_secs(999));
     sim.parole_mut().last_decision_at = Some(SimTime::from_secs(888));
 
-    sim.population_history_mut().push((SimTime::from_secs(100), 24));
-    sim.population_history_mut().push((SimTime::from_secs(200), 25));
+    sim.population_history_mut()
+        .push((SimTime::from_secs(100), 24));
+    sim.population_history_mut()
+        .push((SimTime::from_secs(200), 25));
 
-    sim.record_incident(WorldEvent::new(5, SimTime::from_secs(700), EventKind::Argument, "heated argument"));
+    sim.record_incident(WorldEvent::new(
+        5,
+        SimTime::from_secs(700),
+        EventKind::Argument,
+        "heated argument",
+    ));
     sim.record_sidecar_incident(sidecar_incident(pid));
 
-    sim.decision_log_mut().push(Decision::new(DecisionAction::Comply));
-    sim.decision_log_mut().push(Decision::new(DecisionAction::Socialize { with: pid.raw() }));
+    sim.decision_log_mut()
+        .push(Decision::new(DecisionAction::Comply));
+    sim.decision_log_mut()
+        .push(Decision::new(DecisionAction::Socialize { with: pid.raw() }));
 
     sim.set_post_release(PrisonerId(42), true);
     sim.set_post_release(PrisonerId(43), false);
 
     // Contraband resolution timestamps were engine-only before the v4 fix.
     sim.engine_state.resolved_contraband_cases.insert(77);
-    sim.engine_state.resolved_contraband_at.insert(77, SimTime::from_secs(3600));
+    sim.engine_state
+        .resolved_contraband_at
+        .insert(77, SimTime::from_secs(3600));
 
     sim.policy_state_mut().lockdown = true;
     sim.policy_state_mut().security_level = 3;
@@ -95,13 +115,25 @@ fn engine_state_roundtrip_preserves_all_subfields() {
     let loaded = Sim::load(&dir).expect("load");
 
     // Parole ledger.
-    assert_eq!(loaded.parole().status.get(&pid), Some(&ParoleStatus::Scheduled));
+    assert_eq!(
+        loaded.parole().status.get(&pid),
+        Some(&ParoleStatus::Scheduled)
+    );
     assert_eq!(loaded.parole().adjustments.get(&pid), Some(&0.75));
-    assert_eq!(loaded.parole().hearing_at.get(&pid), Some(&SimTime::from_secs(999)));
-    assert_eq!(loaded.parole().last_decision_at, Some(SimTime::from_secs(888)));
+    assert_eq!(
+        loaded.parole().hearing_at.get(&pid),
+        Some(&SimTime::from_secs(999))
+    );
+    assert_eq!(
+        loaded.parole().last_decision_at,
+        Some(SimTime::from_secs(888))
+    );
 
     // Population history.
-    assert_eq!(loaded.population_history().as_slice(), sim.population_history().as_slice());
+    assert_eq!(
+        loaded.population_history().as_slice(),
+        sim.population_history().as_slice()
+    );
 
     // World events.
     assert_eq!(loaded.incidents().len(), 1);
@@ -112,7 +144,10 @@ fn engine_state_roundtrip_preserves_all_subfields() {
     let inc = &loaded.incident_sidecar()[0];
     let expected = sidecar_incident(pid);
     assert_eq!(inc.id, 7, "incident id must round-trip");
-    assert_eq!(inc.severity, 0.5, "severity 0.5 must round-trip without u8 quantization");
+    assert_eq!(
+        inc.severity, 0.5,
+        "severity 0.5 must round-trip without u8 quantization"
+    );
     assert_eq!(inc.location, "Yard A", "location must round-trip");
     assert!(inc.resolved, "resolved flag must round-trip");
     assert_eq!(inc.cause, Some(3), "cause must round-trip");
@@ -121,14 +156,29 @@ fn engine_state_roundtrip_preserves_all_subfields() {
     assert_eq!(inc.timestamp, expected.timestamp);
     assert_eq!(inc.involved_prisoners, expected.involved_prisoners);
     // Structured fields that used to be engine-only (P1 persistence fix).
-    assert_eq!(inc.causal_chain, expected.causal_chain, "causal chain must round-trip");
-    assert_eq!(inc.witnesses, expected.witnesses, "witnesses must round-trip");
-    assert_eq!(inc.disposition, expected.disposition, "disposition must round-trip");
-    assert_eq!(inc.response_actions, expected.response_actions, "response actions must round-trip");
+    assert_eq!(
+        inc.causal_chain, expected.causal_chain,
+        "causal chain must round-trip"
+    );
+    assert_eq!(
+        inc.witnesses, expected.witnesses,
+        "witnesses must round-trip"
+    );
+    assert_eq!(
+        inc.disposition, expected.disposition,
+        "disposition must round-trip"
+    );
+    assert_eq!(
+        inc.response_actions, expected.response_actions,
+        "response actions must round-trip"
+    );
 
     // Decision log.
     assert_eq!(loaded.decision_log().len(), 2);
-    assert!(matches!(loaded.decision_log()[0].action, DecisionAction::Comply));
+    assert!(matches!(
+        loaded.decision_log()[0].action,
+        DecisionAction::Comply
+    ));
 
     // Post-release.
     assert_eq!(loaded.post_release().get(&PrisonerId(42)), Some(&true));
@@ -136,7 +186,10 @@ fn engine_state_roundtrip_preserves_all_subfields() {
 
     // Contraband resolutions and their timestamps (v4 persistence fix).
     assert!(loaded.engine_state.resolved_contraband_cases.contains(&77));
-    assert_eq!(loaded.engine_state.resolved_contraband_at.get(&77), Some(&SimTime::from_secs(3600)));
+    assert_eq!(
+        loaded.engine_state.resolved_contraband_at.get(&77),
+        Some(&SimTime::from_secs(3600))
+    );
 
     // Policy + mode.
     assert!(loaded.policy_state().lockdown);
@@ -173,7 +226,11 @@ fn state_digest_is_stable_across_identical_runs_and_changes_with_state() {
     // Mutating policy mode in the other must also change the digest.
     let before = compute_full_state_digest(&b);
     b.set_policy_mode(PolicyMode::Council);
-    assert_ne!(compute_full_state_digest(&b), before, "policy mode must alter the digest");
+    assert_ne!(
+        compute_full_state_digest(&b),
+        before,
+        "policy mode must alter the digest"
+    );
 }
 
 #[test]

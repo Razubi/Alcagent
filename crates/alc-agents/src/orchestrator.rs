@@ -16,8 +16,8 @@ use std::collections::HashMap;
 use tracing::debug;
 
 use crate::decision::{
-    ActionCandidate, Decision, DecisionAction, Legality, RawDecision, Rejection, Role, ValidationContext,
-    ValidationResult, run_validation_pipeline,
+    ActionCandidate, Decision, DecisionAction, Legality, RawDecision, Rejection, Role,
+    ValidationContext, ValidationResult, run_validation_pipeline,
 };
 use crate::disposition::{Disposition, trait_bias};
 
@@ -36,7 +36,12 @@ pub struct RateLimiter {
 
 impl RateLimiter {
     pub fn new(capacity: u32, refill_per_sec: f32) -> Self {
-        Self { capacity, tokens: capacity, refill_per_sec, last_refill_secs: 0 }
+        Self {
+            capacity,
+            tokens: capacity,
+            refill_per_sec,
+            last_refill_secs: 0,
+        }
     }
 
     /// Refill the bucket to `capacity` and attempt to withdraw `amount`.
@@ -343,7 +348,12 @@ impl Default for DecisionScheduler {
 
 impl DecisionScheduler {
     pub fn new(config: ScheduleConfig) -> Self {
-        Self { config, agents: HashMap::new(), requests_this_tick: 0, in_flight: 0 }
+        Self {
+            config,
+            agents: HashMap::new(),
+            requests_this_tick: 0,
+            in_flight: 0,
+        }
     }
 
     /// Register an agent and stagger its first deliberation.
@@ -361,7 +371,10 @@ impl DecisionScheduler {
             interval_secs
         };
         let phase = if self.config.jitter > 0.0 {
-            rng.range(f64::from(-self.config.jitter), f64::from(self.config.jitter)) as f32
+            rng.range(
+                f64::from(-self.config.jitter),
+                f64::from(self.config.jitter),
+            ) as f32
         } else {
             0.0
         };
@@ -376,7 +389,9 @@ impl DecisionScheduler {
     }
 
     pub fn is_due(&self, agent: u64, now_secs: u64) -> bool {
-        self.agents.get(&agent).map_or(false, |s| s.is_due(now_secs))
+        self.agents
+            .get(&agent)
+            .map_or(false, |s| s.is_due(now_secs))
     }
 
     pub fn next_deliberation(&self, agent: u64) -> Option<u64> {
@@ -509,7 +524,10 @@ pub struct UtilityChooser {
 
 impl Default for UtilityChooser {
     fn default() -> Self {
-        Self { risk_aversion: 0.5, legality_weight: 0.2 }
+        Self {
+            risk_aversion: 0.5,
+            legality_weight: 0.2,
+        }
     }
 }
 
@@ -598,13 +616,13 @@ pub struct PendingDecision {
 }
 
 impl PendingDecision {
-    pub fn new(
-        agent: u64,
-        requested_at_secs: u64,
-        decision: Decision,
-        context_hash: u64,
-    ) -> Self {
-        Self { agent, requested_at_secs, decision, context_hash }
+    pub fn new(agent: u64, requested_at_secs: u64, decision: Decision, context_hash: u64) -> Self {
+        Self {
+            agent,
+            requested_at_secs,
+            decision,
+            context_hash,
+        }
     }
 
     pub fn age_secs(&self, now_secs: u64) -> u64 {
@@ -626,7 +644,9 @@ pub fn revalidate_pending(
     timeout_secs: u64,
 ) -> ValidationResult {
     if pending.is_stale(now_secs, timeout_secs) {
-        return ValidationResult::Rejected { reason: "stale decision".to_string() };
+        return ValidationResult::Rejected {
+            reason: "stale decision".to_string(),
+        };
     }
     let raw = RawDecision::from_decision(&pending.decision);
     let _ = ctx;
@@ -691,8 +711,10 @@ impl Orchestrator {
 
     pub fn charge(&mut self, tokens: u32) {
         self.consumed_today = self.consumed_today.saturating_add(tokens);
-        self.telemetry.tokens_consumed_today =
-            self.telemetry.tokens_consumed_today.saturating_add(tokens as u64);
+        self.telemetry.tokens_consumed_today = self
+            .telemetry
+            .tokens_consumed_today
+            .saturating_add(tokens as u64);
     }
 
     pub fn reset_day(&mut self) {
@@ -710,7 +732,8 @@ impl Orchestrator {
         now_secs: u64,
         rng: &mut RngStream,
     ) {
-        self.scheduler.register(agent, role, interval_secs, now_secs, rng);
+        self.scheduler
+            .register(agent, role, interval_secs, now_secs, rng);
         let limit = self
             .budget
             .agent_budget(agent)
@@ -773,7 +796,9 @@ impl Orchestrator {
                 true
             }
         });
-        self.telemetry.stale_decisions = self.telemetry.stale_decisions
+        self.telemetry.stale_decisions = self
+            .telemetry
+            .stale_decisions
             .saturating_add(stale.len() as u64);
         stale
     }
@@ -882,7 +907,11 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(select_tier(&policy), DecisionTier::Ai);
-        let routine = TierPolicy { routine: true, utility_variance: 0.01, ..Default::default() };
+        let routine = TierPolicy {
+            routine: true,
+            utility_variance: 0.01,
+            ..Default::default()
+        };
         assert_eq!(select_tier(&routine), DecisionTier::Utility);
     }
 
@@ -904,12 +933,18 @@ mod tests {
     fn discipline_trait_flips_routine_decisions() {
         use crate::disposition::Disposition;
         let disciplined = Disposition {
-            discipline: 0.95, emotional_stability: 0.9, aggression: 0.3,
-            impulsiveness: 0.2, ..Default::default()
+            discipline: 0.95,
+            emotional_stability: 0.9,
+            aggression: 0.3,
+            impulsiveness: 0.2,
+            ..Default::default()
         };
         let loose = Disposition {
-            discipline: 0.05, emotional_stability: 0.2, aggression: 0.9,
-            impulsiveness: 0.9, ..Default::default()
+            discipline: 0.05,
+            emotional_stability: 0.2,
+            aggression: 0.9,
+            impulsiveness: 0.9,
+            ..Default::default()
         };
         let mut hi_compliant = 0;
         let mut lo_defiant = 0;
@@ -928,8 +963,14 @@ mod tests {
             ];
             let hi = fallback_utility_decision_with_disposition(&candidates, &disciplined);
             let lo = fallback_utility_decision_with_disposition(&candidates, &loose);
-            assert!(matches!(hi.action, DecisionAction::Comply), "hour {hour}: disciplined picked {hi:?}");
-            assert!(matches!(lo.action, DecisionAction::Refuse), "hour {hour}: undisciplined picked {lo:?}");
+            assert!(
+                matches!(hi.action, DecisionAction::Comply),
+                "hour {hour}: disciplined picked {hi:?}"
+            );
+            assert!(
+                matches!(lo.action, DecisionAction::Refuse),
+                "hour {hour}: undisciplined picked {lo:?}"
+            );
             hi_compliant += 1;
             lo_defiant += 1;
         }
@@ -962,14 +1003,20 @@ mod tests {
     fn raw_decision_maps_to_catalog() {
         let raw = RawDecision {
             action: "spread_rumor".into(),
-            target: Some(RawTarget { kind: "agent".into(), id: 4 }),
+            target: Some(RawTarget {
+                kind: "agent".into(),
+                id: 4,
+            }),
             parameters: [("content".to_string(), "guards are coming".to_string())].into(),
             ..Default::default()
         };
         let decision = crate::decision::validate_format(&raw).unwrap();
         assert_eq!(
             decision,
-            Decision::new(DecisionAction::SpreadRumor { about: 4, content: "guards are coming".into() })
+            Decision::new(DecisionAction::SpreadRumor {
+                about: 4,
+                content: "guards are coming".into()
+            })
         );
     }
 }

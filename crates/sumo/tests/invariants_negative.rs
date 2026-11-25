@@ -48,10 +48,18 @@ fn set_lockdown_true_then_false_keeps_invariants_clean() {
     let mut sim = Sim::new(7);
     sim.set_lockdown(true);
     let errs = sim.check_invariants();
-    assert!(errs.is_empty(), "set_lockdown(true) left violations: {:?}", errs);
+    assert!(
+        errs.is_empty(),
+        "set_lockdown(true) left violations: {:?}",
+        errs
+    );
     sim.set_lockdown(false);
     let errs = sim.check_invariants();
-    assert!(errs.is_empty(), "set_lockdown(false) left violations: {:?}", errs);
+    assert!(
+        errs.is_empty(),
+        "set_lockdown(false) left violations: {:?}",
+        errs
+    );
 }
 
 #[test]
@@ -63,7 +71,9 @@ fn orphan_fight_incident_is_detected() {
     sim.record_sidecar_incident(fight_incident(100));
     let errs = sim.check_invariants();
     assert!(
-        !errs.iter().any(|e| e.contains("every_incident_has_cause_and_consequence")),
+        !errs
+            .iter()
+            .any(|e| e.contains("every_incident_has_cause_and_consequence")),
         "orphan fight should be accepted by the incident invariant, got: {:?}",
         errs
     );
@@ -76,7 +86,8 @@ fn orphan_fight_incident_is_detected() {
     sim2.record_sidecar_incident(inc);
     let errs = sim2.check_invariants();
     assert!(
-        errs.iter().any(|e| e.contains("every_incident_has_cause_and_consequence")),
+        errs.iter()
+            .any(|e| e.contains("every_incident_has_cause_and_consequence")),
         "fight with dangling cause/consequence should fail the incident invariant, got: {:?}",
         errs
     );
@@ -89,7 +100,8 @@ fn duplicate_incident_id_is_detected() {
     sim.record_sidecar_incident(fight_incident(55));
     let errs = sim.check_invariants();
     assert!(
-        errs.iter().any(|e| e.contains("every_incident_has_cause_and_consequence")),
+        errs.iter()
+            .any(|e| e.contains("every_incident_has_cause_and_consequence")),
         "duplicate incident id should fail the incident invariant, got: {:?}",
         errs
     );
@@ -114,12 +126,15 @@ fn stale_guard_location_is_detected() {
 fn stale_social_dyad_is_detected() {
     let mut sim = Sim::new(4);
     // Record a relationship involving a prisoner id that does not exist.
-    sim.world
-        .social
-        .record(PrisonerId(u64::MAX - 1), PrisonerId(u64::MAX), RelationshipDelta::default());
+    sim.world.social.record(
+        PrisonerId(u64::MAX - 1),
+        PrisonerId(u64::MAX),
+        RelationshipDelta::default(),
+    );
     let errs = sim.check_invariants();
     assert!(
-        errs.iter().any(|e| e.contains("suspicion_claim_records_reference_existing_pawns")),
+        errs.iter()
+            .any(|e| e.contains("suspicion_claim_records_reference_existing_pawns")),
         "stale social dyad should fail the social invariant, got: {:?}",
         errs
     );
@@ -135,7 +150,8 @@ fn orphan_world_event_actor_is_detected() {
     sim.record_sidecar_incident(bad);
     let errs = sim.check_invariants();
     assert!(
-        errs.iter().any(|e| e.contains("every_incident_has_cause_and_consequence")),
+        errs.iter()
+            .any(|e| e.contains("every_incident_has_cause_and_consequence")),
         "sidecar incident with dangling cause should fail the incident invariant, got: {:?}",
         errs
     );
@@ -150,7 +166,8 @@ fn logs_over_limit_are_detected() {
     }
     let errs = sim.check_invariants();
     assert!(
-        errs.iter().any(|e| e.contains("logs_and_incident_store_bounded")),
+        errs.iter()
+            .any(|e| e.contains("logs_and_incident_store_bounded")),
         "over-limit sidecar should fail the bounded-log invariant, got: {:?}",
         errs
     );

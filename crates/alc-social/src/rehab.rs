@@ -158,8 +158,7 @@ pub fn apply_program_progress(
         + prisoner.mental_health * 0.1
         + (1.0 - prisoner.fatigue) * 0.1)
         .clamp(0.0, 1.0);
-    let dropout_risk =
-        ((1.0 - engagement) * 0.2 + prisoner.desperation * 0.15).clamp(0.0, 1.0);
+    let dropout_risk = ((1.0 - engagement) * 0.2 + prisoner.desperation * 0.15).clamp(0.0, 1.0);
     if dropout_risk > 0.85 && engagement < 0.2 {
         prisoner.skills.remove(&key);
         return RehabOutcome::Dropped;
@@ -203,8 +202,7 @@ pub fn apply_program_progress(
         }
         RehabProgram::AngerManagement => {
             prisoner.aggression = (prisoner.aggression - delta * 0.08).max(0.0);
-            prisoner.emotional_stability =
-                (prisoner.emotional_stability + delta * 0.06).min(1.0);
+            prisoner.emotional_stability = (prisoner.emotional_stability + delta * 0.06).min(1.0);
             prisoner.respect_need = (prisoner.respect_need - delta * 0.1).max(0.0);
         }
     }

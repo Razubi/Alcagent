@@ -178,26 +178,29 @@ use std::collections::HashMap;
 
 // Backward-compatible public API re-exports.
 pub use conflict::{
-    apply_outcome, escalate_conflict, maybe_generate_conflict, resolve_conflict,
     ConflictEscalationStage, ConflictIncident, ConflictOutcome, ConflictOutcomeEffects,
     ConflictPrisonerProfile, DisciplineProposal, IncidentKind, InjuryRecord, ReputationDelta,
+    apply_outcome, escalate_conflict, maybe_generate_conflict, resolve_conflict,
 };
 pub use contraband::{
-    contraband_discovery, contraband_market, ContrabandFound, ContrabandItem,
-    ContrabandPrisonerProfile, TradeOffer,
+    ContrabandFound, ContrabandItem, ContrabandPrisonerProfile, TradeOffer, contraband_discovery,
+    contraband_market,
 };
 pub use escape::{
-    apply_escape_consequences, compute_escape_motivation, resolve_escape_attempt,
     EscapeConsequences, EscapeMotivation, EscapeMotivationInput, EscapeOutcome, EscapeVector,
+    apply_escape_consequences, compute_escape_motivation, resolve_escape_attempt,
 };
 pub use gang::{
-    form_gang_if_drivers, maybe_form_gang, register_rivalry, Gang, GangFormationCandidate,
-    GroupDirective, LeaderMemberResolution, MemberDecision, MemberDecisionContext, MemberRecord,
-    PrisonerGangProfile, Rank,
+    Gang, GangFormationCandidate, GroupDirective, LeaderMemberResolution, MemberDecision,
+    MemberDecisionContext, MemberRecord, PrisonerGangProfile, Rank, form_gang_if_drivers,
+    maybe_form_gang, register_rivalry,
 };
-pub use parole::{ParoleBoard, ParoleCondition, ParoleDecision, ParoleSubject, PostReleaseOutcome, PostReleaseRecord, recidivism_score};
+pub use parole::{
+    ParoleBoard, ParoleCondition, ParoleDecision, ParoleSubject, PostReleaseOutcome,
+    PostReleaseRecord, recidivism_score,
+};
 pub use rehab::{
-    apply_program_progress, enroll_in_program, RehabOutcome, RehabPrisonerState, RehabProgram,
+    RehabOutcome, RehabPrisonerState, RehabProgram, apply_program_progress, enroll_in_program,
 };
 pub use relationships::{Relationship, RelationshipDelta, SocialGraph, SocialMemoryTag};
 
@@ -325,7 +328,7 @@ pub fn influential_prisoners(
     out.sort_by(|a, b| {
         b.1.partial_cmp(&a.1)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.0 .0.cmp(&b.0 .0))
+            .then_with(|| a.0.0.cmp(&b.0.0))
     });
     out
 }

@@ -70,7 +70,10 @@ fn assert_healthy(sim: &Sim, label: &str, seed: u64, ticket_inputs: &[String]) {
     let w = sim.world();
     let pop = w.population();
     let cap = w.capacity();
-    assert!(pop <= cap, "{label}: population {pop} exceeds capacity {cap} | {ticket}");
+    assert!(
+        pop <= cap,
+        "{label}: population {pop} exceeds capacity {cap} | {ticket}"
+    );
 
     assert!(
         w.events.len() <= MAX_EVENT_BUS_LEN,
@@ -143,14 +146,30 @@ fn repro_ticket_changes_with_any_component() {
     let inputs = vec!["1:comply".to_string(), "2:refuse".to_string()];
     let base = repro_ticket(7, 3, &inputs);
 
-    assert_ne!(base, repro_ticket(8, 3, &inputs), "seed must change the ticket");
-    assert_ne!(base, repro_ticket(7, 4, &inputs), "day must change the ticket");
+    assert_ne!(
+        base,
+        repro_ticket(8, 3, &inputs),
+        "seed must change the ticket"
+    );
+    assert_ne!(
+        base,
+        repro_ticket(7, 4, &inputs),
+        "day must change the ticket"
+    );
 
     let reordered = vec!["2:refuse".to_string(), "1:comply".to_string()];
-    assert_ne!(base, repro_ticket(7, 3, &reordered), "input order must be preserved");
+    assert_ne!(
+        base,
+        repro_ticket(7, 3, &reordered),
+        "input order must be preserved"
+    );
 
     let extra = vec!["1:comply".to_string()];
-    assert_ne!(base, repro_ticket(7, 3, &extra), "input count must change the ticket");
+    assert_ne!(
+        base,
+        repro_ticket(7, 3, &extra),
+        "input count must change the ticket"
+    );
 }
 
 #[test]
@@ -187,9 +206,15 @@ fn pick_decision(sim: &Sim, rng: &mut RngStream) -> (PrisonerId, Decision) {
 
     let variant = rng.next_u64() % 13;
     let action = match variant {
-        0 => DecisionAction::MoveTo { target_facility: pick_facility(rng) },
-        1 => DecisionAction::Socialize { with: pick_prisoner(rng) },
-        2 => DecisionAction::Fight { target: pick_prisoner(rng) },
+        0 => DecisionAction::MoveTo {
+            target_facility: pick_facility(rng),
+        },
+        1 => DecisionAction::Socialize {
+            with: pick_prisoner(rng),
+        },
+        2 => DecisionAction::Fight {
+            target: pick_prisoner(rng),
+        },
         3 => DecisionAction::Trade {
             with: pick_prisoner(rng),
             item: "soap".to_string(),
@@ -200,12 +225,16 @@ fn pick_decision(sim: &Sim, rng: &mut RngStream) -> (PrisonerId, Decision) {
         7 => DecisionAction::RequestMedical,
         8 if !w.gangs.is_empty() => {
             let i = (rng.next_u64() as usize).min(w.gangs.len() - 1);
-            DecisionAction::JoinGang { gang: w.gangs[i].id.raw() }
+            DecisionAction::JoinGang {
+                gang: w.gangs[i].id.raw(),
+            }
         }
         9 => DecisionAction::LeaveGang,
         10 if !w.gangs.is_empty() => {
             let i = (rng.next_u64() as usize).min(w.gangs.len() - 1);
-            DecisionAction::LeadGang { gang: w.gangs[i].id.raw() }
+            DecisionAction::LeadGang {
+                gang: w.gangs[i].id.raw(),
+            }
         }
         11 => DecisionAction::SpreadRumor {
             about: pick_prisoner(rng),
@@ -234,7 +263,12 @@ fn fuzz_run(seed: u64) -> u64 {
         remember(&mut ticket_inputs, label);
         sim.tick();
 
-        assert_healthy(&sim, &format!("fuzz seed={seed} tick={tick}"), seed, &ticket_inputs);
+        assert_healthy(
+            &sim,
+            &format!("fuzz seed={seed} tick={tick}"),
+            seed,
+            &ticket_inputs,
+        );
     }
 
     sim.trace_hash()

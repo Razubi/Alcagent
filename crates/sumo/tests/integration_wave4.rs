@@ -40,10 +40,16 @@ fn wave4_full_flow_runs_and_stays_invariant_clean() {
 
     // Deliver a couple of decisions through the validated pipeline.
     if let Some(pid) = sim.world().prisoners.first().map(|p| p.id) {
-        let _ = sim.deliver_decision(pid, alc_agents::Decision::new(alc_agents::DecisionAction::Comply));
+        let _ = sim.deliver_decision(
+            pid,
+            alc_agents::Decision::new(alc_agents::DecisionAction::Comply),
+        );
     }
     if let Some(pid) = sim.world().prisoners.get(1).map(|p| p.id) {
-        let _ = sim.deliver_decision(pid, alc_agents::Decision::new(alc_agents::DecisionAction::RequestMedical));
+        let _ = sim.deliver_decision(
+            pid,
+            alc_agents::Decision::new(alc_agents::DecisionAction::RequestMedical),
+        );
     }
 
     // Policy management goes through the engine API so engine_state stays in
@@ -52,18 +58,28 @@ fn wave4_full_flow_runs_and_stays_invariant_clean() {
     assert_eq!(sim.policy_state().policy, Policy::Enhanced);
 
     let errors = sim.check_invariants();
-    assert!(errors.is_empty(), "invariants violated after Wave 4 flow: {errors:?}");
+    assert!(
+        errors.is_empty(),
+        "invariants violated after Wave 4 flow: {errors:?}"
+    );
 
     // Map frame must expose pawns for the UI (R1).
     let frame = sim.map_frame();
-    assert!(!frame.prisoners.is_empty(), "map frame should contain prisoners");
+    assert!(
+        !frame.prisoners.is_empty(),
+        "map frame should contain prisoners"
+    );
     assert!(!frame.guards.is_empty(), "map frame should contain guards");
 
     // Persistence roundtrip: legacy trace_hash must match exactly.
     let dir = temp_dir("full-flow");
     sim.save(&dir).expect("save Wave 4 world");
     let loaded = Sim::load(&dir).expect("load Wave 4 world");
-    assert_eq!(loaded.trace_hash(), sim.trace_hash(), "legacy trace hash must survive save/load");
+    assert_eq!(
+        loaded.trace_hash(),
+        sim.trace_hash(),
+        "legacy trace hash must survive save/load"
+    );
 
     // Richer v2 fingerprint mixes in the full state digest. It should match on
     // a clean roundtrip; trace_hash (legacy) is the compatibility fallback if
@@ -85,11 +101,16 @@ fn wave4_full_flow_runs_and_stays_invariant_clean() {
 #[test]
 fn warden_actions_apply_and_emit_events() {
     let actions: Vec<WardenAction> = vec![
-        WardenAction::Expand { building: "workshop".into() },
+        WardenAction::Expand {
+            building: "workshop".into(),
+        },
         WardenAction::HireGuards { count: 1 },
         WardenAction::FireGuards { count: 1 },
         WardenAction::PromoteStaff { guard: 1 },
-        WardenAction::ChangePolicy { policy: "privileges".into(), value: 0.4 },
+        WardenAction::ChangePolicy {
+            policy: "privileges".into(),
+            value: 0.4,
+        },
         WardenAction::IncreaseSecurity,
         // ReduceExpenses is gated on health < 0.4 AND a 7-day cooldown, so a
         // fresh healthy world legitimately emits nothing — skip it here.
@@ -97,7 +118,10 @@ fn warden_actions_apply_and_emit_events() {
         WardenAction::RespondToDisturbance { event_id: 42 },
         WardenAction::NegotiateWithRepresentatives,
         WardenAction::InvestigateMisconduct { target: 7 },
-        WardenAction::AdjustParoleRecommendation { prisoner: 3, lean: 0.5 },
+        WardenAction::AdjustParoleRecommendation {
+            prisoner: 3,
+            lean: 0.5,
+        },
         WardenAction::RequestFunding { amount_major: 1000 },
         // NoAction is intentionally a no-op (skip).
     ];
@@ -182,7 +206,10 @@ fn policy_mode_switch_does_not_break_simulation() {
     sim.set_policy(Policy::Enhanced);
 
     let errs = sim.check_invariants();
-    assert!(errs.is_empty(), "invariants violated in Shadow mode: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "invariants violated in Shadow mode: {errs:?}"
+    );
     assert!(
         sim.events().recent().next().is_some(),
         "Shadow mode should still produce events"

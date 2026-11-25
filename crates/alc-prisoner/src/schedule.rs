@@ -127,10 +127,17 @@ impl ScheduleBlock {
                 mandatory,
                 refusal_allowed: true,
                 late_tolerance_minutes: if mandatory { 10 } else { 20 },
-                on_refusal: if mandatory { "refused-mandatory".into() } else { "refused-optional".into() },
+                on_refusal: if mandatory {
+                    "refused-mandatory".into()
+                } else {
+                    "refused-optional".into()
+                },
                 on_unexcused_absence: "unexcused-absence".into(),
             },
-            requires_travel: !matches!(activity, Activity::Sleep | Activity::Lockdown | Activity::Count),
+            requires_travel: !matches!(
+                activity,
+                Activity::Sleep | Activity::Lockdown | Activity::Count
+            ),
         }
     }
 }
@@ -150,19 +157,19 @@ impl ScheduleTemplate {
     pub fn default_medium() -> Self {
         use Activity as A;
         let specs = [
-            (A::Wake, 360, 390, 1),        // 06:00–06:30
-            (A::Breakfast, 390, 435, 2),   // 06:30–07:15
-            (A::Work, 450, 690, 3),        // 07:30–11:30
-            (A::Lunch, 705, 750, 2),       // 11:45–12:30
-            (A::Education, 765, 825, 1),   // 12:45–13:45
-            (A::Yard, 840, 930, 4),        // 14:00–15:30
-            (A::Religious, 945, 990, 1),   // 15:45–16:30
-            (A::Showers, 1005, 1050, 2),   // 16:45–17:30
-            (A::Dinner, 1050, 1095, 2),    // 17:30–18:15
-            (A::Recreation, 1110, 1200, 2),// 18:30–20:00
-            (A::Visits, 1200, 1230, 2),    // 20:00–20:30
-            (A::Lockdown, 1260, 1440, 2),  // 21:00–24:00
-            (A::Sleep, 0, 360, 2),         // 00:00–06:00
+            (A::Wake, 360, 390, 1),         // 06:00–06:30
+            (A::Breakfast, 390, 435, 2),    // 06:30–07:15
+            (A::Work, 450, 690, 3),         // 07:30–11:30
+            (A::Lunch, 705, 750, 2),        // 11:45–12:30
+            (A::Education, 765, 825, 1),    // 12:45–13:45
+            (A::Yard, 840, 930, 4),         // 14:00–15:30
+            (A::Religious, 945, 990, 1),    // 15:45–16:30
+            (A::Showers, 1005, 1050, 2),    // 16:45–17:30
+            (A::Dinner, 1050, 1095, 2),     // 17:30–18:15
+            (A::Recreation, 1110, 1200, 2), // 18:30–20:00
+            (A::Visits, 1200, 1230, 2),     // 20:00–20:30
+            (A::Lockdown, 1260, 1440, 2),   // 21:00–24:00
+            (A::Sleep, 0, 360, 2),          // 00:00–06:00
         ];
         let blocks = specs
             .into_iter()
@@ -302,7 +309,10 @@ pub fn resolve_schedule(
 
         // 2. Static eligibility gates.
         if !block.eligibility.classifications.is_empty()
-            && !block.eligibility.classifications.contains(&prisoner.classification)
+            && !block
+                .eligibility
+                .classifications
+                .contains(&prisoner.classification)
         {
             cancel(&mut resolved, CancelReason::Classification);
         }
@@ -338,7 +348,9 @@ pub fn resolve_schedule(
             {
                 // Partial coverage: shorten rather than cancel (§4.2).
                 let span = resolved.end_minute.saturating_sub(resolved.start_minute);
-                resolved.end_minute = resolved.start_minute.saturating_add((span as f32 * 0.75) as u16);
+                resolved.end_minute = resolved
+                    .start_minute
+                    .saturating_add((span as f32 * 0.75) as u16);
             }
         }
 
@@ -367,7 +379,11 @@ pub fn resolve_schedule(
             start_minute: 840,
             end_minute: 900,
             cancelled: policies.lockdown,
-            reason: if policies.lockdown { Some(CancelReason::Lockdown) } else { None },
+            reason: if policies.lockdown {
+                Some(CancelReason::Lockdown)
+            } else {
+                None
+            },
         });
     }
     if medical_hold {
@@ -394,7 +410,10 @@ fn cancel(block: &mut ResolvedBlock, reason: CancelReason) {
 }
 
 /// The active, non-cancelled block at a minute-of-day (handles midnight wrap).
-pub fn current_block<'a>(schedule: &'a ResolvedSchedule, minute_of_day: u16) -> Option<&'a ResolvedBlock> {
+pub fn current_block<'a>(
+    schedule: &'a ResolvedSchedule,
+    minute_of_day: u16,
+) -> Option<&'a ResolvedBlock> {
     schedule.iter().find(|rb| {
         if rb.cancelled {
             return false;
@@ -408,7 +427,10 @@ pub fn current_block<'a>(schedule: &'a ResolvedSchedule, minute_of_day: u16) -> 
 }
 
 /// The next non-cancelled block after `minute_of_day`, if any.
-pub fn next_block<'a>(schedule: &'a ResolvedSchedule, minute_of_day: u16) -> Option<&'a ResolvedBlock> {
+pub fn next_block<'a>(
+    schedule: &'a ResolvedSchedule,
+    minute_of_day: u16,
+) -> Option<&'a ResolvedBlock> {
     schedule
         .iter()
         .filter(|rb| !rb.cancelled && rb.start_minute > minute_of_day)
@@ -550,8 +572,7 @@ impl AttendanceContext {
 
 /// Design doc §4.4 attendance probability. Higher = more likely to comply.
 pub fn attendance_probability(c: &AttendanceContext) -> f32 {
-    let p = 0.55
-        + c.discipline * 0.35
+    let p = 0.55 + c.discipline * 0.35
         - c.unmet_pressure * 0.20
         - (1.0 - c.alertness) * 0.25
         - c.routine_mismatch * 0.15
@@ -571,7 +592,10 @@ pub fn attendance_roll(rng: &mut RngStream) -> AttendanceOutcome {
 pub fn attendance_roll_with(rng: &mut RngStream, c: &AttendanceContext) -> AttendanceOutcome {
     let p = attendance_probability(c);
     let mut weights: Vec<(AttendanceOutcome, f32)> = vec![
-        (AttendanceOutcome::Follow, p * if c.program_enrolled { 0.6 } else { 1.0 }),
+        (
+            AttendanceOutcome::Follow,
+            p * if c.program_enrolled { 0.6 } else { 1.0 },
+        ),
         (
             AttendanceOutcome::Late,
             if c.late_tolerance_minutes > 0 {
@@ -583,7 +607,9 @@ pub fn attendance_roll_with(rng: &mut RngStream, c: &AttendanceContext) -> Atten
         (
             AttendanceOutcome::Refuse,
             if c.refusal_allowed {
-                0.05 + (1.0 - c.discipline) * 0.25 + c.unmet_pressure * 0.15 + c.group_skip_norm * 0.15
+                0.05 + (1.0 - c.discipline) * 0.25
+                    + c.unmet_pressure * 0.15
+                    + c.group_skip_norm * 0.15
             } else {
                 0.0
             },
@@ -764,20 +790,22 @@ impl ScheduleTimeline {
                 ctx.program_enrolled = program_enrolled;
                 let outcome = attendance_roll_with(rng, &ctx);
                 let p = attendance_probability(&ctx);
-                entry = entry
-                    .with_attendance(outcome)
-                    .with_cause(format!(
-                        "attendance {} (p_comply={p:.2}, medical={:.2}, pressure={:.2})",
-                        outcome.as_str(),
-                        ctx.medical_pressure,
-                        ctx.unmet_pressure
-                    ));
+                entry = entry.with_attendance(outcome).with_cause(format!(
+                    "attendance {} (p_comply={p:.2}, medical={:.2}, pressure={:.2})",
+                    outcome.as_str(),
+                    ctx.medical_pressure,
+                    ctx.unmet_pressure
+                ));
             }
             entries.push(entry);
         }
         entries.sort_by_key(|e| (e.start_minute, e.block_id));
 
-        Self { day, minute_of_day, entries }
+        Self {
+            day,
+            minute_of_day,
+            entries,
+        }
     }
 
     /// The block the prisoner should be in at `minute` (cancelled blocks are
@@ -909,7 +937,10 @@ impl Default for TimelineHistory {
 
 impl TimelineHistory {
     pub fn with_capacity(max_days: usize) -> Self {
-        Self { days: VecDeque::new(), max_days: max_days.max(1) }
+        Self {
+            days: VecDeque::new(),
+            max_days: max_days.max(1),
+        }
     }
 
     /// Append (or replace, if the same day is re-recorded) and trim to
@@ -953,9 +984,16 @@ mod tests {
     fn default_template_covers_all_required_activities() {
         let t = ScheduleTemplate::default_medium();
         for activity in [
-            Activity::Wake, Activity::Breakfast, Activity::Work, Activity::Recreation,
-            Activity::Yard, Activity::Education, Activity::Visits, Activity::Showers,
-            Activity::Lockdown, Activity::Sleep,
+            Activity::Wake,
+            Activity::Breakfast,
+            Activity::Work,
+            Activity::Recreation,
+            Activity::Yard,
+            Activity::Education,
+            Activity::Visits,
+            Activity::Showers,
+            Activity::Lockdown,
+            Activity::Sleep,
         ] {
             assert!(t.has_activity(activity), "missing {activity:?}");
         }
@@ -967,10 +1005,16 @@ mod tests {
         let mut policy = SchedulePolicy::default();
         policy.lockdown = true;
         let schedule = resolve_schedule(&p, &ScheduleTemplate::default_medium(), &policy);
-        let work = schedule.iter().find(|b| b.block.activity == Activity::Work).unwrap();
+        let work = schedule
+            .iter()
+            .find(|b| b.block.activity == Activity::Work)
+            .unwrap();
         assert!(work.cancelled);
         assert_eq!(work.reason, Some(CancelReason::Lockdown));
-        let sleep = schedule.iter().find(|b| b.block.activity == Activity::Sleep).unwrap();
+        let sleep = schedule
+            .iter()
+            .find(|b| b.block.activity == Activity::Sleep)
+            .unwrap();
         assert!(!sleep.cancelled);
     }
 
@@ -981,9 +1025,15 @@ mod tests {
         let mut policy = SchedulePolicy::default();
         policy.staff_coverage = 0.4;
         let schedule = resolve_schedule(&p, &ScheduleTemplate::default_medium(), &policy);
-        let yard = schedule.iter().find(|b| b.block.activity == Activity::Yard).unwrap();
+        let yard = schedule
+            .iter()
+            .find(|b| b.block.activity == Activity::Yard)
+            .unwrap();
         assert_eq!(yard.reason, Some(CancelReason::StaffShortage));
-        let visits = schedule.iter().find(|b| b.block.activity == Activity::Visits).unwrap();
+        let visits = schedule
+            .iter()
+            .find(|b| b.block.activity == Activity::Visits)
+            .unwrap();
         assert_eq!(visits.reason, Some(CancelReason::Privileges));
     }
 
@@ -995,9 +1045,14 @@ mod tests {
             seen.insert(attendance_roll(&mut rng));
         }
         for outcome in [
-            AttendanceOutcome::Follow, AttendanceOutcome::Late, AttendanceOutcome::Refuse,
-            AttendanceOutcome::Skip, AttendanceOutcome::Socialize, AttendanceOutcome::Trade,
-            AttendanceOutcome::Argue, AttendanceOutcome::SeekMedical,
+            AttendanceOutcome::Follow,
+            AttendanceOutcome::Late,
+            AttendanceOutcome::Refuse,
+            AttendanceOutcome::Skip,
+            AttendanceOutcome::Socialize,
+            AttendanceOutcome::Trade,
+            AttendanceOutcome::Argue,
+            AttendanceOutcome::SeekMedical,
             AttendanceOutcome::BreakRule,
         ] {
             assert!(seen.contains(&outcome), "never produced {outcome:?}");
@@ -1006,11 +1061,20 @@ mod tests {
 
     #[test]
     fn discipline_and_medical_pressure_shift_outcomes() {
-        let disciplined = AttendanceContext { discipline: 0.95, ..Default::default() };
-        let loose = AttendanceContext { discipline: 0.05, ..Default::default() };
+        let disciplined = AttendanceContext {
+            discipline: 0.95,
+            ..Default::default()
+        };
+        let loose = AttendanceContext {
+            discipline: 0.05,
+            ..Default::default()
+        };
         assert!(attendance_probability(&disciplined) > attendance_probability(&loose));
 
-        let sick = AttendanceContext { medical_pressure: 1.0, ..Default::default() };
+        let sick = AttendanceContext {
+            medical_pressure: 1.0,
+            ..Default::default()
+        };
         let mut rng = RngStream::new(3, 9);
         let mut sought = 0;
         for _ in 0..500 {
@@ -1045,8 +1109,10 @@ mod tests {
                 skipped_lo += 1;
             }
         }
-        assert!(skipped_lo > skipped_hi + 100,
-            "discipline had no measurable effect: {skipped_hi} vs {skipped_lo} disciplinary rolls");
+        assert!(
+            skipped_lo > skipped_hi + 100,
+            "discipline had no measurable effect: {skipped_hi} vs {skipped_lo} disciplinary rolls"
+        );
     }
 
     // -- 0.05 schedule inspector: per-prisoner timeline DTOs ----------------
@@ -1059,24 +1125,48 @@ mod tests {
         p.classification = Classification::Medium;
         let policy = SchedulePolicy::default();
         let mut rng = RngStream::new(5, 5);
-        let t = ScheduleTimeline::build(&p, &ScheduleTemplate::default_medium(), &policy, 3, 480, &mut rng);
+        let t = ScheduleTimeline::build(
+            &p,
+            &ScheduleTemplate::default_medium(),
+            &policy,
+            3,
+            480,
+            &mut rng,
+        );
 
         assert_eq!(t.day, 3);
         assert!(t.entries.len() >= ScheduleTemplate::default_medium().blocks.len());
         // Sorted by start so the UI can render the day in order.
-        assert!(t.entries.windows(2).all(|w| w[0].start_minute <= w[1].start_minute));
+        assert!(
+            t.entries
+                .windows(2)
+                .all(|w| w[0].start_minute <= w[1].start_minute)
+        );
         for e in &t.entries {
             if e.cancelled {
-                assert!(e.attendance.is_none(), "cancelled block must not roll attendance");
+                assert!(
+                    e.attendance.is_none(),
+                    "cancelled block must not roll attendance"
+                );
                 assert!(e.cancel_reason.is_some());
-                assert!(e.cause.starts_with("cancelled:"), "missing cause: {}", e.cause);
+                assert!(
+                    e.cause.starts_with("cancelled:"),
+                    "missing cause: {}",
+                    e.cause
+                );
             } else {
-                assert!(e.attendance.is_some(), "running block must have an attendance outcome");
+                assert!(
+                    e.attendance.is_some(),
+                    "running block must have an attendance outcome"
+                );
                 assert!(e.cause.contains("attendance"), "missing cause: {}", e.cause);
             }
         }
         // "Now" highlighting: 08:00 falls inside the Work block (07:30–11:30).
-        assert_eq!(t.active_entry(480).map(|e| e.activity), Some(Activity::Work));
+        assert_eq!(
+            t.active_entry(480).map(|e| e.activity),
+            Some(Activity::Work)
+        );
         assert!(t.summary().contains("day 3"));
         assert!(t.compliant_count() <= t.attended_count());
     }
@@ -1087,16 +1177,29 @@ mod tests {
         let mut policy = SchedulePolicy::default();
         policy.lockdown = true;
         let mut rng = RngStream::new(6, 6);
-        let t = ScheduleTimeline::build(&p, &ScheduleTemplate::default_medium(), &policy, 1, 600, &mut rng);
+        let t = ScheduleTimeline::build(
+            &p,
+            &ScheduleTemplate::default_medium(),
+            &policy,
+            1,
+            600,
+            &mut rng,
+        );
 
         assert!(t.is_lockdown_day());
-        let work = t.entry_for(Activity::Work).expect("Work is in the default template");
+        let work = t
+            .entry_for(Activity::Work)
+            .expect("Work is in the default template");
         assert_eq!(work.cancel_reason, Some(CancelReason::Lockdown));
         assert!(work.cause.contains("lockdown"));
         assert!(work.attendance.is_none());
         assert!(work.cause.contains(CancelReason::Lockdown.as_str()));
         let counts = t.cancel_counts();
-        assert!(counts.iter().any(|(r, n)| *r == CancelReason::Lockdown && *n > 0));
+        assert!(
+            counts
+                .iter()
+                .any(|(r, n)| *r == CancelReason::Lockdown && *n > 0)
+        );
         // Lockdown runs, so the day is not 100% cancelled.
         assert!(!t.entry_for(Activity::Lockdown).unwrap().cancelled);
     }
@@ -1108,10 +1211,20 @@ mod tests {
         let mut policy = SchedulePolicy::default();
         policy.staff_coverage = 0.75; // enough for Work (0.75) but not Yard (1.0)
         let mut rng = RngStream::new(7, 7);
-        let t = build_timeline(&p, &ScheduleTemplate::default_medium(), &policy, 2, 500, &mut rng);
+        let t = build_timeline(
+            &p,
+            &ScheduleTemplate::default_medium(),
+            &policy,
+            2,
+            500,
+            &mut rng,
+        );
 
         let work = t.entry_for(Activity::Work).unwrap();
-        assert!(work.staff_shortened(), "partial coverage must shorten Work visibly");
+        assert!(
+            work.staff_shortened(),
+            "partial coverage must shorten Work visibly"
+        );
         assert!(work.planned_end_minute > work.end_minute);
         let yard = t.entry_for(Activity::Yard).unwrap();
         assert_eq!(yard.cancel_reason, Some(CancelReason::StaffShortage));
@@ -1122,7 +1235,10 @@ mod tests {
         let mut h = TimelineHistory::with_capacity(3);
         assert!(h.latest().is_none());
         for day in 0..5 {
-            h.record(ScheduleTimeline { day, ..ScheduleTimeline::default() });
+            h.record(ScheduleTimeline {
+                day,
+                ..ScheduleTimeline::default()
+            });
         }
         assert_eq!(h.days.len(), 3);
         assert_eq!(h.latest().map(|t| t.day), Some(4));
@@ -1130,7 +1246,11 @@ mod tests {
         assert!(h.day(0).is_none());
 
         // Re-recording the same day updates in place (mid-day attendance).
-        h.record(ScheduleTimeline { day: 4, minute_of_day: 600, ..ScheduleTimeline::default() });
+        h.record(ScheduleTimeline {
+            day: 4,
+            minute_of_day: 600,
+            ..ScheduleTimeline::default()
+        });
         assert_eq!(h.days.len(), 3);
         assert_eq!(h.latest().map(|t| t.minute_of_day), Some(600));
 
@@ -1141,8 +1261,12 @@ mod tests {
 
     #[test]
     fn attendance_and_cancel_helpers_classify_outcomes() {
-        assert!(AttendanceOutcome::Follow.was_present() && AttendanceOutcome::Follow.was_compliant());
-        assert!(AttendanceOutcome::Refuse.was_present() && !AttendanceOutcome::Refuse.was_compliant());
+        assert!(
+            AttendanceOutcome::Follow.was_present() && AttendanceOutcome::Follow.was_compliant()
+        );
+        assert!(
+            AttendanceOutcome::Refuse.was_present() && !AttendanceOutcome::Refuse.was_compliant()
+        );
         assert!(!AttendanceOutcome::Skip.was_present());
         assert!(!AttendanceOutcome::SeekMedical.was_present());
         assert!(AttendanceOutcome::Participate.was_compliant());
@@ -1159,9 +1283,18 @@ mod tests {
         let p = sample();
         let policy = SchedulePolicy::default();
         let mut rng = RngStream::new(8, 8);
-        let t = ScheduleTimeline::build(&p, &ScheduleTemplate::default_medium(), &policy, 0, 0, &mut rng);
+        let t = ScheduleTimeline::build(
+            &p,
+            &ScheduleTemplate::default_medium(),
+            &policy,
+            0,
+            0,
+            &mut rng,
+        );
 
-        let sleep = t.entry_for(Activity::Sleep).expect("Sleep is in the default template");
+        let sleep = t
+            .entry_for(Activity::Sleep)
+            .expect("Sleep is in the default template");
         assert_eq!(sleep.span_minutes(), 360);
         let work = t.entry_for(Activity::Work).unwrap();
         assert_eq!(work.span_minutes(), 240);

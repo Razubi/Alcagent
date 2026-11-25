@@ -264,7 +264,10 @@ pub fn contraband_case_record(
     found: &ContrabandFound,
 ) -> ContrabandCaseRecord {
     let _case_id = found.guard.0; // Use guard ID as base for case ID
-    let summary = format!("Guard {} found {:?} on prisoner {}", guard.0, found.item, found.holder.0);
+    let summary = format!(
+        "Guard {} found {:?} on prisoner {}",
+        guard.0, found.item, found.holder.0
+    );
     ContrabandCaseRecord {
         case_id: found.guard.0 ^ found.holder.0, // deterministic XOR-based ID
         discovered_at,
@@ -273,7 +276,7 @@ pub fn contraband_case_record(
         item: found.item,
         severity: found.severity,
         disposition: ConfiscationDisposition::Evidence, // default; warden may update
-        disciplinary_action: None, // default; may be assigned later
+        disciplinary_action: None,                      // default; may be assigned later
         summary,
     }
 }
@@ -281,10 +284,7 @@ pub fn contraband_case_record(
 /// Confiscate discovered contraband from a prisoner.
 ///
 /// Returns the confiscation outcome with disposition and any disciplinary action.
-pub fn confiscate_contraband(
-    item: ContrabandItem,
-    severity: f32,
-) -> ConfiscationOutcome {
+pub fn confiscate_contraband(item: ContrabandItem, severity: f32) -> ConfiscationOutcome {
     let severity_level = match item {
         ContrabandItem::Weapons => ContrabandSeverity::Critical,
         ContrabandItem::Drugs => ContrabandSeverity::Significant,

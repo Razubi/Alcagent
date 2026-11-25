@@ -55,7 +55,10 @@ fn generated_signature(sim: &Sim) -> Vec<(u64, String, Vec<String>)> {
 fn condition_driven_events_are_deterministic_for_fixed_seed() {
     let first = generated_signature(&stressed_sim(5));
     let second = generated_signature(&stressed_sim(5));
-    assert!(!first.is_empty(), "stressed world must generate explainable events");
+    assert!(
+        !first.is_empty(),
+        "stressed world must generate explainable events"
+    );
     assert_eq!(first, second);
 }
 
@@ -81,5 +84,8 @@ fn condition_driven_events_reach_incident_views() {
         .iter()
         .filter(|e| e.causes.iter().any(|c| c == "condition-driven"))
         .count();
-    assert!(mirrored > 0, "generated events must be visible in incident views");
+    assert!(
+        mirrored > 0,
+        "generated events must be visible in incident views"
+    );
 }

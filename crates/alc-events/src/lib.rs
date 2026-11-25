@@ -5,9 +5,9 @@
 //! proposals but never directly overrides simulation state — every event
 //! carries the causes that justify it.
 
+use alc_core::SimTime;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use alc_core::SimTime;
 
 pub mod generators;
 
@@ -104,12 +104,29 @@ pub struct WorldEvent {
 
 impl WorldEvent {
     pub fn new(id: u64, at: SimTime, kind: EventKind, summary: impl Into<String>) -> Self {
-        Self { id, at, kind, summary: summary.into(), actors: Vec::new(), causes: Vec::new(), confidence: 1.0 }
+        Self {
+            id,
+            at,
+            kind,
+            summary: summary.into(),
+            actors: Vec::new(),
+            causes: Vec::new(),
+            confidence: 1.0,
+        }
     }
 
-    pub fn with_actor(mut self, id: u64) -> Self { self.actors.push(id); self }
-    pub fn with_cause(mut self, cause: impl Into<String>) -> Self { self.causes.push(cause.into()); self }
-    pub fn with_confidence(mut self, c: f32) -> Self { self.confidence = c.clamp(0.0, 1.0); self }
+    pub fn with_actor(mut self, id: u64) -> Self {
+        self.actors.push(id);
+        self
+    }
+    pub fn with_cause(mut self, cause: impl Into<String>) -> Self {
+        self.causes.push(cause.into());
+        self
+    }
+    pub fn with_confidence(mut self, c: f32) -> Self {
+        self.confidence = c.clamp(0.0, 1.0);
+        self
+    }
 }
 
 /// Helper structs for event payloads.
@@ -174,7 +191,11 @@ pub struct EventBus {
 
 impl EventBus {
     pub fn new(max_history: usize) -> Self {
-        Self { history: VecDeque::with_capacity(max_history), next_id: 1, max_history }
+        Self {
+            history: VecDeque::with_capacity(max_history),
+            next_id: 1,
+            max_history,
+        }
     }
 
     /// Emit an event; returns the assigned event id.
@@ -189,7 +210,9 @@ impl EventBus {
         id
     }
 
-    pub fn recent(&self) -> impl Iterator<Item = &WorldEvent> { self.history.iter() }
+    pub fn recent(&self) -> impl Iterator<Item = &WorldEvent> {
+        self.history.iter()
+    }
 
     /// Events with an id greater than `after_id`, in chronological order.
     ///
@@ -211,62 +234,125 @@ impl EventBus {
     pub fn since(&self, at: SimTime) -> impl Iterator<Item = &WorldEvent> {
         self.history.iter().filter(move |e| e.at >= at)
     }
-    pub fn len(&self) -> usize { self.history.len() }
+    pub fn len(&self) -> usize {
+        self.history.len()
+    }
 
     /// Emit a rehabilitation progress event.
-    pub fn emit_rehab_progress(&mut self, at: SimTime, prisoner_id: u64, program: &str, delta: f32, _progress: f32) -> u64 {
-        let e = WorldEvent::new(1, at, EventKind::RehabilitationProgress, format!("Rehab progress: {} {:+.2}", program, delta))
-            .with_actor(prisoner_id)
-            .with_cause(format!("Rehab progress delta {:+.2} over step", delta))
-            .with_confidence(1.0);
+    pub fn emit_rehab_progress(
+        &mut self,
+        at: SimTime,
+        prisoner_id: u64,
+        program: &str,
+        delta: f32,
+        _progress: f32,
+    ) -> u64 {
+        let e = WorldEvent::new(
+            1,
+            at,
+            EventKind::RehabilitationProgress,
+            format!("Rehab progress: {} {:+.2}", program, delta),
+        )
+        .with_actor(prisoner_id)
+        .with_cause(format!("Rehab progress delta {:+.2} over step", delta))
+        .with_confidence(1.0);
         self.emit(e)
     }
 
     /// Emit a rehabilitation failure event.
-    pub fn emit_rehab_failure(&mut self, at: SimTime, prisoner_id: u64, program: &str, reason: RehabFailureReason) -> u64 {
+    pub fn emit_rehab_failure(
+        &mut self,
+        at: SimTime,
+        prisoner_id: u64,
+        program: &str,
+        reason: RehabFailureReason,
+    ) -> u64 {
         let reason_str = match reason {
             RehabFailureReason::DroppedOut => "dropped out",
             RehabFailureReason::DisciplinaryRemoval => "removed due to discipline",
             RehabFailureReason::InsufficientEngagement => "insufficient engagement",
             RehabFailureReason::ProgramCompleted => "program completed",
         };
-        let e = WorldEvent::new(1, at, EventKind::RehabilitationFailure, format!("Rehab failure: {} ({})", program, reason_str))
-            .with_actor(prisoner_id)
-            .with_cause(format!("Rehab failure reason: {:?}", reason))
-            .with_confidence(1.0);
+        let e = WorldEvent::new(
+            1,
+            at,
+            EventKind::RehabilitationFailure,
+            format!("Rehab failure: {} ({})", program, reason_str),
+        )
+        .with_actor(prisoner_id)
+        .with_cause(format!("Rehab failure reason: {:?}", reason))
+        .with_confidence(1.0);
         self.emit(e)
     }
 
     /// Emit a post-release record event.
-    pub fn emit_post_release(&mut self, at: SimTime, prisoner_id: u64, release_type: &str, recidivism_risk: f32, _has_reintegration_plan: bool) -> u64 {
-        let e = WorldEvent::new(1, at, EventKind::PostRelease, format!("Post-release: {} (risk {:.2})", release_type, recidivism_risk))
-            .with_actor(prisoner_id)
-            .with_cause(format!("Post-release recidivism risk {:.2}", recidivism_risk))
-            .with_confidence(1.0);
+    pub fn emit_post_release(
+        &mut self,
+        at: SimTime,
+        prisoner_id: u64,
+        release_type: &str,
+        recidivism_risk: f32,
+        _has_reintegration_plan: bool,
+    ) -> u64 {
+        let e = WorldEvent::new(
+            1,
+            at,
+            EventKind::PostRelease,
+            format!(
+                "Post-release: {} (risk {:.2})",
+                release_type, recidivism_risk
+            ),
+        )
+        .with_actor(prisoner_id)
+        .with_cause(format!(
+            "Post-release recidivism risk {:.2}",
+            recidivism_risk
+        ))
+        .with_confidence(1.0);
         self.emit(e)
     }
 
     /// Emit a construction complete event.
     pub fn emit_construction_complete(&mut self, at: SimTime, facility: &str) -> u64 {
-        let e = WorldEvent::new(1, at, EventKind::ConstructionComplete, format!("Construction complete: {}", facility))
-            .with_cause(format!("Construction of {} completed", facility))
-            .with_confidence(1.0);
+        let e = WorldEvent::new(
+            1,
+            at,
+            EventKind::ConstructionComplete,
+            format!("Construction complete: {}", facility),
+        )
+        .with_cause(format!("Construction of {} completed", facility))
+        .with_confidence(1.0);
         self.emit(e)
     }
 
     /// Emit a construction cancelled event.
-    pub fn emit_construction_cancelled(&mut self, at: SimTime, facility: &str, reason: &str) -> u64 {
-        let e = WorldEvent::new(1, at, EventKind::ConstructionCancelled, format!("Construction cancelled: {} ({})", facility, reason))
-            .with_cause(reason.to_string())
-            .with_confidence(1.0);
+    pub fn emit_construction_cancelled(
+        &mut self,
+        at: SimTime,
+        facility: &str,
+        reason: &str,
+    ) -> u64 {
+        let e = WorldEvent::new(
+            1,
+            at,
+            EventKind::ConstructionCancelled,
+            format!("Construction cancelled: {} ({})", facility, reason),
+        )
+        .with_cause(reason.to_string())
+        .with_confidence(1.0);
         self.emit(e)
     }
 
     /// Emit a construction failed event.
     pub fn emit_construction_failed(&mut self, at: SimTime, facility: &str, reason: &str) -> u64 {
-        let e = WorldEvent::new(1, at, EventKind::ConstructionFailed, format!("Construction failed: {} ({})", facility, reason))
-            .with_cause(reason.to_string())
-            .with_confidence(1.0);
+        let e = WorldEvent::new(
+            1,
+            at,
+            EventKind::ConstructionFailed,
+            format!("Construction failed: {} ({})", facility, reason),
+        )
+        .with_cause(reason.to_string())
+        .with_confidence(1.0);
         self.emit(e)
     }
 }
@@ -286,7 +372,12 @@ mod tests {
 
     #[test]
     fn world_event_new_and_modifiers() {
-        let e = WorldEvent::new(1, SimTime { secs: 0 }, EventKind::Admission, "test admission");
+        let e = WorldEvent::new(
+            1,
+            SimTime { secs: 0 },
+            EventKind::Admission,
+            "test admission",
+        );
         assert_eq!(e.id, 1);
         assert_eq!(e.at.secs, 0);
         assert_eq!(e.kind, EventKind::Admission);
@@ -295,7 +386,10 @@ mod tests {
         assert!(e.causes.is_empty());
         assert_eq!(e.confidence, 1.0);
 
-        let e2 = e.with_actor(42).with_cause("test cause").with_confidence(0.8);
+        let e2 = e
+            .with_actor(42)
+            .with_cause("test cause")
+            .with_confidence(0.8);
         assert_eq!(e2.actors, [42]);
         assert_eq!(e2.causes, ["test cause"]);
         assert_eq!(e2.confidence, 0.8);
@@ -315,7 +409,12 @@ mod tests {
     #[test]
     fn emit_rehab_failure() {
         let mut bus = EventBus::new(100);
-        let id = bus.emit_rehab_failure(SimTime { secs: 20 }, 42, "anger_mgmt", RehabFailureReason::DroppedOut);
+        let id = bus.emit_rehab_failure(
+            SimTime { secs: 20 },
+            42,
+            "anger_mgmt",
+            RehabFailureReason::DroppedOut,
+        );
         assert!(id > 0);
         let events = bus.recent().collect::<Vec<_>>();
         assert_eq!(events.len(), 1);
@@ -337,11 +436,31 @@ mod tests {
     #[test]
     fn eventbus_bounded_history() {
         let mut bus = EventBus::new(3);
-        bus.emit(WorldEvent::new(1, SimTime { secs: 0 }, EventKind::Admission, "first"));
-        bus.emit(WorldEvent::new(2, SimTime { secs: 1 }, EventKind::Admission, "second"));
-        bus.emit(WorldEvent::new(3, SimTime { secs: 2 }, EventKind::Admission, "third"));
+        bus.emit(WorldEvent::new(
+            1,
+            SimTime { secs: 0 },
+            EventKind::Admission,
+            "first",
+        ));
+        bus.emit(WorldEvent::new(
+            2,
+            SimTime { secs: 1 },
+            EventKind::Admission,
+            "second",
+        ));
+        bus.emit(WorldEvent::new(
+            3,
+            SimTime { secs: 2 },
+            EventKind::Admission,
+            "third",
+        ));
         // Adding 4th should pop the first
-        bus.emit(WorldEvent::new(4, SimTime { secs: 3 }, EventKind::Admission, "fourth"));
+        bus.emit(WorldEvent::new(
+            4,
+            SimTime { secs: 3 },
+            EventKind::Admission,
+            "fourth",
+        ));
         let recent: Vec<_> = bus.recent().collect();
         assert_eq!(recent.len(), 3);
         // The first should have been popped

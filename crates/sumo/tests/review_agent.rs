@@ -56,7 +56,10 @@ fn full_365_day_run_no_invariant_violations() {
     );
 
     let errs = sim.check_invariants();
-    assert!(errs.is_empty(), "invariants violated after 365 days: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "invariants violated after 365 days: {errs:?}"
+    );
 }
 
 #[test]
@@ -73,9 +76,17 @@ fn save_load_round_trip_preserves_population() {
     sim.save(&dir).expect("save");
     let loaded = Sim::load(&dir).expect("load");
 
-    assert_eq!(loaded.world().population(), pop_before, "population not preserved");
+    assert_eq!(
+        loaded.world().population(),
+        pop_before,
+        "population not preserved"
+    );
     assert_eq!(loaded.world().time, time_before, "time not preserved");
-    assert_eq!(loaded.world().days_simulated, days_before, "days_simulated not preserved");
+    assert_eq!(
+        loaded.world().days_simulated,
+        days_before,
+        "days_simulated not preserved"
+    );
     assert!(loaded.world().population() <= loaded.world().capacity());
 
     std::fs::remove_dir_all(&dir).ok();
@@ -88,16 +99,29 @@ fn decision_pipeline_accepts_valid_and_rejects_invalid() {
     let valid_target = sim.world().facilities[0].id.0;
 
     // Valid: move to an existing facility.
-    let accepted = sim.deliver_decision(id, Decision::new(DecisionAction::MoveTo { target_facility: valid_target }));
+    let accepted = sim.deliver_decision(
+        id,
+        Decision::new(DecisionAction::MoveTo {
+            target_facility: valid_target,
+        }),
+    );
     assert!(
-        matches!(accepted.result, ValidationResult::Accepted(_) | ValidationResult::Repaired(_)),
+        matches!(
+            accepted.result,
+            ValidationResult::Accepted(_) | ValidationResult::Repaired(_)
+        ),
         "expected valid decision to be accepted/repaired, got {:?}",
         accepted.result
     );
     assert!(accepted.applied, "valid decision should be applied");
 
     // Invalid: unknown target facility.
-    let rejected = sim.deliver_decision(id, Decision::new(DecisionAction::MoveTo { target_facility: 999_999 }));
+    let rejected = sim.deliver_decision(
+        id,
+        Decision::new(DecisionAction::MoveTo {
+            target_facility: 999_999,
+        }),
+    );
     assert!(
         matches!(rejected.result, ValidationResult::Rejected { .. }),
         "expected invalid decision to be rejected, got {:?}",
@@ -122,7 +146,10 @@ fn run_until_makes_progress_when_not_paused() {
     let target = sim.world().time.add_mins(10);
     let ticks = sim.run_until(target);
     assert!(ticks > 0, "run_until should advance when not paused");
-    assert!(sim.world().time >= target, "run_until did not reach target time");
+    assert!(
+        sim.world().time >= target,
+        "run_until did not reach target time"
+    );
 }
 
 #[test]

@@ -24,7 +24,8 @@ mod unique {
 
     pub fn temp_dir(tag: &str) -> PathBuf {
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("sumo-alc006-{tag}-{}-{n}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("sumo-alc006-{tag}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -100,40 +101,69 @@ fn construction_lifecycle_request_approved_active_complete_and_terminal_paths() 
 
     // request
     let id = sim.enqueue_construction(alc_world::FacilityKind::CellBlock, 1, 30);
-    let project = sim.construction_queue().into_iter().find(|p| p.id == id).unwrap();
+    let project = sim
+        .construction_queue()
+        .into_iter()
+        .find(|p| p.id == id)
+        .unwrap();
     assert_eq!(project.status, alc_world::ConstructionStatus::Queued);
-    assert!(sim.events().recent().any(|e| e.kind == EventKind::Expansion));
+    assert!(
+        sim.events()
+            .recent()
+            .any(|e| e.kind == EventKind::Expansion)
+    );
 
     // approved
     assert!(sim.approve_construction(id, "observer validated prereqs"));
-    let project = sim.construction_queue().into_iter().find(|p| p.id == id).unwrap();
+    let project = sim
+        .construction_queue()
+        .into_iter()
+        .find(|p| p.id == id)
+        .unwrap();
     assert_eq!(project.status, alc_world::ConstructionStatus::Approved);
-    assert!(sim.events().recent().any(|e| {
-        e.kind == EventKind::Expansion && e.summary.contains("approved")
-    }));
-    assert!(!sim.approve_construction(id, "duplicate"), "approval is one-shot");
+    assert!(
+        sim.events()
+            .recent()
+            .any(|e| { e.kind == EventKind::Expansion && e.summary.contains("approved") })
+    );
+    assert!(
+        !sim.approve_construction(id, "duplicate"),
+        "approval is one-shot"
+    );
 
     // active
     assert!(sim.advance_construction(id, 1));
-    let project = sim.construction_queue().into_iter().find(|p| p.id == id).unwrap();
+    let project = sim
+        .construction_queue()
+        .into_iter()
+        .find(|p| p.id == id)
+        .unwrap();
     assert_eq!(project.status, alc_world::ConstructionStatus::InProgress);
     assert_eq!(project.progress_days, 1);
 
     // complete — capacity effect and completion event
     let total = project.total_days;
     assert!(sim.advance_construction(id, total - project.progress_days));
-    let project = sim.construction_queue().into_iter().find(|p| p.id == id).unwrap();
+    let project = sim
+        .construction_queue()
+        .into_iter()
+        .find(|p| p.id == id)
+        .unwrap();
     assert_eq!(project.status, alc_world::ConstructionStatus::Completed);
-    assert!(sim.events().recent().any(|e| e.kind == EventKind::ConstructionComplete));
+    assert!(
+        sim.events()
+            .recent()
+            .any(|e| e.kind == EventKind::ConstructionComplete)
+    );
     assert!(
         sim.world().capacity() > capacity_before,
         "completing a housing project must increase bed capacity"
     );
 
     assert!(
-        sim.decision_audit_log().iter().any(|r| {
-            r.action == "AdvanceConstruction" && r.summary.contains("(completed)")
-        }),
+        sim.decision_audit_log()
+            .iter()
+            .any(|r| { r.action == "AdvanceConstruction" && r.summary.contains("(completed)") }),
         "audit should recognize terminal completion"
     );
 
@@ -141,19 +171,38 @@ fn construction_lifecycle_request_approved_active_complete_and_terminal_paths() 
     let cancelled = sim.enqueue_construction(alc_world::FacilityKind::Medical, 1, 10);
     assert!(sim.cancel_construction(cancelled, "observer cancelled"));
     assert_eq!(
-        sim.construction_queue().into_iter().find(|p| p.id == cancelled).unwrap().status,
+        sim.construction_queue()
+            .into_iter()
+            .find(|p| p.id == cancelled)
+            .unwrap()
+            .status,
         alc_world::ConstructionStatus::Cancelled
     );
     let failed = sim.enqueue_construction(alc_world::FacilityKind::Education, 1, 10);
     assert!(sim.fail_construction(failed, "observer failed"));
     assert_eq!(
-        sim.construction_queue().into_iter().find(|p| p.id == failed).unwrap().status,
+        sim.construction_queue()
+            .into_iter()
+            .find(|p| p.id == failed)
+            .unwrap()
+            .status,
         alc_world::ConstructionStatus::Failed
     );
-    assert!(sim.events().recent().any(|e| e.kind == EventKind::ConstructionCancelled));
-    assert!(sim.events().recent().any(|e| e.kind == EventKind::ConstructionFailed));
+    assert!(
+        sim.events()
+            .recent()
+            .any(|e| e.kind == EventKind::ConstructionCancelled)
+    );
+    assert!(
+        sim.events()
+            .recent()
+            .any(|e| e.kind == EventKind::ConstructionFailed)
+    );
     let violations = sim.check_invariants();
-    assert!(violations.is_empty(), "construction terminal paths left violations: {violations:?}");
+    assert!(
+        violations.is_empty(),
+        "construction terminal paths left violations: {violations:?}"
+    );
 }
 
 #[test]
@@ -166,13 +215,22 @@ fn parole_lifecycle_is_deterministic_validated_and_persisted() {
     assert!(sim.start_parole_hearing(id).is_some());
     assert_eq!(sim.parole_status(id), Some(ParoleStatus::Scheduled));
     assert!(sim.parole().hearing_at(id).is_some());
-    assert!(!sim.start_parole_hearing(id).is_some(), "duplicate hearing rejected");
-    assert!(sim.parole_due().is_empty(), "scheduled prisoner is no longer due");
+    assert!(
+        !sim.start_parole_hearing(id).is_some(),
+        "duplicate hearing rejected"
+    );
+    assert!(
+        sim.parole_due().is_empty(),
+        "scheduled prisoner is no longer due"
+    );
 
     // decision + conditions
     assert!(sim.grant_parole(id).is_some());
     assert_eq!(sim.parole_status(id), Some(ParoleStatus::Granted));
-    let conditions = sim.parole_conditions(id).cloned().expect("granted conditions");
+    let conditions = sim
+        .parole_conditions(id)
+        .cloned()
+        .expect("granted conditions");
     assert!(conditions.is_normalized());
     assert!(sim.parole_decision_reason(id).is_some());
     assert!(!sim.parole_due().contains(&id));
@@ -187,14 +245,21 @@ fn parole_lifecycle_is_deterministic_validated_and_persisted() {
     assert!(sim.set_parole_conditions(id, raw.clone()));
     raw.normalize();
     assert_eq!(sim.parole_conditions(id), Some(&raw));
-    assert!(sim.decision_audit_log()[audit_before..].iter().any(|r| r.validation == "repaired"));
+    assert!(
+        sim.decision_audit_log()[audit_before..]
+            .iter()
+            .any(|r| r.validation == "repaired")
+    );
 
     // release moves the prisoner out of custody and records the time
     assert!(sim.release_on_parole(id));
     assert!(!sim.world().prisoners.iter().any(|p| p.id == id));
     let released_at = sim.parole_released_at(id).expect("release time");
     assert_eq!(released_at, sim.world().time);
-    assert!(sim.post_release_status(id).is_some(), "engine post-release ledger mirrors the world release");
+    assert!(
+        sim.post_release_status(id).is_some(),
+        "engine post-release ledger mirrors the world release"
+    );
     assert!(!sim.release_on_parole(id), "release is one-shot");
 
     // save/load preserves the full record and the state fingerprint
@@ -203,7 +268,10 @@ fn parole_lifecycle_is_deterministic_validated_and_persisted() {
     let loaded = Sim::load(&dir).expect("load parole lifecycle");
     assert_eq!(loaded.parole_status(id), Some(ParoleStatus::Granted));
     assert_eq!(loaded.parole_conditions(id), Some(&raw));
-    assert_eq!(loaded.parole_decision_reason(id), sim.parole_decision_reason(id));
+    assert_eq!(
+        loaded.parole_decision_reason(id),
+        sim.parole_decision_reason(id)
+    );
     assert_eq!(loaded.parole_released_at(id), Some(released_at));
     assert_eq!(loaded.parole().hearing_at(id), sim.parole().hearing_at(id));
     assert_eq!(loaded.trace_hash_v2(), sim.trace_hash_v2());
@@ -228,10 +296,15 @@ fn rejected_parole_controls_are_audited_without_mutating() {
     assert!(!sim.release_on_parole(ineligible));
 
     assert!(sim.parole_status(ineligible).is_none());
-    let rejected: Vec<_> = sim.decision_audit_log()[audit_before..].iter()
+    let rejected: Vec<_> = sim.decision_audit_log()[audit_before..]
+        .iter()
         .filter(|r| r.validation == "rejected")
         .collect();
-    assert_eq!(rejected.len(), 4, "every rejected control is audited: {rejected:?}");
+    assert_eq!(
+        rejected.len(),
+        4,
+        "every rejected control is audited: {rejected:?}"
+    );
     assert!(sim.check_invariants().is_empty());
 }
 
@@ -248,13 +321,25 @@ fn world_driven_hearings_mirror_into_the_persisted_ledger() {
         sim.parole_status(id).is_some(),
         "world hearing should reconcile into the engine parole ledger"
     );
-    assert!(sim.parole().hearing_at(id).is_some(), "hearing date persisted");
+    assert!(
+        sim.parole().hearing_at(id).is_some(),
+        "hearing date persisted"
+    );
     let status = sim.parole_status(id).unwrap();
     if status == ParoleStatus::Granted {
-        assert!(sim.parole_conditions(id).is_some(), "grants carry conditions");
-        assert!(sim.parole_decision_reason(id).is_some(), "grants carry a reason");
+        assert!(
+            sim.parole_conditions(id).is_some(),
+            "grants carry conditions"
+        );
+        assert!(
+            sim.parole_decision_reason(id).is_some(),
+            "grants carry a reason"
+        );
     } else {
-        assert!(sim.parole_decision_reason(id).is_some(), "denials carry a reason");
+        assert!(
+            sim.parole_decision_reason(id).is_some(),
+            "denials carry a reason"
+        );
     }
     assert!(sim.check_invariants().is_empty());
 }

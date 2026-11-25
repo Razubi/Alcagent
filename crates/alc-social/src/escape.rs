@@ -68,8 +68,7 @@ pub struct EscapeMotivation {
 
 /// Compute escape motivation from needs, traits, sentence, and institutional conditions.
 pub fn compute_escape_motivation(input: &EscapeMotivationInput) -> EscapeMotivation {
-    let fear_component =
-        (input.fear_for_safety * 0.7 + input.gang_coercion * 0.3).clamp(0.0, 1.0);
+    let fear_component = (input.fear_for_safety * 0.7 + input.gang_coercion * 0.3).clamp(0.0, 1.0);
     let desperation_component = (input.desperation_hopelessness * 0.45
         + input.isolation * 0.2
         + (1.0 - input.hope).clamp(0.0, 1.0) * 0.2
@@ -79,9 +78,8 @@ pub fn compute_escape_motivation(input: &EscapeMotivationInput) -> EscapeMotivat
         + input.recent_setback * 0.25
         + input.outside_relationship_pull * 0.15)
         .clamp(0.0, 1.0);
-    let injustice_component = (input.perceived_injustice * 0.6
-        + input.institutional_harshness * 0.4)
-        .clamp(0.0, 1.0);
+    let injustice_component =
+        (input.perceived_injustice * 0.6 + input.institutional_harshness * 0.4).clamp(0.0, 1.0);
     let opportunity_component = (input.security_weakness_belief * 0.7
         + input.staff_corruption_belief * 0.3)
         .clamp(0.0, 1.0);
@@ -91,11 +89,9 @@ pub fn compute_escape_motivation(input: &EscapeMotivationInput) -> EscapeMotivat
         + sentence_component * 0.18
         + injustice_component * 0.18
         + opportunity_component * 0.2;
-    let trait_amp = 0.7
-        + input.risk_tolerance * 0.25
-        + input.impulsiveness * 0.15
-        + input.intelligence * 0.05
-        - input.discipline * 0.2;
+    let trait_amp =
+        0.7 + input.risk_tolerance * 0.25 + input.impulsiveness * 0.15 + input.intelligence * 0.05
+            - input.discipline * 0.2;
     let total = (drivers * trait_amp).clamp(0.0, 1.0);
 
     EscapeMotivation {
@@ -170,7 +166,8 @@ pub fn apply_escape_consequences(
             c.staff_alert_delta = 0.05;
             c.policy_pressure = 0.05;
             c.prisoner_discipline_severity = 0.4;
-            c.notes.push("attempt prevented; minor procedural review".into());
+            c.notes
+                .push("attempt prevented; minor procedural review".into());
         }
         EscapeOutcome::DiscoveredPreAttempt => {
             c.security_level_delta = 0.06 + participant_factor * 0.3;
@@ -180,7 +177,8 @@ pub fn apply_escape_consequences(
             c.staff_alert_delta = 0.1;
             c.policy_pressure = 0.15;
             c.prisoner_discipline_severity = 0.5;
-            c.notes.push("plot discovered pre-attempt; investigation initiated".into());
+            c.notes
+                .push("plot discovered pre-attempt; investigation initiated".into());
         }
         EscapeOutcome::DiscoveredDuring => {
             c.security_level_delta = 0.08 + participant_factor * 0.3;
@@ -191,7 +189,8 @@ pub fn apply_escape_consequences(
             c.staff_alert_delta = 0.15;
             c.policy_pressure = 0.25;
             c.prisoner_discipline_severity = 0.7;
-            c.notes.push("attempt interrupted during execution; lockdown/investigation likely".into());
+            c.notes
+                .push("attempt interrupted during execution; lockdown/investigation likely".into());
         }
         EscapeOutcome::DisruptedNoEscape => {
             c.security_level_delta = 0.1 + participant_factor * 0.3;
@@ -202,7 +201,8 @@ pub fn apply_escape_consequences(
             c.staff_alert_delta = 0.18;
             c.policy_pressure = 0.35;
             c.prisoner_discipline_severity = 0.75;
-            c.notes.push("major disruption without escape; institutional response required".into());
+            c.notes
+                .push("major disruption without escape; institutional response required".into());
         }
         EscapeOutcome::PartialBreachContained => {
             c.security_level_delta = 0.15 + participant_factor * 0.4;
@@ -213,7 +213,8 @@ pub fn apply_escape_consequences(
             c.staff_alert_delta = 0.25;
             c.policy_pressure = 0.55;
             c.prisoner_discipline_severity = 0.9;
-            c.notes.push("partial breach contained; serious security and policy review".into());
+            c.notes
+                .push("partial breach contained; serious security and policy review".into());
         }
         EscapeOutcome::SuccessfulEscape => {
             c.security_level_delta = 0.25 + participant_factor * 0.5;
@@ -224,7 +225,9 @@ pub fn apply_escape_consequences(
             c.staff_alert_delta = 0.35;
             c.policy_pressure = 0.9;
             c.prisoner_discipline_severity = 1.0;
-            c.notes.push("successful escape; persistent institutional and external consequences".into());
+            c.notes.push(
+                "successful escape; persistent institutional and external consequences".into(),
+            );
         }
     }
 

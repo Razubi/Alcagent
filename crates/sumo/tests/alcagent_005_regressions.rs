@@ -78,8 +78,12 @@ fn incident_trim_scrubs_dangling_causal_chain_links() {
     }
     // Trigger trim through public recording path.
     sim.record_incident(WorldEvent::new(0, sim.world.time, EventKind::Fight, "trim"));
-    let live: std::collections::HashSet<u64> =
-        sim.engine_state.incident_sidecar.iter().map(|i| i.id).collect();
+    let live: std::collections::HashSet<u64> = sim
+        .engine_state
+        .incident_sidecar
+        .iter()
+        .map(|i| i.id)
+        .collect();
     for inc in &sim.engine_state.incident_sidecar {
         if let Some(cause) = inc.cause {
             assert!(live.contains(&cause), "dangling cause {cause}");
@@ -158,7 +162,9 @@ fn fight_tension_uses_defender_traits() {
 fn escape_decision_records_post_release_parity() {
     let mut sim = Sim::new(0xE5CA9E);
     // Find a prisoner and make escape very likely by maxing motivation and lowering security.
-    let Some(pidx) = sim.world.prisoners.iter().position(|p| p.sentence_days > 0) else { return; };
+    let Some(pidx) = sim.world.prisoners.iter().position(|p| p.sentence_days > 0) else {
+        return;
+    };
     let pid = sim.world.prisoners[pidx].id;
     sim.world.policies.security_level = 0.0;
     sim.world.prisoners[pidx].traits.risk_tolerance = 1.0;
@@ -180,8 +186,18 @@ fn escape_decision_records_post_release_parity() {
             // Engine post-release ledger should contain it.
             assert_eq!(sim.engine_state.post_release.get(&pid), Some(&false));
             // World post-release records should contain escape.
-            assert!(sim.world.post_release_records.iter().any(|r| r.prisoner_id == pid.raw() && r.reason == "escape"));
-            assert!(sim.world.history.iter().any(|e| e.kind == EventKind::Release && e.actors.contains(&pid.raw())));
+            assert!(
+                sim.world
+                    .post_release_records
+                    .iter()
+                    .any(|r| r.prisoner_id == pid.raw() && r.reason == "escape")
+            );
+            assert!(
+                sim.world
+                    .history
+                    .iter()
+                    .any(|e| e.kind == EventKind::Release && e.actors.contains(&pid.raw()))
+            );
             break;
         }
         // If not escaped, keep trying; reset minimal state if prisoner still exists.
@@ -232,7 +248,9 @@ fn state_digest_covers_new_state() {
     });
 
     assert_digest_changes(&mut sim, "world contraband resolution", |sim| {
-        sim.world.resolved_contraband_at.insert(1000, sim.world.time);
+        sim.world
+            .resolved_contraband_at
+            .insert(1000, sim.world.time);
     });
 
     assert_digest_changes(&mut sim, "construction queue", |sim| {
@@ -242,39 +260,45 @@ fn state_digest_covers_new_state() {
 
     assert_digest_changes(&mut sim, "rehab records", |sim| {
         let pid = sim.world.prisoners[0].id;
-        sim.world.rehab_records.entry(pid).or_default().push(alc_world::RehabProgramRecord {
-            program: alc_social::RehabProgram::Education,
-            enrolled_day: 1,
-            progress_days: 2,
-            progress_sum: 0.2,
-            completed: false,
-            dropped: false,
-            attendance_days: 2,
-            last_attended_day: Some(2),
-            failure_reason: None,
-        });
+        sim.world
+            .rehab_records
+            .entry(pid)
+            .or_default()
+            .push(alc_world::RehabProgramRecord {
+                program: alc_social::RehabProgram::Education,
+                enrolled_day: 1,
+                progress_days: 2,
+                progress_sum: 0.2,
+                completed: false,
+                dropped: false,
+                attendance_days: 2,
+                last_attended_day: Some(2),
+                failure_reason: None,
+            });
     });
 
     assert_digest_changes(&mut sim, "post-release records", |sim| {
         let prisoner = sim.world.prisoners[0].clone();
-        sim.world.post_release_records.push(alc_world::PostReleaseRecord {
-            id: 1,
-            prisoner_id: prisoner.id.raw(),
-            name: prisoner.name.clone(),
-            reason: "parole".to_string(),
-            day: 3,
-            sentence_info: alc_world::PostReleaseSentenceInfo {
-                sentence_days: prisoner.sentence_days,
-                sentence_served_days: prisoner.sentence_served_days,
-                classification: prisoner.classification,
-                escape_motivation_at_exit: 0.1,
-            },
-            outcome_seed: 42,
-            employment: false,
-            housing: false,
-            violation: false,
-            return_to_custody: false,
-        });
+        sim.world
+            .post_release_records
+            .push(alc_world::PostReleaseRecord {
+                id: 1,
+                prisoner_id: prisoner.id.raw(),
+                name: prisoner.name.clone(),
+                reason: "parole".to_string(),
+                day: 3,
+                sentence_info: alc_world::PostReleaseSentenceInfo {
+                    sentence_days: prisoner.sentence_days,
+                    sentence_served_days: prisoner.sentence_served_days,
+                    classification: prisoner.classification,
+                    escape_motivation_at_exit: 0.1,
+                },
+                outcome_seed: 42,
+                employment: false,
+                housing: false,
+                violation: false,
+                return_to_custody: false,
+            });
     });
 }
 
@@ -299,7 +323,10 @@ fn autosave_failure_is_surfaced_and_recoverable() {
     let mut sim = Sim::new(0xA0_5A_7E);
     sim.world.days_simulated = 1;
     sim.enable_autosave(&blocked, 1);
-    assert!(sim.maybe_autosave().is_err(), "blocked dir must fail the save");
+    assert!(
+        sim.maybe_autosave().is_err(),
+        "blocked dir must fail the save"
+    );
     let err = sim
         .last_autosave_error()
         .expect("autosave failure must be surfaced")

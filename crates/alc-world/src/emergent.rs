@@ -184,9 +184,14 @@ mod tests {
 
     fn generated(effect: DailyEventEffect, actor: PrisonerId) -> GeneratedEvent {
         GeneratedEvent {
-            event: WorldEvent::new(0, SimTime::EPOCH, EventKind::Rumor, "condition-driven test event")
-                .with_actor(actor.raw())
-                .with_cause("condition-driven"),
+            event: WorldEvent::new(
+                0,
+                SimTime::EPOCH,
+                EventKind::Rumor,
+                "condition-driven test event",
+            )
+            .with_actor(actor.raw())
+            .with_cause("condition-driven"),
             effect,
         }
     }
@@ -196,7 +201,11 @@ mod tests {
         let mut w = World::new(0x0_007);
         let id = w.prisoners[0].id;
         {
-            let p = w.prisoners.iter_mut().find(|p| p.id == id).expect("prisoner");
+            let p = w
+                .prisoners
+                .iter_mut()
+                .find(|p| p.id == id)
+                .expect("prisoner");
             p.needs.hunger = 0.2;
             p.needs.safety = 0.2;
             p.needs.respect = 0.2;
@@ -206,7 +215,11 @@ mod tests {
         w.facilities[0].condition = 1.0;
         w.guards[0].morale = 0.8;
         w.guards[0].stress = 0.2;
-        w.contraband_state.entry(id).or_default().inventory.insert(ContrabandItem::Weapons, 2);
+        w.contraband_state
+            .entry(id)
+            .or_default()
+            .inventory
+            .insert(ContrabandItem::Weapons, 2);
 
         w.apply_daily_event_effect(&generated(DailyEventEffect::SpreadRumor, id));
         assert!(w.prisoners[0].needs.safety > 0.2);

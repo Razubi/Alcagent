@@ -4,11 +4,24 @@ use alc_core::{GuardId, RngStream, SimTime};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub enum GuardRank { Officer, Sergeant, Lieutenant, Captain }
+pub enum GuardRank {
+    Officer,
+    Sergeant,
+    Lieutenant,
+    Captain,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum PostType {
-    Tower, Wing, Corridor, Yard, Reception, Medical, Work, Visitor, Admin,
+    Tower,
+    Wing,
+    Corridor,
+    Yard,
+    Reception,
+    Medical,
+    Work,
+    Visitor,
+    Admin,
 }
 
 impl PostType {
@@ -227,7 +240,12 @@ pub struct GuardIncident {
 }
 
 impl GuardIncident {
-    pub fn from_report(report: GuardReport, location: impl Into<String>, involved_actors: Vec<u64>, incident_kind: impl Into<String>) -> Self {
+    pub fn from_report(
+        report: GuardReport,
+        location: impl Into<String>,
+        involved_actors: Vec<u64>,
+        incident_kind: impl Into<String>,
+    ) -> Self {
         Self {
             report,
             location: location.into(),
@@ -250,7 +268,11 @@ impl GuardIncident {
             if self.involved_actors.is_empty() {
                 "none".to_string()
             } else {
-                self.involved_actors.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(",")
+                self.involved_actors
+                    .iter()
+                    .map(|a| a.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
             },
         )
     }
@@ -278,7 +300,7 @@ pub struct Guard {
     pub id: GuardId,
     pub name: String,
     pub rank: GuardRank,
-    pub personality: f32,   // 0 = rigid by-the-book, 1 = lenient
+    pub personality: f32, // 0 = rigid by-the-book, 1 = lenient
     pub competence: f32,
     pub experience: f32,
     pub morale: f32,
@@ -313,7 +335,13 @@ fn default_credibility() -> f32 {
 }
 
 impl Guard {
-    pub fn new(id: GuardId, name: impl Into<String>, rank: GuardRank, post: PostType, rng: &mut RngStream) -> Self {
+    pub fn new(
+        id: GuardId,
+        name: impl Into<String>,
+        rank: GuardRank,
+        post: PostType,
+        rng: &mut RngStream,
+    ) -> Self {
         let competence = rng.range(0.2, 0.95) as f32;
         let experience = rng.range(0.0, 1.0) as f32;
         let fatigue: f32 = 0.0;
@@ -351,12 +379,15 @@ impl Guard {
         // keep guards on edge, quiet ones let them recover. A ratchet-only
         // model saturated every guard at 1.0 and made them escalate forever.
         self.stress = (self.stress + (incident_load - self.stress) * 0.05).clamp(0.0, 1.0);
-        if self.fatigue > 0.8 { self.morale = (self.morale - 0.001).max(0.0); }
+        if self.fatigue > 0.8 {
+            self.morale = (self.morale - 0.001).max(0.0);
+        }
         if rotated {
             self.experience = (self.experience + 0.0005).min(1.0);
             self.current_task = "patrol".into();
             // Abstract off-shift recovery marker in history (stub).
-            self.history.push(format!("shift rotation -> {}", self.shift));
+            self.history
+                .push(format!("shift rotation -> {}", self.shift));
             if self.rotation.consecutive_shifts >= 6 {
                 self.stress = (self.stress + 0.02).min(1.0);
                 self.morale = (self.morale - 0.01).max(0.0);
@@ -401,7 +432,13 @@ impl Guard {
     }
 
     /// Duty-loop step: file a credibility-scored report (stub).
-    pub fn report(&mut self, at: SimTime, summary: impl Into<String>, severity: u8, witnessed_directly: bool) -> GuardReport {
+    pub fn report(
+        &mut self,
+        at: SimTime,
+        summary: impl Into<String>,
+        severity: u8,
+        witnessed_directly: bool,
+    ) -> GuardReport {
         self.current_task = "report".into();
         let credibility = self.compute_credibility(witnessed_directly);
         self.report_credibility = credibility;
@@ -426,7 +463,11 @@ impl Guard {
     /// Duty-loop step: enforce rules within authority (stub).
     pub fn enforce(&mut self, at: SimTime, situation: impl Into<String>) -> Option<String> {
         self.current_task = "enforce".into();
-        let required = if self.post.risk_profile() > 0.75 { AuthorityLevel::L3 } else { AuthorityLevel::L2 };
+        let required = if self.post.risk_profile() > 0.75 {
+            AuthorityLevel::L3
+        } else {
+            AuthorityLevel::L2
+        };
         if self.authority >= required {
             let action = format!(
                 "t={} {:?} enforced {:?} action: {}",
@@ -439,7 +480,8 @@ impl Guard {
             self.stress = (self.stress + 0.01).min(1.0);
             Some(action)
         } else {
-            self.history.push(format!("enforce_denied@{}", at.as_secs()));
+            self.history
+                .push(format!("enforce_denied@{}", at.as_secs()));
             None
         }
     }
@@ -448,12 +490,7 @@ impl Guard {
     pub fn request_assistance(&mut self, at: SimTime, reason: impl Into<String>) -> GuardReport {
         self.current_task = "request_assistance".into();
         let reason = reason.into();
-        let mut report = self.report(
-            at,
-            format!("Assistance requested: {reason}"),
-            3,
-            true,
-        );
+        let mut report = self.report(at, format!("Assistance requested: {reason}"), 3, true);
         report.requests_assistance = true;
         self.stress = (self.stress + 0.03).min(1.0);
         report
@@ -493,7 +530,13 @@ impl Guard {
         outcome.observation = self.observe(at, incident_load);
 
         if let Some(obs) = &outcome.observation {
-            let severity = if incident_load > 0.8 { 3 } else if incident_load > 0.5 { 2 } else { 1 };
+            let severity = if incident_load > 0.8 {
+                3
+            } else if incident_load > 0.5 {
+                2
+            } else {
+                1
+            };
             let mut report = self.report(at, obs.clone(), severity, true);
             if incident_load > 0.85 {
                 outcome.enforcement_action = self.enforce(at, "stabilize incident");
@@ -606,7 +649,11 @@ impl Guard {
                     "incident exceeds safe solo response"
                 };
                 let mut assist = self.request_assistance(at, reason);
-                assist.severity = assist.severity.max(severity).max(if overwhelmed { 3 } else { 2 });
+                assist.severity =
+                    assist
+                        .severity
+                        .max(severity)
+                        .max(if overwhelmed { 3 } else { 2 });
                 assist.credibility = self.compute_credibility(true);
                 report.requests_assistance = true;
                 reports.push(assist);
@@ -656,7 +703,10 @@ mod tests {
                 if r.requests_assistance && r.summary.starts_with("Assistance requested:") {
                     assistance_reports += 1;
                 }
-                assert!(r.credibility.is_finite(), "credibility not finite at hour {hour}");
+                assert!(
+                    r.credibility.is_finite(),
+                    "credibility not finite at hour {hour}"
+                );
                 assert!(
                     (0.0..=1.0).contains(&r.credibility),
                     "credibility out of range at hour {hour}: {}",

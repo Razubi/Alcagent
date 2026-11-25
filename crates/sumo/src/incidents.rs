@@ -4,9 +4,9 @@
 //! They add causal chain tracking (cause → incident → consequence) for traceability
 //! while keeping EventKind unchanged for bincode stability.
 
-use serde::{Serialize, Deserialize};
 use alc_core::{PrisonerId, SimTime};
 use alc_events::{EventKind, WorldEvent};
+use serde::{Deserialize, Serialize};
 
 /// Unique identifier for an incident.
 pub type IncidentId = u64;
@@ -175,7 +175,12 @@ impl CausalLink {
 
 impl Incident {
     /// Create a new incident with the given kind and basic info.
-    pub fn new(kind: EventKind, timestamp: SimTime, location: String, involved_prisoners: Vec<PrisonerId>) -> Self {
+    pub fn new(
+        kind: EventKind,
+        timestamp: SimTime,
+        location: String,
+        involved_prisoners: Vec<PrisonerId>,
+    ) -> Self {
         // We'll assign the id later by the engine
         Incident {
             id: 0,
@@ -314,13 +319,14 @@ pub fn incident_from_world_event(
         format!("originating event: {}", event.summary),
     ));
 
-    let cause = most_recent_matching_prior(id, event, prior_incidents, known_prisoners).map(|prior| {
-        causal_chain.push(CausalLink::incident(
-            prior.id,
-            format!("preceding {:?} incident with shared context", prior.kind),
-        ));
-        prior.id
-    });
+    let cause =
+        most_recent_matching_prior(id, event, prior_incidents, known_prisoners).map(|prior| {
+            causal_chain.push(CausalLink::incident(
+                prior.id,
+                format!("preceding {:?} incident with shared context", prior.kind),
+            ));
+            prior.id
+        });
 
     Incident {
         id,
@@ -361,7 +367,9 @@ fn most_recent_matching_prior<'a>(
         // with like or a legitimate prior incident can be skipped.
         .filter(|inc| inc.timestamp <= event.at && inc.id != new_incident_id)
         .filter(|inc| {
-            inc.involved_prisoners.iter().any(|pid| actors.contains(pid))
+            inc.involved_prisoners
+                .iter()
+                .any(|pid| actors.contains(pid))
                 || inc.kind == event.kind
         })
         .max_by(|a, b| a.timestamp.cmp(&b.timestamp).then(a.id.cmp(&b.id)))
@@ -373,7 +381,11 @@ fn most_recent_matching_prior<'a>(
 /// It reads from the incident sidecar storage in `Sim`, not from the
 /// EventKind-enriched world event bus.
 pub fn incidents_since(incidents: &[Incident], at: SimTime) -> Vec<Incident> {
-    incidents.iter().filter(|e| e.timestamp >= at).cloned().collect()
+    incidents
+        .iter()
+        .filter(|e| e.timestamp >= at)
+        .cloned()
+        .collect()
 }
 
 /// Declarative filter for the observer Incident Reports view (0.05).

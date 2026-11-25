@@ -26,12 +26,38 @@ pub struct GangId(pub u64);
 pub struct AgentId(pub u64);
 
 impl Default for PrisonerId {
-    fn default() -> Self { Self(0) }
+    fn default() -> Self {
+        Self(0)
+    }
 }
 
-impl PrisonerId { pub fn raw(self) -> u64 { self.0 } }
-impl GuardId { pub fn raw(self) -> u64 { self.0 } }
-impl WardenId { pub fn raw(self) -> u64 { self.0 } }
-impl FacilityId { pub fn raw(self) -> u64 { self.0 } }
-impl GangId { pub fn raw(self) -> u64 { self.0 } }
-impl AgentId { pub fn raw(self) -> u64 { self.0 } }
+impl PrisonerId {
+    pub fn raw(self) -> u64 {
+        self.0
+    }
+}
+impl GuardId {
+    pub fn raw(self) -> u64 {
+        self.0
+    }
+}
+impl WardenId {
+    pub fn raw(self) -> u64 {
+        self.0
+    }
+}
+impl FacilityId {
+    pub fn raw(self) -> u64 {
+        self.0
+    }
+}
+impl GangId {
+    pub fn raw(self) -> u64 {
+        self.0
+    }
+}
+impl AgentId {
+    pub fn raw(self) -> u64 {
+        self.0
+    }
+}

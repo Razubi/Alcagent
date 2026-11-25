@@ -23,8 +23,8 @@
 
 use alc_agents::{Decision, DecisionAction, ValidationResult};
 use alc_core::PrisonerId;
-use sumo::decisions::{evaluate_candidates, DecisionType};
 use sumo::Sim;
+use sumo::decisions::{DecisionType, evaluate_candidates};
 
 const SEED: u64 = 4242;
 
@@ -62,14 +62,20 @@ fn assert_three_way_agreement(
     let delivered_tag = tag(&delivered.result);
 
     assert_eq!(
-        proposed_tag, validate_tag,
+        proposed_tag,
+        validate_tag,
         "{dt:?}: propose_decision estimated {:?} but validate_only said {:?} (reason: {:?})",
-        proposed_tag, validate_tag, dry.rejected_reason()
+        proposed_tag,
+        validate_tag,
+        dry.rejected_reason()
     );
     assert_eq!(
-        proposed_tag, delivered_tag,
+        proposed_tag,
+        delivered_tag,
         "{dt:?}: propose_decision estimated {:?} but deliver_decision said {:?} (reason: {:?})",
-        proposed_tag, delivered_tag, delivered.result.rejected_reason()
+        proposed_tag,
+        delivered_tag,
+        delivered.result.rejected_reason()
     );
 }
 
@@ -84,9 +90,7 @@ fn colocated_peer(sim: &Sim, pid: PrisonerId) -> PrisonerId {
     sim.world()
         .prisoners
         .iter()
-        .find(|p| {
-            p.id != pid && sim.world().prisoner_location.get(&p.id) == Some(&facility)
-        })
+        .find(|p| p.id != pid && sim.world().prisoner_location.get(&p.id) == Some(&facility))
         .expect("at least one co-located prisoner exists at bootstrap")
         .id
 }
@@ -179,7 +183,11 @@ fn rejected_empty_rumor_does_not_mutate_and_validate_only_agrees() {
     );
 
     let dry = sim.validate_only(pid, &proposal);
-    assert_eq!(tag(&dry), "rejected", "validate_only must agree the rumor is rejected");
+    assert_eq!(
+        tag(&dry),
+        "rejected",
+        "validate_only must agree the rumor is rejected"
+    );
 
     let mut expected = proposal.clone();
     expected.decision_type = DecisionType::SpreadRumor;
@@ -197,13 +205,21 @@ fn rejected_empty_rumor_does_not_mutate_and_validate_only_agrees() {
     assert_eq!(tag(&delivered.result), "rejected");
     assert!(!delivered.applied);
 
-    assert_eq!(sim.events().len(), events_before, "rejected proposal emitted events");
+    assert_eq!(
+        sim.events().len(),
+        events_before,
+        "rejected proposal emitted events"
+    );
     assert_eq!(
         sim.decision_log().len(),
         decisions_before,
         "rejected proposal was appended to decision_log"
     );
-    assert_eq!(sim.trace_hash(), trace_before, "rejected proposal changed trace_hash");
+    assert_eq!(
+        sim.trace_hash(),
+        trace_before,
+        "rejected proposal changed trace_hash"
+    );
 }
 
 #[test]
@@ -213,7 +229,8 @@ fn unknown_prisoner_is_rejected_without_mutation() {
 
     // The proposal path refuses the unavailable agent outright.
     assert!(
-        sim.propose_decision(ghost, DecisionType::Comply, None).is_none(),
+        sim.propose_decision(ghost, DecisionType::Comply, None)
+            .is_none(),
         "unknown prisoner must not produce a proposal"
     );
 
@@ -231,7 +248,11 @@ fn unknown_prisoner_is_rejected_without_mutation() {
         memory_records: Vec::new(),
     };
     let dry = sim.validate_only(ghost, &hand_built);
-    assert_eq!(tag(&dry), "rejected", "validate_only must reject an unknown prisoner id");
+    assert_eq!(
+        tag(&dry),
+        "rejected",
+        "validate_only must reject an unknown prisoner id"
+    );
 
     let events_before = sim.events().len();
     let decisions_before = sim.decision_log().len();
@@ -253,7 +274,10 @@ fn evaluate_candidates_proposals_validate_consistently() {
     let sim = Sim::new(SEED);
     let pid = sim.world().prisoners[0].id;
     let proposals = evaluate_candidates(sim.world(), pid);
-    assert!(!proposals.is_empty(), "evaluate_candidates produced no proposals");
+    assert!(
+        !proposals.is_empty(),
+        "evaluate_candidates produced no proposals"
+    );
 
     let events_before = sim.events().len();
     let decisions_before = sim.decision_log().len();
@@ -272,9 +296,21 @@ fn evaluate_candidates_proposals_validate_consistently() {
         );
     }
 
-    assert_eq!(sim.events().len(), events_before, "evaluate_candidates/validate_only emitted events");
-    assert_eq!(sim.decision_log().len(), decisions_before, "pure paths mutated decision_log");
-    assert_eq!(sim.trace_hash(), trace_before, "pure paths mutated trace_hash");
+    assert_eq!(
+        sim.events().len(),
+        events_before,
+        "evaluate_candidates/validate_only emitted events"
+    );
+    assert_eq!(
+        sim.decision_log().len(),
+        decisions_before,
+        "pure paths mutated decision_log"
+    );
+    assert_eq!(
+        sim.trace_hash(),
+        trace_before,
+        "pure paths mutated trace_hash"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -294,12 +330,14 @@ fn lockdown_propose_suppresses_movement_and_escape() {
         "propose_decision must suppress MoveTo proposals during lockdown"
     );
     assert!(
-        sim.propose_decision(pid, DecisionType::EscapeAttempt, None).is_none(),
+        sim.propose_decision(pid, DecisionType::EscapeAttempt, None)
+            .is_none(),
         "propose_decision must suppress EscapeAttempt proposals during lockdown"
     );
     // Comply remains available during lockdown.
     assert!(
-        sim.propose_decision(pid, DecisionType::Comply, None).is_some(),
+        sim.propose_decision(pid, DecisionType::Comply, None)
+            .is_some(),
         "Comply must still be proposable during lockdown"
     );
 }
@@ -313,13 +351,23 @@ fn lockdown_deliver_rejects_movement_and_escape() {
 
     let move_out = sim.deliver_decision(
         pid,
-        Decision::new(DecisionAction::MoveTo { target_facility: facility.0 }),
+        Decision::new(DecisionAction::MoveTo {
+            target_facility: facility.0,
+        }),
     );
-    assert_eq!(tag(&move_out.result), "rejected", "deliver must reject MoveTo during lockdown");
+    assert_eq!(
+        tag(&move_out.result),
+        "rejected",
+        "deliver must reject MoveTo during lockdown"
+    );
     assert!(!move_out.applied);
 
     let escape_out = sim.deliver_decision(pid, Decision::new(DecisionAction::EscapeAttempt));
-    assert_eq!(tag(&escape_out.result), "rejected", "deliver must reject EscapeAttempt during lockdown");
+    assert_eq!(
+        tag(&escape_out.result),
+        "rejected",
+        "deliver must reject EscapeAttempt during lockdown"
+    );
     assert!(!escape_out.applied);
 }
 
@@ -336,15 +384,22 @@ fn lockdown_candidate_estimates_must_mark_movement_and_escape_rejected() {
     let risky: Vec<_> = proposals
         .iter()
         .filter(|p| {
-            matches!(p.decision_type, DecisionType::MoveTo | DecisionType::EscapeAttempt)
+            matches!(
+                p.decision_type,
+                DecisionType::MoveTo | DecisionType::EscapeAttempt
+            )
         })
         .collect();
     assert!(
-        risky.iter().any(|p| p.decision_type == DecisionType::MoveTo),
+        risky
+            .iter()
+            .any(|p| p.decision_type == DecisionType::MoveTo),
         "expected a MoveTo candidate to enumerate"
     );
     assert!(
-        risky.iter().any(|p| p.decision_type == DecisionType::EscapeAttempt),
+        risky
+            .iter()
+            .any(|p| p.decision_type == DecisionType::EscapeAttempt),
         "expected an EscapeAttempt candidate to enumerate"
     );
 
@@ -383,6 +438,7 @@ fn lockdown_validate_only_must_reject_pre_lockdown_movement_proposal() {
         "validate_only must reject MoveTo during lockdown to agree with deliver_decision"
     );
 
-    let delivered = locked.deliver_decision(pid, proposal.decision_type.to_decision(proposal.target));
+    let delivered =
+        locked.deliver_decision(pid, proposal.decision_type.to_decision(proposal.target));
     assert_eq!(tag(&delivered.result), "rejected");
 }

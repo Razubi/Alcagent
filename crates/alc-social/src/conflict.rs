@@ -1,8 +1,8 @@
 //! Conflict, violence, and disciplinary events per Directive §8.
 
+use crate::Gang;
 use crate::gang::register_rivalry;
 use crate::relationships::{RelationshipDelta, SocialGraph};
-use crate::Gang;
 use alc_core::{GangId, PrisonerId, RngStream};
 use serde::{Deserialize, Serialize};
 
@@ -150,7 +150,9 @@ pub fn resolve_conflict(
     discipline_a: f32,
     intervention: f32,
 ) -> ConflictOutcome {
-    let escalate = tension * 0.5 + aggression_a * 0.3 - discipline_a * 0.2 - staff_presence * 0.3
+    let escalate = tension * 0.5 + aggression_a * 0.3
+        - discipline_a * 0.2
+        - staff_presence * 0.3
         - intervention * 0.3;
     if escalate < 0.1 {
         return ConflictOutcome::Compliance;
@@ -210,7 +212,9 @@ pub fn apply_outcome(
 
     match outcome {
         ConflictOutcome::Compliance => {
-            effects.notes.push("conflict de-escalated to compliance".into());
+            effects
+                .notes
+                .push("conflict de-escalated to compliance".into());
             if participants.len() >= 2 {
                 effects.relationship_changes.push((
                     participants[0],
@@ -370,7 +374,9 @@ pub fn apply_outcome(
                 register_rivalry(gangs, ga, gb);
             }
             effects.investigation_recommended = true;
-            effects.notes.push("institutional security response likely required".into());
+            effects
+                .notes
+                .push("institutional security response likely required".into());
         }
     }
 
@@ -390,7 +396,10 @@ pub fn apply_outcome(
     // Tension increases can reduce resources slightly due to disruption.
     if !effects.gang_tensions.is_empty() {
         for g in gangs.iter_mut() {
-            if gang_context.map(|(a, b)| g.id == a || g.id == b).unwrap_or(false) {
+            if gang_context
+                .map(|(a, b)| g.id == a || g.id == b)
+                .unwrap_or(false)
+            {
                 g.resources = (g.resources - 0.01 * sev).max(0.0);
             }
         }
@@ -447,8 +456,7 @@ pub fn maybe_generate_conflict(
             }
 
             // Low discipline / poor control on either side makes escalation more likely.
-            let low_discipline =
-                ((1.0 - a.discipline).max(1.0 - b.discipline)).clamp(0.0, 1.0);
+            let low_discipline = ((1.0 - a.discipline).max(1.0 - b.discipline)).clamp(0.0, 1.0);
             let impulsive = (a.impulsiveness.max(b.impulsiveness)).clamp(0.0, 1.0);
             let irritable = (a.irritability.max(b.irritability)).clamp(0.0, 1.0);
             let control_gap =
@@ -457,8 +465,8 @@ pub fn maybe_generate_conflict(
                 continue;
             }
 
-            let tension = (hostility * 0.55 + control_gap * 0.35 + rel.threat_score() * 0.1)
-                .clamp(0.0, 2.0);
+            let tension =
+                (hostility * 0.55 + control_gap * 0.35 + rel.threat_score() * 0.1).clamp(0.0, 2.0);
             let score = tension * (0.6 + control_gap * 0.4);
             match best {
                 Some((s, _, _, _)) if s >= score => {}
@@ -477,12 +485,11 @@ pub fn maybe_generate_conflict(
 
     let a = &prisoners[i];
     let b = &prisoners[j];
-    let (instigator, target) =
-        if a.aggression + a.impulsiveness >= b.aggression + b.impulsiveness {
-            (a.id, b.id)
-        } else {
-            (b.id, a.id)
-        };
+    let (instigator, target) = if a.aggression + a.impulsiveness >= b.aggression + b.impulsiveness {
+        (a.id, b.id)
+    } else {
+        (b.id, a.id)
+    };
 
     let roll = rng.next_f64();
     let kind = if tension > 1.1 && roll > 0.55 {

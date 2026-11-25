@@ -6,8 +6,8 @@
 
 use alc_core::GangId;
 use alc_prisoner::Needs;
-use sumo::decisions::{evaluate_candidates, DecisionType};
 use sumo::Sim;
+use sumo::decisions::{DecisionType, evaluate_candidates};
 
 const SEED: u64 = 7;
 
@@ -22,7 +22,10 @@ fn proposal_contains_scores_confidence_and_memories() {
     let id = sim.world().prisoners[0].id;
 
     let proposals = evaluate_candidates(sim.world(), id);
-    assert!(!proposals.is_empty(), "evaluate_candidates returned no candidates for {id:?}");
+    assert!(
+        !proposals.is_empty(),
+        "evaluate_candidates returned no candidates for {id:?}"
+    );
 
     let top = &proposals[0];
     assert!(
@@ -49,7 +52,10 @@ fn proposal_contains_scores_confidence_and_memories() {
             "memory importance {} out of range",
             memory.importance
         );
-        assert!(!memory.summary.trim().is_empty(), "citation summary must not be empty");
+        assert!(
+            !memory.summary.trim().is_empty(),
+            "citation summary must not be empty"
+        );
     }
 }
 
@@ -61,12 +67,18 @@ fn proposal_explanation_mentions_top_drive() {
     let top = &evaluate_candidates(sim.world(), id)[0];
 
     let explanation = top.explanation();
-    assert!(explanation.contains("Top drives:"), "missing drive section:\n{explanation}");
+    assert!(
+        explanation.contains("Top drives:"),
+        "missing drive section:\n{explanation}"
+    );
     assert!(
         explanation.contains("Memory influences:"),
         "missing memory section:\n{explanation}"
     );
-    assert!(explanation.contains("Confidence:"), "missing confidence line:\n{explanation}");
+    assert!(
+        explanation.contains("Confidence:"),
+        "missing confidence line:\n{explanation}"
+    );
 
     let best = top
         .scores
@@ -96,16 +108,32 @@ fn evaluate_candidates_is_pure_and_deterministic() {
 
     assert_eq!(sim.trace_hash(), trace_before, "trace_hash changed");
     assert_eq!(sim.events().len(), events_before, "event bus changed");
-    assert_eq!(sim.decision_log().len(), decisions_before, "decision log changed");
+    assert_eq!(
+        sim.decision_log().len(),
+        decisions_before,
+        "decision log changed"
+    );
 
-    assert_eq!(first.len(), second.len(), "candidate count is not deterministic");
+    assert_eq!(
+        first.len(),
+        second.len(),
+        "candidate count is not deterministic"
+    );
     for (a, b) in first.iter().zip(second.iter()) {
         assert_eq!(a.prisoner_id, b.prisoner_id);
         assert_eq!(a.decision_type, b.decision_type);
         assert_eq!(a.target, b.target);
         assert_eq!(a.rationale, b.rationale);
-        assert_eq!(a.scores, b.scores, "scores differ for {:?}", a.decision_type);
-        assert_eq!(a.confidence, b.confidence, "confidence differs for {:?}", a.decision_type);
+        assert_eq!(
+            a.scores, b.scores,
+            "scores differ for {:?}",
+            a.decision_type
+        );
+        assert_eq!(
+            a.confidence, b.confidence,
+            "confidence differs for {:?}",
+            a.decision_type
+        );
         assert_eq!(
             a.memory_records, b.memory_records,
             "memory citations differ for {:?}",
@@ -141,7 +169,9 @@ fn candidate_ordering_differs_with_dominant_need() {
         .gangs
         .push(alc_social::Gang::new(GangId(9001), "Testers", founder));
     // Co-locate both prisoners so social/fight candidates exist for both.
-    sim.world_mut().prisoner_location.insert(aggressor, facility);
+    sim.world_mut()
+        .prisoner_location
+        .insert(aggressor, facility);
 
     {
         let p = sim
@@ -213,7 +243,10 @@ fn candidate_ordering_differs_with_dominant_need() {
         "unsafe prisoner should seek a gang; ranking: {:?}",
         seeker_proposals
             .iter()
-            .map(|p| (p.decision_type, p.scores.iter().map(|s| s.score * s.weight).sum::<f32>()))
+            .map(|p| (
+                p.decision_type,
+                p.scores.iter().map(|s| s.score * s.weight).sum::<f32>()
+            ))
             .collect::<Vec<_>>()
     );
     assert_eq!(
@@ -222,10 +255,16 @@ fn candidate_ordering_differs_with_dominant_need() {
         "humiliated aggressive prisoner should pick a fight; ranking: {:?}",
         aggressor_proposals
             .iter()
-            .map(|p| (p.decision_type, p.scores.iter().map(|s| s.score * s.weight).sum::<f32>()))
+            .map(|p| (
+                p.decision_type,
+                p.scores.iter().map(|s| s.score * s.weight).sum::<f32>()
+            ))
             .collect::<Vec<_>>()
     );
-    assert_ne!(seeker_top, aggressor_top, "contrasting needs must change the top candidate");
+    assert_ne!(
+        seeker_top, aggressor_top,
+        "contrasting needs must change the top candidate"
+    );
 }
 
 /// End-to-end check that the engine-constructed proposal exposes the new
@@ -245,7 +284,10 @@ fn sim_propose_still_works() {
 
     assert_eq!(proposal.prisoner_id, prisoner);
     assert_eq!(proposal.decision_type, DecisionType::Comply);
-    assert!(!proposal.scores.is_empty(), "engine proposal should carry evaluator drives");
+    assert!(
+        !proposal.scores.is_empty(),
+        "engine proposal should carry evaluator drives"
+    );
     assert!(proposal.confidence.is_finite());
     assert!((0.0..=1.0).contains(&proposal.confidence));
     assert!(!proposal.explanation().is_empty());

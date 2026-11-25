@@ -223,9 +223,17 @@ mod tests {
         assert_ne!(key, decision_key(&second));
         second.source.clear();
         second.validation = "agent".to_string();
-        assert_ne!(key, decision_key(&second), "field boundaries must not be forgeable");
+        assert_ne!(
+            key,
+            decision_key(&second),
+            "field boundaries must not be forgeable"
+        );
         let mut later = first.clone();
         later.time.secs += 1;
-        assert_ne!(key, decision_key(&later), "time alone must disambiguate rows");
+        assert_ne!(
+            key,
+            decision_key(&later),
+            "time alone must disambiguate rows"
+        );
     }
 }

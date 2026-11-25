@@ -67,4 +67,4 @@ pub const CONSTRUCTION_KINDS: [alc_world::FacilityKind; 7] = [
     alc_world::FacilityKind::Workshop,
 ];
 
-pub use app::{launch, App};
+pub use app::{App, launch};

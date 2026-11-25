@@ -27,9 +27,9 @@ pub struct MemberRecord {
     pub prisoner: PrisonerId,
     pub joined_at: SimTime,
     pub rank: Rank,
-    pub commitment: f32,   // 0..1
-    pub influence: f32,    // 0..1 within gang
-    pub grievances: f32,   // 0..1
+    pub commitment: f32, // 0..1
+    pub influence: f32,  // 0..1 within gang
+    pub grievances: f32, // 0..1
     pub expected_protection: f32,
     pub contributions: f32,
 }
@@ -131,11 +131,7 @@ impl Gang {
         if self.leader == Some(p) {
             self.leader = self.pick_new_leader();
             if let Some(new_leader) = self.leader {
-                if let Some(rec) = self
-                    .hierarchy
-                    .iter_mut()
-                    .find(|r| r.prisoner == new_leader)
-                {
+                if let Some(rec) = self.hierarchy.iter_mut().find(|r| r.prisoner == new_leader) {
                     rec.rank = Rank::Leader;
                     rec.influence = rec.influence.max(0.9);
                 }
@@ -155,9 +151,20 @@ impl Gang {
         if split.is_empty() || split.len() >= self.members.len() {
             return None;
         }
-        let new_id = GangId(self.id.0.saturating_mul(31).saturating_add(split[0].0).saturating_add(1));
+        let new_id = GangId(
+            self.id
+                .0
+                .saturating_mul(31)
+                .saturating_add(split[0].0)
+                .saturating_add(1),
+        );
         let founder = split[0];
-        let mut new_gang = Gang::with_formed_at(new_id, format!("{} splinter", self.name), founder, self.formed_at);
+        let mut new_gang = Gang::with_formed_at(
+            new_id,
+            format!("{} splinter", self.name),
+            founder,
+            self.formed_at,
+        );
         new_gang.culture = self.culture.clone();
         new_gang.reputation = (self.reputation * 0.6).clamp(0.1, 1.0);
         new_gang.resources = self.resources * 0.3;
@@ -192,7 +199,8 @@ impl Gang {
             rec.rank = Rank::Leader;
             rec.influence = rec.influence.max(0.9);
         } else {
-            self.hierarchy.push(MemberRecord::new(new_leader, self.formed_at, Rank::Leader));
+            self.hierarchy
+                .push(MemberRecord::new(new_leader, self.formed_at, Rank::Leader));
         }
         self.reputation = (self.reputation - 0.05).max(0.0);
         true
@@ -269,7 +277,8 @@ pub fn form_gang_if_drivers(
     next_gang_id: GangId,
     now: SimTime,
 ) -> Option<Gang> {
-    let free: Vec<&GangFormationCandidate> = candidates.iter().filter(|c| !c.already_in_gang).collect();
+    let free: Vec<&GangFormationCandidate> =
+        candidates.iter().filter(|c| !c.already_in_gang).collect();
     if free.len() < 3 {
         return None;
     }
@@ -293,12 +302,15 @@ pub fn form_gang_if_drivers(
                 .zip(other.background_tag.as_ref())
                 .map(|(a, b)| a == b)
                 .unwrap_or(false);
-            let enemy_match = seed.common_enemy.is_some() && seed.common_enemy == other.common_enemy;
+            let enemy_match =
+                seed.common_enemy.is_some() && seed.common_enemy == other.common_enemy;
             let driver = friend * 0.35
                 + other.protection_need * 0.25
                 + if bg_match { 0.2 } else { 0.0 }
                 + if enemy_match { 0.2 } else { 0.0 };
-            if driver > 0.45 || (friend > 0.8 && (bg_match || enemy_match || other.protection_need > 0.6)) {
+            if driver > 0.45
+                || (friend > 0.8 && (bg_match || enemy_match || other.protection_need > 0.6))
+            {
                 cluster.push(other.id);
                 score_sum += driver + other.ambition * 0.1;
                 if bg_match {
@@ -316,7 +328,9 @@ pub fn form_gang_if_drivers(
         let culture = if common_enemy_hits >= 2 {
             "retaliatory".into()
         } else if shared_bg >= 2 {
-            seed.background_tag.clone().unwrap_or_else(|| "kinship".into())
+            seed.background_tag
+                .clone()
+                .unwrap_or_else(|| "kinship".into())
         } else if avg > 0.7 {
             "predatory".into()
         } else {
@@ -344,7 +358,12 @@ pub fn form_gang_if_drivers(
     }
 
     let (founder, members, avg, culture) = best_seed?;
-    let mut gang = Gang::with_formed_at(next_gang_id, format!("Crew {}", next_gang_id.0), founder, now);
+    let mut gang = Gang::with_formed_at(
+        next_gang_id,
+        format!("Crew {}", next_gang_id.0),
+        founder,
+        now,
+    );
     gang.culture = culture;
     gang.reputation = (0.4 + avg * 0.3).clamp(0.2, 0.9);
     gang.resources = (avg * 0.2).clamp(0.0, 0.5);
@@ -404,7 +423,10 @@ pub fn resolve_leader_member_conflict(
     ctx: &MemberDecisionContext,
 ) -> LeaderMemberResolution {
     let leader_rel = (ctx.relationship_to_leader + 1.0) * 0.5;
-    let comply = (ctx.loyalty * 0.35 + leader_rel * 0.2 + directive.pressure * 0.2 + directive.expected_gain * 0.15
+    let comply = (ctx.loyalty * 0.35
+        + leader_rel * 0.2
+        + directive.pressure * 0.2
+        + directive.expected_gain * 0.15
         - ctx.goal_conflict * 0.2
         - directive.personal_risk * 0.2
         - ctx.autonomy * 0.1

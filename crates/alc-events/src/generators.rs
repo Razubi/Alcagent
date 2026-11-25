@@ -90,11 +90,21 @@ pub fn generate_daily_events(
         EventKind::Rumor,
         DailyEventEffect::SpreadRumor,
         0.55,
-        |c| format!("A rumor spreads: tension {:.2}, isolation {:.2}", c.tension, c.lonely_fraction),
-        |c| vec![
-            format!("tension {:.2} exceeded 0.55 threshold", c.tension),
-            format!("lonely_fraction {:.2} amplified the rumor", c.lonely_fraction),
-        ],
+        |c| {
+            format!(
+                "A rumor spreads: tension {:.2}, isolation {:.2}",
+                c.tension, c.lonely_fraction
+            )
+        },
+        |c| {
+            vec![
+                format!("tension {:.2} exceeded 0.55 threshold", c.tension),
+                format!(
+                    "lonely_fraction {:.2} amplified the rumor",
+                    c.lonely_fraction
+                ),
+            ]
+        },
     );
 
     push_candidate(
@@ -111,8 +121,18 @@ pub fn generate_daily_events(
         EventKind::FamilyCorrespondence,
         DailyEventEffect::ImproveFamilyContact,
         1.0,
-        |c| format!("Family correspondence arrives for an inmate with family-contact deficit {:.2}", c.family_contact_deficit),
-        |c| vec![format!("family_contact_deficit {:.2} exceeded 0.35 threshold", c.family_contact_deficit)],
+        |c| {
+            format!(
+                "Family correspondence arrives for an inmate with family-contact deficit {:.2}",
+                c.family_contact_deficit
+            )
+        },
+        |c| {
+            vec![format!(
+                "family_contact_deficit {:.2} exceeded 0.35 threshold",
+                c.family_contact_deficit
+            )]
+        },
     );
 
     push_candidate(
@@ -129,11 +149,18 @@ pub fn generate_daily_events(
         EventKind::StaffMisconduct,
         DailyEventEffect::DamageGuardMorale,
         0.8,
-        |c| format!("A guard crosses a policy line under stress {:.2} and staffing deficit {:.2}", c.guard_stress, c.guard_shortage),
-        |c| vec![
-            format!("guard_stress {:.2} contributed", c.guard_stress),
-            format!("guard_shortage {:.2} reduced oversight", c.guard_shortage),
-        ],
+        |c| {
+            format!(
+                "A guard crosses a policy line under stress {:.2} and staffing deficit {:.2}",
+                c.guard_stress, c.guard_shortage
+            )
+        },
+        |c| {
+            vec![
+                format!("guard_stress {:.2} contributed", c.guard_stress),
+                format!("guard_shortage {:.2} reduced oversight", c.guard_shortage),
+            ]
+        },
     );
 
     push_candidate(
@@ -150,8 +177,18 @@ pub fn generate_daily_events(
         EventKind::EquipmentFailure,
         DailyEventEffect::IncreaseMaintenanceDebt,
         0.9,
-        |c| format!("Equipment fails after maintenance debt reaches {:.2}", c.maintenance_debt),
-        |c| vec![format!("maintenance_debt {:.2} exceeded 0.40 threshold", c.maintenance_debt)],
+        |c| {
+            format!(
+                "Equipment fails after maintenance debt reaches {:.2}",
+                c.maintenance_debt
+            )
+        },
+        |c| {
+            vec![format!(
+                "maintenance_debt {:.2} exceeded 0.40 threshold",
+                c.maintenance_debt
+            )]
+        },
     );
 
     push_candidate(
@@ -168,8 +205,18 @@ pub fn generate_daily_events(
         EventKind::FoodShortage,
         DailyEventEffect::IncreaseHunger,
         0.95,
-        |c| format!("Food service falls short: {:.0}% of prisoners report hunger", c.hungry_fraction * 100.0),
-        |c| vec![format!("hungry_fraction {:.2} exceeded 0.45 threshold", c.hungry_fraction)],
+        |c| {
+            format!(
+                "Food service falls short: {:.0}% of prisoners report hunger",
+                c.hungry_fraction * 100.0
+            )
+        },
+        |c| {
+            vec![format!(
+                "hungry_fraction {:.2} exceeded 0.45 threshold",
+                c.hungry_fraction
+            )]
+        },
     );
 
     push_candidate(
@@ -186,8 +233,18 @@ pub fn generate_daily_events(
         EventKind::MedicalEmergency,
         DailyEventEffect::IncreaseMedicalNeed,
         0.95,
-        |c| format!("A treatable condition becomes an emergency under medical neglect {:.2}", c.medical_neglect),
-        |c| vec![format!("medical_neglect {:.2} exceeded 0.55 threshold", c.medical_neglect)],
+        |c| {
+            format!(
+                "A treatable condition becomes an emergency under medical neglect {:.2}",
+                c.medical_neglect
+            )
+        },
+        |c| {
+            vec![format!(
+                "medical_neglect {:.2} exceeded 0.55 threshold",
+                c.medical_neglect
+            )]
+        },
     );
 
     push_candidate(
@@ -204,11 +261,18 @@ pub fn generate_daily_events(
         EventKind::Protests,
         DailyEventEffect::RaiseTension,
         0.85,
-        |c| format!("A protest forms: tension {:.2}, crowding {:.2}", c.tension, c.crowding),
-        |c| vec![
-            format!("tension {:.2} contributed", c.tension),
-            format!("crowding {:.2} contributed", c.crowding),
-        ],
+        |c| {
+            format!(
+                "A protest forms: tension {:.2}, crowding {:.2}",
+                c.tension, c.crowding
+            )
+        },
+        |c| {
+            vec![
+                format!("tension {:.2} contributed", c.tension),
+                format!("crowding {:.2} contributed", c.crowding),
+            ]
+        },
     );
 
     push_candidate(
@@ -225,21 +289,32 @@ pub fn generate_daily_events(
         EventKind::ContrabandFound,
         DailyEventEffect::ConfiscateContraband,
         0.9,
-        |c| format!("Contraband is found during a search (pressure {:.2})", c.contraband_pressure),
-        |c| vec![format!("contraband_pressure {:.2} exceeded 0.45 threshold", c.contraband_pressure)],
+        |c| {
+            format!(
+                "Contraband is found during a search (pressure {:.2})",
+                c.contraband_pressure
+            )
+        },
+        |c| {
+            vec![format!(
+                "contraband_pressure {:.2} exceeded 0.45 threshold",
+                c.contraband_pressure
+            )]
+        },
     );
 
     // Strongest justified pressures win; the fixed order breaks exact ties.
     candidates.sort_by(|a, b| {
-        b.score.total_cmp(&a.score).then_with(|| a.order.cmp(&b.order))
+        b.score
+            .total_cmp(&a.score)
+            .then_with(|| a.order.cmp(&b.order))
     });
 
     candidates
         .into_iter()
         .take(MAX_EVENTS_PER_DAY)
         .map(|c| {
-            let mut event = WorldEvent::new(0, at, c.kind, c.summary)
-                .with_confidence(c.confidence);
+            let mut event = WorldEvent::new(0, at, c.kind, c.summary).with_confidence(c.confidence);
             if let Some(actor) = c.actor {
                 event = event.with_actor(actor);
             }
@@ -247,7 +322,10 @@ pub fn generate_daily_events(
             for cause in c.causes {
                 event = event.with_cause(cause);
             }
-            GeneratedEvent { event, effect: c.effect }
+            GeneratedEvent {
+                event,
+                effect: c.effect,
+            }
         })
         .collect()
 }
@@ -311,9 +389,8 @@ fn salt(name: &str) -> u64 {
 }
 
 fn unit_noise(seed: u64, day: u64, salt: u64) -> f32 {
-    let mut x = seed
-        ^ day.wrapping_mul(0x9e37_79b9_7f4a_7c15)
-        ^ salt.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    let mut x =
+        seed ^ day.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ salt.wrapping_mul(0xbf58_476d_1ce4_e5b9);
     x ^= x >> 30;
     x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9);
     x ^= x >> 27;
@@ -350,7 +427,11 @@ mod tests {
         }
     }
 
-    fn signature(seed: u64, at: SimTime, c: &EventConditions) -> Vec<(EventKind, String, Vec<String>)> {
+    fn signature(
+        seed: u64,
+        at: SimTime,
+        c: &EventConditions,
+    ) -> Vec<(EventKind, String, Vec<String>)> {
         generate_daily_events(seed, at, c, &[7, 11, 19])
             .into_iter()
             .map(|g| (g.event.kind, g.event.summary, g.event.causes))
@@ -369,7 +450,8 @@ mod tests {
 
     #[test]
     fn calm_conditions_generate_nothing() {
-        let generated = generate_daily_events(1, SimTime::from_days(3), &EventConditions::default(), &[]);
+        let generated =
+            generate_daily_events(1, SimTime::from_days(3), &EventConditions::default(), &[]);
         assert!(generated.is_empty());
     }
 

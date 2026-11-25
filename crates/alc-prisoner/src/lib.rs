@@ -23,7 +23,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Security classification.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash,
+)]
 pub enum Classification {
     #[default]
     Minimum,
@@ -492,9 +494,27 @@ impl Default for ScheduleAssignment {
 
 impl Prisoner {
     pub fn generate(id: PrisonerId, rng: &mut RngStream) -> Self {
-        let first = ["Marcus", "Dmitri", "Andre", "Tyrell", "Viktor", "Hector", "Samuel", "Kwame", "Liam", "Jose"];
-        let last = ["Volkov", "Mercer", "Okafor", "Reyes", "Kowalski", "Dubois", "Haddad", "Fitzgerald", "Osei", "Marsh"];
-        let name = format!("{} {}", first[(rng.next_u64() % 10) as usize], last[(rng.next_u64() % 10) as usize]);
+        let first = [
+            "Marcus", "Dmitri", "Andre", "Tyrell", "Viktor", "Hector", "Samuel", "Kwame", "Liam",
+            "Jose",
+        ];
+        let last = [
+            "Volkov",
+            "Mercer",
+            "Okafor",
+            "Reyes",
+            "Kowalski",
+            "Dubois",
+            "Haddad",
+            "Fitzgerald",
+            "Osei",
+            "Marsh",
+        ];
+        let name = format!(
+            "{} {}",
+            first[(rng.next_u64() % 10) as usize],
+            last[(rng.next_u64() % 10) as usize]
+        );
         let sentence_days = [30, 90, 180, 365, 730, 1460][(rng.next_u64() % 6) as usize];
         let classification = match sentence_days {
             30..=90 => Classification::Minimum,
@@ -510,10 +530,20 @@ impl Prisoner {
             description: "Stay alive and out of solitary".into(),
         }];
         if rng.chance(0.3) {
-            goals.push(Goal { kind: GoalKind::Escape, progress: 0.0, urgency: 0.8, description: "Find a way out".into() });
+            goals.push(Goal {
+                kind: GoalKind::Escape,
+                progress: 0.0,
+                urgency: 0.8,
+                description: "Find a way out".into(),
+            });
         }
         if rng.chance(0.4) {
-            goals.push(Goal { kind: GoalKind::GangLeadership, progress: 0.1, urgency: 0.5, description: "Rise to the top".into() });
+            goals.push(Goal {
+                kind: GoalKind::GangLeadership,
+                progress: 0.1,
+                urgency: 0.5,
+                description: "Rise to the top".into(),
+            });
         }
         Self {
             id,
@@ -698,14 +728,23 @@ impl Prisoner {
 
     /// Append a disciplinary action, keeping only the most recent
     /// [`MAX_DISCIPLINE_RECORDS`] entries.
-    pub fn record_discipline(&mut self, day: u32, kind: impl Into<String>, action: impl Into<String>, severity: f32) {
+    pub fn record_discipline(
+        &mut self,
+        day: u32,
+        kind: impl Into<String>,
+        action: impl Into<String>,
+        severity: f32,
+    ) {
         self.discipline_history.push(DisciplineRecord {
             day,
             kind: kind.into(),
             action: action.into(),
             severity: severity.clamp(0.0, 1.0),
         });
-        let overflow = self.discipline_history.len().saturating_sub(MAX_DISCIPLINE_RECORDS);
+        let overflow = self
+            .discipline_history
+            .len()
+            .saturating_sub(MAX_DISCIPLINE_RECORDS);
         if overflow > 0 {
             self.discipline_history.drain(0..overflow);
         }
@@ -713,7 +752,14 @@ impl Prisoner {
 
     /// Append a medical outcome, keeping only the most recent
     /// [`MAX_MEDICAL_RECORDS`] entries.
-    pub fn record_medical_outcome(&mut self, day: u32, severity: MedicalSeverity, cause: impl Into<String>, treated: bool, disposition: impl Into<String>) {
+    pub fn record_medical_outcome(
+        &mut self,
+        day: u32,
+        severity: MedicalSeverity,
+        cause: impl Into<String>,
+        treated: bool,
+        disposition: impl Into<String>,
+    ) {
         self.medical_history.push(MedicalOutcomeRecord {
             day,
             severity,
@@ -721,7 +767,10 @@ impl Prisoner {
             treated,
             disposition: disposition.into(),
         });
-        let overflow = self.medical_history.len().saturating_sub(MAX_MEDICAL_RECORDS);
+        let overflow = self
+            .medical_history
+            .len()
+            .saturating_sub(MAX_MEDICAL_RECORDS);
         if overflow > 0 {
             self.medical_history.drain(0..overflow);
         }
@@ -743,8 +792,14 @@ impl Prisoner {
         let mental = 1.0 - self.condition.mental_health.clamp(0.0, 1.0);
         let contributors = [
             (MedicalCrisisCause::Neglect, neglect),
-            (MedicalCrisisCause::Injury, self.condition.injury.clamp(0.0, 1.0)),
-            (MedicalCrisisCause::Illness, self.condition.illness.clamp(0.0, 1.0)),
+            (
+                MedicalCrisisCause::Injury,
+                self.condition.injury.clamp(0.0, 1.0),
+            ),
+            (
+                MedicalCrisisCause::Illness,
+                self.condition.illness.clamp(0.0, 1.0),
+            ),
             (MedicalCrisisCause::MentalHealth, mental),
         ];
         let mut ranked = contributors;
@@ -756,11 +811,14 @@ impl Prisoner {
         };
 
         let rank = severity as u8 as f32 / MedicalSeverity::Critical as u8 as f32;
-        let score = (rank * 0.4
-            + (1.0 - self.condition.health.clamp(0.0, 1.0)) * 0.3
-            + neglect * 0.3)
-            .clamp(0.0, 1.0);
-        Some(MedicalCrisis { severity, cause, score })
+        let score =
+            (rank * 0.4 + (1.0 - self.condition.health.clamp(0.0, 1.0)) * 0.3 + neglect * 0.3)
+                .clamp(0.0, 1.0);
+        Some(MedicalCrisis {
+            severity,
+            cause,
+            score,
+        })
     }
 
     /// Emergency-level or worse: hospitalization / transfer-out candidate.
@@ -776,7 +834,12 @@ impl Prisoner {
 
     /// Snapshot the departure record without mutating the prisoner (world
     /// keeps `post_release` as history if the entity is retained).
-    pub fn close_out(&self, day: u32, pathway: ReleasePathway, notes: impl Into<String>) -> PostReleaseRecord {
+    pub fn close_out(
+        &self,
+        day: u32,
+        pathway: ReleasePathway,
+        notes: impl Into<String>,
+    ) -> PostReleaseRecord {
         PostReleaseRecord {
             prisoner_id: self.id,
             name: self.name.clone(),
@@ -797,7 +860,12 @@ impl Prisoner {
 
     /// Mark the prisoner as departed: fills [`Prisoner::post_release`] so the
     /// world can copy it into history before removing the entity.
-    pub fn mark_departed(&mut self, day: u32, pathway: ReleasePathway, notes: impl Into<String>) -> PostReleaseRecord {
+    pub fn mark_departed(
+        &mut self,
+        day: u32,
+        pathway: ReleasePathway,
+        notes: impl Into<String>,
+    ) -> PostReleaseRecord {
         let record = self.close_out(day, pathway, notes);
         self.post_release = Some(record.clone());
         record
@@ -890,7 +958,10 @@ mod tests {
             "discipline_history",
             "medical_history",
         ] {
-            assert!(obj.remove(key).is_some(), "field {key} missing from serialization");
+            assert!(
+                obj.remove(key).is_some(),
+                "field {key} missing from serialization"
+            );
         }
         let back: Prisoner = serde_json::from_value(value).unwrap();
         assert!(!back.rehab.is_enrolled());
@@ -911,10 +982,16 @@ mod tests {
         assert!(!p.is_rehab_enrolled());
 
         assert!(p.enroll_rehab("rehab_anger_management", 5));
-        assert!(!p.enroll_rehab("rehab_anger_management", 6), "must not double-enroll");
+        assert!(
+            !p.enroll_rehab("rehab_anger_management", 6),
+            "must not double-enroll"
+        );
         assert!(p.is_rehab_enrolled());
         assert_eq!(p.rehab_progress("rehab_anger_management"), Some(0.0));
-        assert_eq!(p.enrolled_rehab_programs(), vec!["rehab_anger_management".to_string()]);
+        assert_eq!(
+            p.enrolled_rehab_programs(),
+            vec!["rehab_anger_management".to_string()]
+        );
 
         p.record_rehab_session();
         assert_eq!(p.rehab.sessions_attended, 1);
@@ -981,7 +1058,10 @@ mod tests {
         }
         assert_eq!(p.discipline_history.len(), MAX_DISCIPLINE_RECORDS);
         assert_eq!(p.discipline_history.last().unwrap().day, 39);
-        assert_eq!(p.discipline_history[0].day, 40 - MAX_DISCIPLINE_RECORDS as u32);
+        assert_eq!(
+            p.discipline_history[0].day,
+            40 - MAX_DISCIPLINE_RECORDS as u32
+        );
 
         for day in 0..30 {
             p.record_medical_outcome(day, MedicalSeverity::Severe, "neglect", false, "cell");
@@ -994,7 +1074,10 @@ mod tests {
     #[test]
     fn medical_crisis_represents_severe_neglect_and_failing_health() {
         let mut p = Prisoner::default();
-        assert!(p.medical_crisis().is_none(), "healthy prisoner has no crisis");
+        assert!(
+            p.medical_crisis().is_none(),
+            "healthy prisoner has no crisis"
+        );
         assert!(!p.medical_transfer_advised());
         assert!(!p.death_review_advised());
 
@@ -1009,7 +1092,9 @@ mod tests {
         // Failing health → death-review candidate (still advisory).
         p.needs.medical_need = 0.0;
         p.condition.health = 0.05;
-        let crisis = p.medical_crisis().expect("critical health must be representable");
+        let crisis = p
+            .medical_crisis()
+            .expect("critical health must be representable");
         assert_eq!(crisis.severity, MedicalSeverity::Critical);
         assert!(p.death_review_advised());
         assert!(p.condition.is_fatal());
@@ -1033,7 +1118,12 @@ mod tests {
         c.health = 0.05;
         assert_eq!(c.severity(), MedicalSeverity::Critical);
         // Heavy trauma escalates even at moderate health.
-        let mut t = Condition { health: 0.50, injury: 0.9, illness: 0.8, ..Condition::default() };
+        let mut t = Condition {
+            health: 0.50,
+            injury: 0.9,
+            illness: 0.8,
+            ..Condition::default()
+        };
         assert!(t.severity() >= MedicalSeverity::Severe);
         t.injury = 0.0;
         t.illness = 0.0;
@@ -1051,7 +1141,10 @@ mod tests {
         let record = p.mark_departed(30, ReleasePathway::Parole, "released to halfway house");
         assert_eq!(record.pathway, ReleasePathway::Parole);
         assert_eq!(record.programs_completed, 1);
-        assert_eq!(record.carried_contraband, vec!["contraband-phone".to_string()]);
+        assert_eq!(
+            record.carried_contraband,
+            vec!["contraband-phone".to_string()]
+        );
         assert_eq!(record.prisoner_id, p.id);
         assert!(p.post_release.is_some());
 
@@ -1059,7 +1152,11 @@ mod tests {
         let preview = p.close_out(31, ReleasePathway::TransferOut, "moved to medical unit");
         assert_eq!(preview.pathway, ReleasePathway::TransferOut);
         assert_eq!(preview.day, 31);
-        assert_eq!(p.post_release.as_ref().unwrap().day, 30, "preview must not overwrite state");
+        assert_eq!(
+            p.post_release.as_ref().unwrap().day,
+            30,
+            "preview must not overwrite state"
+        );
 
         // Post-release outcome hook (world fills it from outside data).
         p.set_post_release_outcome(PostReleaseOutcome::ReturnedToCustody, 45);

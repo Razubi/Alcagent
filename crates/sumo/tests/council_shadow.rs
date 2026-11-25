@@ -11,8 +11,8 @@
 //!   council's alternative as a `SHADOW` event.
 
 use alc_core::{TimeSpeed, WardenId};
-use alc_warden::{Warden, WardenTraits};
 use alc_warden::WardenAction;
+use alc_warden::{Warden, WardenTraits};
 use sumo::council::{self, DriveWeights};
 use sumo::{PolicyMode, Sim};
 
@@ -59,7 +59,10 @@ fn deterministic_mode_trace_unchanged() {
         explicit_mode.trace_hash(),
         "explicit Deterministic mode must not change the trace"
     );
-    assert_eq!(default_mode.days_simulated(), explicit_mode.days_simulated());
+    assert_eq!(
+        default_mode.days_simulated(),
+        explicit_mode.days_simulated()
+    );
     assert_eq!(
         default_mode.events().recent().count(),
         explicit_mode.events().recent().count(),
@@ -84,7 +87,11 @@ fn council_mode_produces_rationale() {
     for _ in 0..30 {
         sim.run_days(1);
         let applied = sim.warden_cycle();
-        assert_eq!(applied.len(), 1, "the council must apply exactly one action");
+        assert_eq!(
+            applied.len(),
+            1,
+            "the council must apply exactly one action"
+        );
 
         // The rationale event is emitted last, so it must be the newest event.
         let last = sim

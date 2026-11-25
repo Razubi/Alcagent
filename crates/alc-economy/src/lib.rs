@@ -13,11 +13,21 @@ pub struct Money(pub i64);
 
 impl Money {
     pub const ZERO: Money = Money(0);
-    pub fn from_major(major: i64) -> Self { Money(major * 100) }
-    pub fn as_major(self) -> f64 { self.0 as f64 / 100.0 }
-    pub fn add(self, o: Money) -> Self { Money(self.0 + o.0) }
-    pub fn sub(self, o: Money) -> Self { Money(self.0 - o.0) }
-    pub fn mul(self, f: f64) -> Self { Money((self.0 as f64 * f) as i64) }
+    pub fn from_major(major: i64) -> Self {
+        Money(major * 100)
+    }
+    pub fn as_major(self) -> f64 {
+        self.0 as f64 / 100.0
+    }
+    pub fn add(self, o: Money) -> Self {
+        Money(self.0 + o.0)
+    }
+    pub fn sub(self, o: Money) -> Self {
+        Money(self.0 - o.0)
+    }
+    pub fn mul(self, f: f64) -> Self {
+        Money((self.0 as f64 * f) as i64)
+    }
 }
 
 /// Chart of accounts (double-category per design).
@@ -243,9 +253,20 @@ impl Default for Economy {
 }
 
 impl Economy {
-    pub fn record(&mut self, at_secs: u64, account: Account, amount: Money, note: impl Into<String>) {
+    pub fn record(
+        &mut self,
+        at_secs: u64,
+        account: Account,
+        amount: Money,
+        note: impl Into<String>,
+    ) {
         self.cash = self.cash.add(amount);
-        self.ledger.push(LedgerEntry { at_secs, account, amount, note: note.into() });
+        self.ledger.push(LedgerEntry {
+            at_secs,
+            account,
+            amount,
+            note: note.into(),
+        });
     }
 
     /// Daily inflow: fixed institutional grant + per-capita funding with a
@@ -253,7 +274,12 @@ impl Economy {
     pub fn accrue_daily_funding(&mut self, at_secs: u64, population: u32) -> Money {
         let grant = self.base_daily_grant;
         if grant.0 != 0 {
-            self.record(at_secs, Account::GovGrant, grant, "base institutional grant");
+            self.record(
+                at_secs,
+                Account::GovGrant,
+                grant,
+                "base institutional grant",
+            );
         }
         let base = self.funding_per_prisoner_per_day.mul(population as f64);
         let penalty = if population > self.crowding_threshold {
@@ -262,7 +288,12 @@ impl Economy {
         } else {
             base
         };
-        self.record(at_secs, Account::PerCapitaFunding, penalty, format!("population={population}"));
+        self.record(
+            at_secs,
+            Account::PerCapitaFunding,
+            penalty,
+            format!("population={population}"),
+        );
         grant.add(penalty)
     }
 
@@ -280,9 +311,24 @@ impl Economy {
         let maintenance = Money::from_major(1).mul(buildings as f64);
         let total = food.add(utilities).add(salaries).add(maintenance);
         self.record(at_secs, Account::Food, food.mul(-1.0), "meals");
-        self.record(at_secs, Account::Utilities, utilities.mul(-1.0), "power/water");
-        self.record(at_secs, Account::Salaries, salaries.mul(-1.0), "guard payroll");
-        self.record(at_secs, Account::Maintenance, maintenance.mul(-1.0), "upkeep");
+        self.record(
+            at_secs,
+            Account::Utilities,
+            utilities.mul(-1.0),
+            "power/water",
+        );
+        self.record(
+            at_secs,
+            Account::Salaries,
+            salaries.mul(-1.0),
+            "guard payroll",
+        );
+        self.record(
+            at_secs,
+            Account::Maintenance,
+            maintenance.mul(-1.0),
+            "upkeep",
+        );
         self.push_daily_expense(total.0.max(0));
         total
     }
@@ -303,7 +349,13 @@ impl Economy {
     }
 
     /// Spend cash on a construction/expense item. Returns amount spent.
-    pub fn spend(&mut self, at_secs: u64, amount: Money, account: Account, note: impl Into<String>) -> Money {
+    pub fn spend(
+        &mut self,
+        at_secs: u64,
+        amount: Money,
+        account: Account,
+        note: impl Into<String>,
+    ) -> Money {
         let magnitude = amount.0.max(0);
         let outflow = Money(-magnitude);
         self.record(at_secs, account, outflow, note);
@@ -359,7 +411,11 @@ impl Economy {
         as_of_secs: u64,
         window_secs: Option<u64>,
     ) -> Money {
-        Money(self.category_total(account, as_of_secs, window_secs).0.abs())
+        Money(
+            self.category_total(account, as_of_secs, window_secs)
+                .0
+                .abs(),
+        )
     }
 
     /// Revenue accounts only, positive magnitudes, sorted largest first.
@@ -417,29 +473,17 @@ impl Economy {
     }
 
     /// Construction spending magnitude in the window.
-    pub fn construction_costs(
-        &self,
-        as_of_secs: u64,
-        window_secs: Option<u64>,
-    ) -> Money {
+    pub fn construction_costs(&self, as_of_secs: u64, window_secs: Option<u64>) -> Money {
         self.category_magnitude(Account::Construction, as_of_secs, window_secs)
     }
 
     /// Medical spending magnitude in the window.
-    pub fn medical_costs(
-        &self,
-        as_of_secs: u64,
-        window_secs: Option<u64>,
-    ) -> Money {
+    pub fn medical_costs(&self, as_of_secs: u64, window_secs: Option<u64>) -> Money {
         self.category_magnitude(Account::Medical, as_of_secs, window_secs)
     }
 
     /// Rehabilitation spending magnitude in the window.
-    pub fn rehabilitation_costs(
-        &self,
-        as_of_secs: u64,
-        window_secs: Option<u64>,
-    ) -> Money {
+    pub fn rehabilitation_costs(&self, as_of_secs: u64, window_secs: Option<u64>) -> Money {
         self.category_magnitude(Account::Rehabilitation, as_of_secs, window_secs)
     }
 
@@ -461,8 +505,11 @@ impl Economy {
                 continue;
             }
             let day = entry.at_secs / 86_400;
-            *day_sums.entry(day).or_insert(0) =
-                day_sums.get(&day).copied().unwrap_or(0).saturating_add(entry.amount.0);
+            *day_sums.entry(day).or_insert(0) = day_sums
+                .get(&day)
+                .copied()
+                .unwrap_or(0)
+                .saturating_add(entry.amount.0);
         }
         if day_sums.is_empty() {
             return 0;
@@ -474,7 +521,8 @@ impl Economy {
     /// Net daily burn in minor units: trailing expense average minus income
     /// average. Positive means spending more than coming in.
     pub fn net_daily_burn(&self) -> i64 {
-        self.trailing_daily_expense_avg().saturating_sub(self.trailing_daily_income_avg())
+        self.trailing_daily_expense_avg()
+            .saturating_sub(self.trailing_daily_income_avg())
     }
 
     /// Estimated runway in days: cash divided by net daily burn (at least 1
@@ -489,11 +537,7 @@ impl Economy {
     /// Full budget snapshot at `as_of_secs`, computed deterministically from
     /// the ledger. `window_secs` restricts category totals to a trailing
     /// window; `None` uses the whole ledger.
-    pub fn budget_snapshot(
-        &self,
-        as_of_secs: u64,
-        window_secs: Option<u64>,
-    ) -> BudgetSnapshot {
+    pub fn budget_snapshot(&self, as_of_secs: u64, window_secs: Option<u64>) -> BudgetSnapshot {
         let income = self.income_by_category(as_of_secs, window_secs);
         let expenses = self.expenses_by_category(as_of_secs, window_secs);
         let total_income = Money(income.iter().map(|l| l.amount.0).sum::<i64>());
@@ -548,11 +592,7 @@ impl Economy {
     }
 
     /// Finance warnings derived from the current ledger state.
-    pub fn warnings(
-        &self,
-        as_of_secs: u64,
-        window_secs: Option<u64>,
-    ) -> Vec<FinanceWarning> {
+    pub fn warnings(&self, as_of_secs: u64, window_secs: Option<u64>) -> Vec<FinanceWarning> {
         let mut out: Vec<FinanceWarning> = Vec::new();
         let expense_avg = self.trailing_daily_expense_avg();
         let income_avg = self.trailing_daily_income_avg();
@@ -603,7 +643,10 @@ impl Economy {
                         "rehabilitation" => WarningKind::HighRehabCosts,
                         _ => WarningKind::DeficitSpending,
                     },
-                    explanation: format!("{label} spending is ${:.0} in the window.", amount.as_major()),
+                    explanation: format!(
+                        "{label} spending is ${:.0} in the window.",
+                        amount.as_major()
+                    ),
                 })
             } else {
                 None
@@ -723,18 +766,44 @@ mod tests {
         let mut e = Economy::default();
         let at = 100_000u64;
         e.record(at, Account::GovGrant, Money::from_major(350), "grant");
-        e.record(at, Account::PerCapitaFunding, Money::from_major(45 * 24), "per capita");
-        e.record(at, Account::Food, Money::from_major(4 * 24).mul(-1.0), "meals");
-        e.record(at, Account::Salaries, Money::from_major(140 * 4).mul(-1.0), "payroll");
-        e.record(at, Account::Construction, Money::from_major(5_000).mul(-1.0), "new wing");
+        e.record(
+            at,
+            Account::PerCapitaFunding,
+            Money::from_major(45 * 24),
+            "per capita",
+        );
+        e.record(
+            at,
+            Account::Food,
+            Money::from_major(4 * 24).mul(-1.0),
+            "meals",
+        );
+        e.record(
+            at,
+            Account::Salaries,
+            Money::from_major(140 * 4).mul(-1.0),
+            "payroll",
+        );
+        e.record(
+            at,
+            Account::Construction,
+            Money::from_major(5_000).mul(-1.0),
+            "new wing",
+        );
 
         let inc = e.income_by_category(at, None);
         assert!(inc.iter().any(|l| l.account == Account::GovGrant));
-        assert!(inc.iter().all(|l| matches!(l.kind, BudgetLineKind::Revenue)));
+        assert!(
+            inc.iter()
+                .all(|l| matches!(l.kind, BudgetLineKind::Revenue))
+        );
 
         let exp = e.expenses_by_category(at, None);
         assert!(exp.iter().any(|l| l.account == Account::Construction));
-        assert!(exp.iter().all(|l| matches!(l.kind, BudgetLineKind::Expense)));
+        assert!(
+            exp.iter()
+                .all(|l| matches!(l.kind, BudgetLineKind::Expense))
+        );
         assert_eq!(
             e.construction_costs(at, None),
             Money::from_major(5_000),
@@ -757,8 +826,18 @@ mod tests {
         let mut e = Economy::default();
         let early = 1000u64;
         let late = 200_000u64;
-        e.record(early, Account::Food, Money::from_major(100).mul(-1.0), "old meals");
-        e.record(late, Account::Food, Money::from_major(400).mul(-1.0), "new meals");
+        e.record(
+            early,
+            Account::Food,
+            Money::from_major(100).mul(-1.0),
+            "old meals",
+        );
+        e.record(
+            late,
+            Account::Food,
+            Money::from_major(400).mul(-1.0),
+            "new meals",
+        );
 
         let all = e.category_magnitude(Account::Food, late, None);
         assert_eq!(all, Money::from_major(500));
@@ -775,7 +854,12 @@ mod tests {
         e.recent_daily_expenses = vec![10_000]; // $100/day typical expense
         e.record(1000, Account::GovGrant, Money::from_major(350), "grant");
         // $40,000 medical > 3 days of typical expense ($30,000) -> material warning.
-        e.record(1000, Account::Medical, Money::from_major(40_000).mul(-1.0), "medical");
+        e.record(
+            1000,
+            Account::Medical,
+            Money::from_major(40_000).mul(-1.0),
+            "medical",
+        );
 
         let snap = e.budget_snapshot(2000, None);
         assert!((0.0..=1.0).contains(&snap.health));
@@ -785,10 +869,11 @@ mod tests {
 
         let snap2 = e.budget_snapshot(2000, None);
         assert_eq!(snap.warnings.len(), snap2.warnings.len()); // deterministic
-        assert!(snap
-            .warnings
-            .iter()
-            .any(|w| matches!(w.kind, WarningKind::HighMedicalCosts)));
+        assert!(
+            snap.warnings
+                .iter()
+                .any(|w| matches!(w.kind, WarningKind::HighMedicalCosts))
+        );
     }
 
     #[test]
@@ -799,10 +884,11 @@ mod tests {
         let snap = e.budget_snapshot(1000, None);
         assert_eq!(snap.health, 0.0);
         assert_eq!(snap.runway_days, 0.0);
-        assert!(snap
-            .warnings
-            .iter()
-            .any(|w| matches!(w.kind, WarningKind::NegativeRunway)));
+        assert!(
+            snap.warnings
+                .iter()
+                .any(|w| matches!(w.kind, WarningKind::NegativeRunway))
+        );
         assert!(!e.health_explanation().is_empty());
     }
 

@@ -141,7 +141,11 @@ impl From<&incidents::Incident> for IncidentRecord {
             kind: format!("{:?}", incident.kind),
             severity: incident.severity,
             location: incident.location.clone(),
-            involved_prisoners: incident.involved_prisoners.iter().map(|p| p.raw()).collect(),
+            involved_prisoners: incident
+                .involved_prisoners
+                .iter()
+                .map(|p| p.raw())
+                .collect(),
             cause: incident.cause,
             consequence: incident.consequence,
             causal_chain: incident.causal_chain.clone(),
@@ -211,61 +215,122 @@ impl EngineState {
     pub fn to_persistence(&self) -> alc_persistence::EngineState {
         alc_persistence::EngineState {
             parole: alc_persistence::ParoleLedger {
-                status: self.parole.status.iter().map(|(k, v)| (k.raw(), parole_status_to_persist(*v))).collect(),
-                adjustments: self.parole.adjustments.iter().map(|(k, v)| (k.raw(), *v)).collect(),
-                hearing_at: self.parole.hearing_at.iter().map(|(k, v)| (k.raw(), *v)).collect(),
+                status: self
+                    .parole
+                    .status
+                    .iter()
+                    .map(|(k, v)| (k.raw(), parole_status_to_persist(*v)))
+                    .collect(),
+                adjustments: self
+                    .parole
+                    .adjustments
+                    .iter()
+                    .map(|(k, v)| (k.raw(), *v))
+                    .collect(),
+                hearing_at: self
+                    .parole
+                    .hearing_at
+                    .iter()
+                    .map(|(k, v)| (k.raw(), *v))
+                    .collect(),
                 last_decision_at: self.parole.last_decision_at,
-                conditions: self.parole.conditions.iter().map(|(k, v)| (k.raw(), parole_conditions_to_persist(v))).collect(),
-                decision_reason: self.parole.decision_reason.iter().map(|(k, v)| (k.raw(), v.clone())).collect(),
-                released_at: self.parole.released_at.iter().map(|(k, v)| (k.raw(), *v)).collect(),
+                conditions: self
+                    .parole
+                    .conditions
+                    .iter()
+                    .map(|(k, v)| (k.raw(), parole_conditions_to_persist(v)))
+                    .collect(),
+                decision_reason: self
+                    .parole
+                    .decision_reason
+                    .iter()
+                    .map(|(k, v)| (k.raw(), v.clone()))
+                    .collect(),
+                released_at: self
+                    .parole
+                    .released_at
+                    .iter()
+                    .map(|(k, v)| (k.raw(), *v))
+                    .collect(),
             },
-            population_history: self.population_history.iter().map(|(t, p)| (t.secs, *p)).collect(),
+            population_history: self
+                .population_history
+                .iter()
+                .map(|(t, p)| (t.secs, *p))
+                .collect(),
             incidents: self.incidents.clone(),
-            incident_sidecar: self.incident_sidecar.iter().map(|inc| {
-                alc_persistence::Incident {
-                    id: inc.id,
-                    kind: inc.kind,
-                    severity: inc.severity,
-                    cause: inc.cause,
-                    consequence: inc.consequence,
-                    causal_chain: inc.causal_chain.iter().map(|link| alc_persistence::PersistedCausalLink {
-                        source_id: link.source_id,
-                        is_incident: link.is_incident,
-                        description: link.description.clone(),
-                    }).collect(),
-                    timestamp: inc.timestamp,
-                    location: inc.location.clone(),
-                    involved_prisoners: inc.involved_prisoners.iter().map(|p| p.raw()).collect(),
-                    involved_guards: Vec::new(), // sumo's Incident doesn't track guards
-                    witnesses: inc.witnesses.iter().map(|p| p.raw()).collect(),
-                    disposition: incident_disposition_to_persist(inc.disposition),
-                    response_actions: inc.response_actions.iter().map(|a| alc_persistence::PersistedResponseAction {
-                        action: format!("{:?}", a.action),
-                        responder: match a.responder { incidents::Responder::Guard(id) => id, _ => 0 },
-                        responder_kind: responder_kind(&a.responder).to_string(),
-                        at: a.at,
-                        description: a.description.clone(),
-                        success: a.success,
-                    }).collect(),
-                    resolved: inc.resolved,
-                }
-            }).collect(),
+            incident_sidecar: self
+                .incident_sidecar
+                .iter()
+                .map(|inc| {
+                    alc_persistence::Incident {
+                        id: inc.id,
+                        kind: inc.kind,
+                        severity: inc.severity,
+                        cause: inc.cause,
+                        consequence: inc.consequence,
+                        causal_chain: inc
+                            .causal_chain
+                            .iter()
+                            .map(|link| alc_persistence::PersistedCausalLink {
+                                source_id: link.source_id,
+                                is_incident: link.is_incident,
+                                description: link.description.clone(),
+                            })
+                            .collect(),
+                        timestamp: inc.timestamp,
+                        location: inc.location.clone(),
+                        involved_prisoners: inc
+                            .involved_prisoners
+                            .iter()
+                            .map(|p| p.raw())
+                            .collect(),
+                        involved_guards: Vec::new(), // sumo's Incident doesn't track guards
+                        witnesses: inc.witnesses.iter().map(|p| p.raw()).collect(),
+                        disposition: incident_disposition_to_persist(inc.disposition),
+                        response_actions: inc
+                            .response_actions
+                            .iter()
+                            .map(|a| alc_persistence::PersistedResponseAction {
+                                action: format!("{:?}", a.action),
+                                responder: match a.responder {
+                                    incidents::Responder::Guard(id) => id,
+                                    _ => 0,
+                                },
+                                responder_kind: responder_kind(&a.responder).to_string(),
+                                at: a.at,
+                                description: a.description.clone(),
+                                success: a.success,
+                            })
+                            .collect(),
+                        resolved: inc.resolved,
+                    }
+                })
+                .collect(),
             decision_log: self.decision_log.clone(),
-            decision_audit: self.decision_audit.iter().map(|r| alc_persistence::DecisionAuditRecord {
-                time: r.time,
-                actor: r.actor.clone(),
-                source: r.source.clone(),
-                action: r.action.clone(),
-                summary: r.summary.clone(),
-                validation: r.validation.clone(),
-                reason: r.reason.clone(),
-                rationale: r.rationale.clone(),
-                repair_reason: r.repair_reason.clone(),
-                outcome: r.outcome,
-            }).collect(),
+            decision_audit: self
+                .decision_audit
+                .iter()
+                .map(|r| alc_persistence::DecisionAuditRecord {
+                    time: r.time,
+                    actor: r.actor.clone(),
+                    source: r.source.clone(),
+                    action: r.action.clone(),
+                    summary: r.summary.clone(),
+                    validation: r.validation.clone(),
+                    reason: r.reason.clone(),
+                    rationale: r.rationale.clone(),
+                    repair_reason: r.repair_reason.clone(),
+                    outcome: r.outcome,
+                })
+                .collect(),
             resolved_contraband_cases: self.resolved_contraband_cases.iter().copied().collect(),
             resolved_contraband_at: self.resolved_contraband_at.clone(),
-            post_release: self.post_release.iter().map(|(k, v)| (k.raw(), *v)).collect(),
+            post_release: self
+                .post_release
+                .iter()
+                .map(|(k, v)| (k.raw(), *v))
+                .collect(),
             autosave_interval_days: self.autosave.as_ref().map(|a| a.interval_days),
             last_autosave_day: self.autosave.as_ref().map(|a| a.last_save_day()),
             policy_state: alc_persistence::PolicyState {
@@ -282,64 +347,122 @@ impl EngineState {
     pub fn from_persistence(persist: alc_persistence::EngineState, save_dir: &Path) -> Self {
         EngineState {
             parole: ParoleLedger {
-                status: persist.parole.status.into_iter().map(|(k, v)| (PrisonerId(k), parole_status_from_persist(v))).collect(),
-                adjustments: persist.parole.adjustments.into_iter().map(|(k, v)| (PrisonerId(k), v)).collect(),
-                hearing_at: persist.parole.hearing_at.into_iter().map(|(k, v)| (PrisonerId(k), v)).collect(),
+                status: persist
+                    .parole
+                    .status
+                    .into_iter()
+                    .map(|(k, v)| (PrisonerId(k), parole_status_from_persist(v)))
+                    .collect(),
+                adjustments: persist
+                    .parole
+                    .adjustments
+                    .into_iter()
+                    .map(|(k, v)| (PrisonerId(k), v))
+                    .collect(),
+                hearing_at: persist
+                    .parole
+                    .hearing_at
+                    .into_iter()
+                    .map(|(k, v)| (PrisonerId(k), v))
+                    .collect(),
                 last_decision_at: persist.parole.last_decision_at,
-                conditions: persist.parole.conditions.into_iter().map(|(k, v)| (PrisonerId(k), parole_conditions_from_persist(v))).collect(),
-                decision_reason: persist.parole.decision_reason.into_iter().map(|(k, v)| (PrisonerId(k), v)).collect(),
-                released_at: persist.parole.released_at.into_iter().map(|(k, v)| (PrisonerId(k), v)).collect(),
+                conditions: persist
+                    .parole
+                    .conditions
+                    .into_iter()
+                    .map(|(k, v)| (PrisonerId(k), parole_conditions_from_persist(v)))
+                    .collect(),
+                decision_reason: persist
+                    .parole
+                    .decision_reason
+                    .into_iter()
+                    .map(|(k, v)| (PrisonerId(k), v))
+                    .collect(),
+                released_at: persist
+                    .parole
+                    .released_at
+                    .into_iter()
+                    .map(|(k, v)| (PrisonerId(k), v))
+                    .collect(),
             },
-            population_history: persist.population_history.into_iter().map(|(t, p)| (SimTime::from_secs(t), p)).collect(),
+            population_history: persist
+                .population_history
+                .into_iter()
+                .map(|(t, p)| (SimTime::from_secs(t), p))
+                .collect(),
             autosave: persist.autosave_interval_days.map(|days| {
                 let mut s = AutosaveScheduler::new(save_dir.to_path_buf(), days);
-                if let Some(d) = persist.last_autosave_day { s = s.with_last_save_day(d); }
+                if let Some(d) = persist.last_autosave_day {
+                    s = s.with_last_save_day(d);
+                }
                 s
             }),
             incidents: persist.incidents,
-            incident_sidecar: persist.incident_sidecar.into_iter().map(|inc| {
-                incidents::Incident {
+            incident_sidecar: persist
+                .incident_sidecar
+                .into_iter()
+                .map(|inc| incidents::Incident {
                     id: inc.id,
                     kind: inc.kind,
                     cause: inc.cause,
                     consequence: inc.consequence,
-                    causal_chain: inc.causal_chain.into_iter().map(|link| incidents::CausalLink {
-                        source_id: link.source_id,
-                        is_incident: link.is_incident,
-                        description: link.description,
-                    }).collect(),
+                    causal_chain: inc
+                        .causal_chain
+                        .into_iter()
+                        .map(|link| incidents::CausalLink {
+                            source_id: link.source_id,
+                            is_incident: link.is_incident,
+                            description: link.description,
+                        })
+                        .collect(),
                     timestamp: inc.timestamp,
                     location: inc.location,
-                    involved_prisoners: inc.involved_prisoners.into_iter().map(PrisonerId).collect(),
+                    involved_prisoners: inc
+                        .involved_prisoners
+                        .into_iter()
+                        .map(PrisonerId)
+                        .collect(),
                     witnesses: inc.witnesses.into_iter().map(PrisonerId).collect(),
                     severity: inc.severity,
                     disposition: incident_disposition_from_persist(inc.disposition),
-                    response_actions: inc.response_actions.into_iter().map(|a| incidents::ResponseAction {
-                        action: response_action_kind_from_persist(&a.action),
-                        responder: responder_from_persist(&a),
-                        at: a.at,
-                        description: a.description,
-                        success: a.success,
-                    }).collect(),
+                    response_actions: inc
+                        .response_actions
+                        .into_iter()
+                        .map(|a| incidents::ResponseAction {
+                            action: response_action_kind_from_persist(&a.action),
+                            responder: responder_from_persist(&a),
+                            at: a.at,
+                            description: a.description,
+                            success: a.success,
+                        })
+                        .collect(),
                     resolved: inc.resolved,
-                }
-            }).collect(),
+                })
+                .collect(),
             decision_log: persist.decision_log,
-            decision_audit: persist.decision_audit.into_iter().map(|r| DecisionAuditRecord {
-                time: r.time,
-                actor: r.actor,
-                source: r.source,
-                action: r.action,
-                summary: r.summary,
-                validation: r.validation,
-                reason: r.reason,
-                rationale: r.rationale,
-                repair_reason: r.repair_reason,
-                outcome: r.outcome,
-            }).collect(),
+            decision_audit: persist
+                .decision_audit
+                .into_iter()
+                .map(|r| DecisionAuditRecord {
+                    time: r.time,
+                    actor: r.actor,
+                    source: r.source,
+                    action: r.action,
+                    summary: r.summary,
+                    validation: r.validation,
+                    reason: r.reason,
+                    rationale: r.rationale,
+                    repair_reason: r.repair_reason,
+                    outcome: r.outcome,
+                })
+                .collect(),
             resolved_contraband_cases: persist.resolved_contraband_cases.into_iter().collect(),
             resolved_contraband_at: persist.resolved_contraband_at.clone(),
-            post_release: persist.post_release.into_iter().map(|(k, v)| (PrisonerId(k), v)).collect(),
+            post_release: persist
+                .post_release
+                .into_iter()
+                .map(|(k, v)| (PrisonerId(k), v))
+                .collect(),
             policy_state: PolicyState {
                 policy: policy_from_persist(persist.policy_state.policy),
                 lockdown: persist.policy_state.lockdown,
@@ -352,24 +475,44 @@ impl EngineState {
 }
 
 /// Helper to convert an incident disposition to its persistence mirror.
-fn incident_disposition_to_persist(d: incidents::IncidentDisposition) -> alc_persistence::PersistedIncidentDisposition {
+fn incident_disposition_to_persist(
+    d: incidents::IncidentDisposition,
+) -> alc_persistence::PersistedIncidentDisposition {
     match d {
         incidents::IncidentDisposition::None => alc_persistence::PersistedIncidentDisposition::None,
-        incidents::IncidentDisposition::Investigated => alc_persistence::PersistedIncidentDisposition::Investigated,
-        incidents::IncidentDisposition::Disciplinary => alc_persistence::PersistedIncidentDisposition::Disciplinary,
-        incidents::IncidentDisposition::Medical => alc_persistence::PersistedIncidentDisposition::Medical,
-        incidents::IncidentDisposition::Resolved => alc_persistence::PersistedIncidentDisposition::Resolved,
+        incidents::IncidentDisposition::Investigated => {
+            alc_persistence::PersistedIncidentDisposition::Investigated
+        }
+        incidents::IncidentDisposition::Disciplinary => {
+            alc_persistence::PersistedIncidentDisposition::Disciplinary
+        }
+        incidents::IncidentDisposition::Medical => {
+            alc_persistence::PersistedIncidentDisposition::Medical
+        }
+        incidents::IncidentDisposition::Resolved => {
+            alc_persistence::PersistedIncidentDisposition::Resolved
+        }
     }
 }
 
 /// Helper to convert a persisted incident disposition back to the engine type.
-fn incident_disposition_from_persist(d: alc_persistence::PersistedIncidentDisposition) -> incidents::IncidentDisposition {
+fn incident_disposition_from_persist(
+    d: alc_persistence::PersistedIncidentDisposition,
+) -> incidents::IncidentDisposition {
     match d {
         alc_persistence::PersistedIncidentDisposition::None => incidents::IncidentDisposition::None,
-        alc_persistence::PersistedIncidentDisposition::Investigated => incidents::IncidentDisposition::Investigated,
-        alc_persistence::PersistedIncidentDisposition::Disciplinary => incidents::IncidentDisposition::Disciplinary,
-        alc_persistence::PersistedIncidentDisposition::Medical => incidents::IncidentDisposition::Medical,
-        alc_persistence::PersistedIncidentDisposition::Resolved => incidents::IncidentDisposition::Resolved,
+        alc_persistence::PersistedIncidentDisposition::Investigated => {
+            incidents::IncidentDisposition::Investigated
+        }
+        alc_persistence::PersistedIncidentDisposition::Disciplinary => {
+            incidents::IncidentDisposition::Disciplinary
+        }
+        alc_persistence::PersistedIncidentDisposition::Medical => {
+            incidents::IncidentDisposition::Medical
+        }
+        alc_persistence::PersistedIncidentDisposition::Resolved => {
+            incidents::IncidentDisposition::Resolved
+        }
     }
 }
 
@@ -440,7 +583,9 @@ fn parole_status_from_persist(status: alc_persistence::ParoleStatus) -> ParoleSt
 }
 
 /// Helper to convert parole conditions to their persistence mirror.
-fn parole_conditions_to_persist(c: &crate::parole::ParoleConditions) -> alc_persistence::ParoleConditions {
+fn parole_conditions_to_persist(
+    c: &crate::parole::ParoleConditions,
+) -> alc_persistence::ParoleConditions {
     alc_persistence::ParoleConditions {
         reporting_per_month: c.reporting_per_month,
         supervision_months: c.supervision_months,
@@ -452,7 +597,9 @@ fn parole_conditions_to_persist(c: &crate::parole::ParoleConditions) -> alc_pers
 }
 
 /// Helper to convert persisted parole conditions back to the engine type.
-fn parole_conditions_from_persist(c: alc_persistence::ParoleConditions) -> crate::parole::ParoleConditions {
+fn parole_conditions_from_persist(
+    c: alc_persistence::ParoleConditions,
+) -> crate::parole::ParoleConditions {
     crate::parole::ParoleConditions {
         reporting_per_month: c.reporting_per_month,
         supervision_months: c.supervision_months,
@@ -498,4 +645,3 @@ fn policy_mode_from_persist(mode: alc_persistence::PolicyMode) -> PolicyMode {
         alc_persistence::PolicyMode::Shadow => PolicyMode::Shadow,
     }
 }
-

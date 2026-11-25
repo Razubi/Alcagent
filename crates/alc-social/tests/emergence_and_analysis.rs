@@ -2,9 +2,9 @@
 
 use alc_core::{GangId, PrisonerId, RngStream, SimTime};
 use alc_social::{
-    detect_roles, enemies_of, friends_of, influential_prisoners, isolated_prisoners, is_enemy,
-    is_friend, is_rival, maybe_form_gang, rivals_of, Gang, PrisonerGangProfile, RelationshipDelta,
-    SocialGraph, SocialRole,
+    Gang, PrisonerGangProfile, RelationshipDelta, SocialGraph, SocialRole, detect_roles,
+    enemies_of, friends_of, influential_prisoners, is_enemy, is_friend, is_rival,
+    isolated_prisoners, maybe_form_gang, rivals_of,
 };
 
 fn pid(n: u64) -> PrisonerId {
@@ -24,7 +24,11 @@ fn gangs_emerge_over_180_days_via_organic_relationships() {
         prisoners.push(PrisonerGangProfile {
             id: pid(i),
             gang_affiliation: None,
-            background: if i <= 6 { "theft".into() } else { "fraud".into() },
+            background: if i <= 6 {
+                "theft".into()
+            } else {
+                "fraud".into()
+            },
             protection_need: if i % 3 == 0 { 0.85 } else { 0.65 },
             safety_need: if i % 2 == 0 { 0.8 } else { 0.55 },
             ambition: 0.35 + (i as f32 % 4.0) * 0.1,
@@ -160,7 +164,10 @@ fn gangs_emerge_over_180_days_via_organic_relationships() {
     assert!(
         gangs.iter().any(|g| g.members.len() >= 3),
         "expected an emerged gang with >= 3 members; gangs={:?}",
-        gangs.iter().map(|g| (g.id, g.members.len())).collect::<Vec<_>>()
+        gangs
+            .iter()
+            .map(|g| (g.id, g.members.len()))
+            .collect::<Vec<_>>()
     );
     assert!(
         total_relationship_changes > 0 && (friendly_pairs > 0 || hostile_pairs > 0),
@@ -272,7 +279,10 @@ fn social_graph_classifiers_detect_friends_rivals_enemies_isolated_and_influenti
             },
         );
     }
-    assert!(is_friend(&graph, pid(1), pid(2)), "1 should view 2 as friend");
+    assert!(
+        is_friend(&graph, pid(1), pid(2)),
+        "1 should view 2 as friend"
+    );
     assert!(friends_of(&graph, pid(1), &ids).contains(&pid(2)));
 
     // Rivals: 1 <-> 3 (competitive/resentful)
@@ -311,7 +321,10 @@ fn social_graph_classifiers_detect_friends_rivals_enemies_isolated_and_influenti
 
     // Isolated: pid(6) has no interactions
     let isolated = isolated_prisoners(&graph, &ids);
-    assert!(isolated.contains(&pid(6)), "pid 6 should be isolated: {isolated:?}");
+    assert!(
+        isolated.contains(&pid(6)),
+        "pid 6 should be isolated: {isolated:?}"
+    );
 
     // Influential: make pid(1) a gang leader in a large gang
     let mut gang = Gang::new(GangId(1), "Alpha", pid(1));
@@ -360,7 +373,11 @@ fn detect_roles_is_deterministic_across_calls() {
     let r1 = detect_roles(&graph, &ids, &gangs);
     let r2 = detect_roles(&graph, &ids, &gangs);
     for id in &ids {
-        assert_eq!(r1.get(id), r2.get(id), "roles must be deterministic for {id:?}");
+        assert_eq!(
+            r1.get(id),
+            r2.get(id),
+            "roles must be deterministic for {id:?}"
+        );
     }
 }
 
@@ -370,8 +387,16 @@ fn roles_gain_ally_and_vulnerable_classifications_after_interactions() {
     let mut graph = SocialGraph::default();
 
     let baseline = detect_roles(&graph, &ids, &[]);
-    assert!(!baseline[&pid(1)].iter().any(|(r, _)| *r == SocialRole::Ally));
-    assert!(!baseline[&pid(4)].iter().any(|(r, _)| *r == SocialRole::Vulnerable));
+    assert!(
+        !baseline[&pid(1)]
+            .iter()
+            .any(|(r, _)| *r == SocialRole::Ally)
+    );
+    assert!(
+        !baseline[&pid(4)]
+            .iter()
+            .any(|(r, _)| *r == SocialRole::Vulnerable)
+    );
 
     // pid 1 repeatedly cooperates with two partners: an ally emerges from the
     // interaction history rather than from a preset label.
@@ -406,5 +431,9 @@ fn roles_gain_ally_and_vulnerable_classifications_after_interactions() {
 
     let roles = detect_roles(&graph, &ids, &[]);
     assert!(roles[&pid(1)].iter().any(|(r, _)| *r == SocialRole::Ally));
-    assert!(roles[&pid(4)].iter().any(|(r, _)| *r == SocialRole::Vulnerable));
+    assert!(
+        roles[&pid(4)]
+            .iter()
+            .any(|(r, _)| *r == SocialRole::Vulnerable)
+    );
 }

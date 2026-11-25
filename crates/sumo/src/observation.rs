@@ -52,12 +52,12 @@ impl Observation {
     /// Capture a snapshot of `world`.
     pub fn capture(world: &World) -> Self {
         let mut prisoners = world.prisoners.clone();
-        prisoners.sort_by(|a, b| b.reputation.partial_cmp(&a.reputation).unwrap_or(std::cmp::Ordering::Equal));
-        let notable_prisoners = prisoners
-            .iter()
-            .take(5)
-            .map(|p| p.name.clone())
-            .collect();
+        prisoners.sort_by(|a, b| {
+            b.reputation
+                .partial_cmp(&a.reputation)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let notable_prisoners = prisoners.iter().take(5).map(|p| p.name.clone()).collect();
 
         let recent_events: Vec<String> = world
             .events
@@ -89,7 +89,11 @@ impl Observation {
 }
 
 fn leader_board(world: &World, n: usize) -> Vec<(String, f32)> {
-    let mut v: Vec<(String, f32)> = world.prisoners.iter().map(|p| (p.name.clone(), p.reputation)).collect();
+    let mut v: Vec<(String, f32)> = world
+        .prisoners
+        .iter()
+        .map(|p| (p.name.clone(), p.reputation))
+        .collect();
     v.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     v.truncate(n);
     v
@@ -201,11 +205,12 @@ impl Stats {
             match e.kind {
                 Admission => s.admissions += 1,
                 Release | ParoleGranted => s.releases += 1,
-                Argument | Threat | Theft | Fight | GangClash | Protests | PropertyDamage => s.conflicts += 1,
-                MedicalEmergency | Illness | Injury => s.medical += 1,
-                EscapeAttempt | EscapePrevented | EscapeSucceeded | ContrabandFound | StaffMisconduct | Investigation => {
-                    s.security_incidents += 1
+                Argument | Threat | Theft | Fight | GangClash | Protests | PropertyDamage => {
+                    s.conflicts += 1
                 }
+                MedicalEmergency | Illness | Injury => s.medical += 1,
+                EscapeAttempt | EscapePrevented | EscapeSucceeded | ContrabandFound
+                | StaffMisconduct | Investigation => s.security_incidents += 1,
                 RelationshipShift => {}
                 ParoleHearing | ParoleDenied | ParoleBoardDecision => s.parole_hearings += 1,
                 GangFormed => s.gangs_formed += 1,

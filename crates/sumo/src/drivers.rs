@@ -30,7 +30,7 @@ use crate::council::{self, DriveWeights};
 use crate::{PolicyMode, Sim};
 use alc_core::{GuardId, RngStream, SimTime};
 use alc_events::{EventKind, WorldEvent};
-use alc_guard::{DutyContext, Guard, GuardReport, GuardRank, PostType};
+use alc_guard::{DutyContext, Guard, GuardRank, GuardReport, PostType};
 use alc_warden::WardenAction;
 use alc_world::{FacilityKind, World};
 
@@ -77,7 +77,9 @@ pub fn run_guard_duty(sim: &mut Sim, guard_id: GuardId, minutes: u64) -> Vec<Gua
     for minute in 0..minutes {
         let at = start.add_mins(minute);
         let (tensions, ctx) = guard_context(sim, at);
-        let Some(g) = sim.world.guards.iter_mut().find(|g| g.id == guard_id) else { continue };
+        let Some(g) = sim.world.guards.iter_mut().find(|g| g.id == guard_id) else {
+            continue;
+        };
         let mut rng = RngStream::new(seed, at.as_secs() ^ g.id.raw());
         out.extend(g.duty_tick(&tensions, ctx, &mut rng));
     }
@@ -206,7 +208,6 @@ fn summarise_weights(weights: &DriveWeights) -> String {
     s
 }
 
-
 /// Warden actions still pending (§9).
 pub fn warden_pending(sim: &Sim) -> Vec<WardenAction> {
     sim.world.warden.pending_actions.clone()
@@ -214,7 +215,11 @@ pub fn warden_pending(sim: &Sim) -> Vec<WardenAction> {
 
 /// Engine-side application of a WardenAction (§9: engine validates + applies).
 /// Returns events for the world bus.
-pub fn apply_warden_action(world: &mut World, at: SimTime, action: WardenAction) -> Vec<WorldEvent> {
+pub fn apply_warden_action(
+    world: &mut World,
+    at: SimTime,
+    action: WardenAction,
+) -> Vec<WorldEvent> {
     let mut events = Vec::new();
     match action {
         WardenAction::Expand { building } => {
@@ -238,7 +243,11 @@ pub fn apply_warden_action(world: &mut World, at: SimTime, action: WardenAction)
             // seed a location here immediately. Facility 0 (or the first
             // facility when ids are sparse) is the safe default for a Corridor
             // post; the next world tick re-derives locations from posts.
-            let home_facility = world.facilities.first().map(|f| f.id).unwrap_or(alc_core::FacilityId(0));
+            let home_facility = world
+                .facilities
+                .first()
+                .map(|f| f.id)
+                .unwrap_or(alc_core::FacilityId(0));
             for _ in 0..count {
                 let id = world.next_guard_id;
                 world.next_guard_id += 1;
@@ -252,7 +261,12 @@ pub fn apply_warden_action(world: &mut World, at: SimTime, action: WardenAction)
                 ));
                 world.guard_location.insert(guard_id, home_facility);
             }
-            events.push(WorldEvent::new(0, at, EventKind::PolicyChange, format!("Hired {count} guards")));
+            events.push(WorldEvent::new(
+                0,
+                at,
+                EventKind::PolicyChange,
+                format!("Hired {count} guards"),
+            ));
         }
         WardenAction::FireGuards { count } => {
             for _ in 0..count.min(world.guards.len() as u32) {
@@ -263,7 +277,12 @@ pub fn apply_warden_action(world: &mut World, at: SimTime, action: WardenAction)
                     world.guard_location.remove(&guard.id);
                 }
             }
-            events.push(WorldEvent::new(0, at, EventKind::PolicyChange, format!("Fired guards (up to {count})")));
+            events.push(WorldEvent::new(
+                0,
+                at,
+                EventKind::PolicyChange,
+                format!("Fired guards (up to {count})"),
+            ));
         }
         WardenAction::PromoteStaff { guard } => {
             let mut summary = format!("Promotion ordered for guard {guard}");
@@ -286,7 +305,11 @@ pub fn apply_warden_action(world: &mut World, at: SimTime, action: WardenAction)
                 "privileges" => {
                     let old = world.policies.privileges_level;
                     world.policies.privileges_level = value.clamp(0.0, 1.0);
-                    world.audit_policy_change("privileges_level", old, world.policies.privileges_level);
+                    world.audit_policy_change(
+                        "privileges_level",
+                        old,
+                        world.policies.privileges_level,
+                    );
                 }
                 "security" => {
                     let old = world.policies.security_level;
@@ -296,7 +319,11 @@ pub fn apply_warden_action(world: &mut World, at: SimTime, action: WardenAction)
                 "rehab_funding" => {
                     let old = world.policies.rehab_funding_multiplier;
                     world.policies.rehab_funding_multiplier = value.clamp(0.2, 3.0);
-                    world.audit_policy_change("rehab_funding_multiplier", old, world.policies.rehab_funding_multiplier);
+                    world.audit_policy_change(
+                        "rehab_funding_multiplier",
+                        old,
+                        world.policies.rehab_funding_multiplier,
+                    );
                 }
                 "lockdown" => {
                     // `Sim::apply_warden_action` reconciles the engine policy
@@ -329,20 +356,30 @@ pub fn apply_warden_action(world: &mut World, at: SimTime, action: WardenAction)
             // Death-spiral guard: only cut rehab spending every 7 days, and
             // only when financial health is genuinely poor (mirrors the
             // authoritative alc-world implementation).
-            let days_since = world.days_simulated.saturating_sub(world.warden.last_action_day);
+            let days_since = world
+                .days_simulated
+                .saturating_sub(world.warden.last_action_day);
             if world.economy.health() < 0.4 && days_since >= 7 {
                 world.policies.rehab_funding_multiplier =
                     (world.policies.rehab_funding_multiplier - 0.1).max(0.2);
                 world.warden.last_action_day = world.days_simulated;
                 world.warden.last_decision_at = at;
-                events.push(WorldEvent::new(0, at, EventKind::PolicyChange,
-                    "Expenses reduced; rehab funding cut"));
+                events.push(WorldEvent::new(
+                    0,
+                    at,
+                    EventKind::PolicyChange,
+                    "Expenses reduced; rehab funding cut",
+                ));
             }
         }
         WardenAction::ImproveInfrastructure { facility } => {
-            let summary = if let Some(f) = world.facilities.iter_mut().find(|f| f.id.0 == facility) {
+            let summary = if let Some(f) = world.facilities.iter_mut().find(|f| f.id.0 == facility)
+            {
                 f.condition = (f.condition + 0.05).min(1.0);
-                format!("Infrastructure improved at facility {facility} (condition {:.2})", f.condition)
+                format!(
+                    "Infrastructure improved at facility {facility} (condition {:.2})",
+                    f.condition
+                )
             } else {
                 format!("Infrastructure improvement ordered for unknown facility {facility}")
             };
@@ -357,10 +394,20 @@ pub fn apply_warden_action(world: &mut World, at: SimTime, action: WardenAction)
             ));
         }
         WardenAction::NegotiateWithRepresentatives => {
-            events.push(WorldEvent::new(0, at, EventKind::PolicyChange, "Warden negotiated with prisoner representatives"));
+            events.push(WorldEvent::new(
+                0,
+                at,
+                EventKind::PolicyChange,
+                "Warden negotiated with prisoner representatives",
+            ));
         }
         WardenAction::InvestigateMisconduct { target } => {
-            events.push(WorldEvent::new(0, at, EventKind::Investigation, format!("Misconduct investigation initiated: {target}")));
+            events.push(WorldEvent::new(
+                0,
+                at,
+                EventKind::Investigation,
+                format!("Misconduct investigation initiated: {target}"),
+            ));
         }
         WardenAction::AdjustParoleRecommendation { prisoner, lean } => {
             events.push(WorldEvent::new(
@@ -371,7 +418,12 @@ pub fn apply_warden_action(world: &mut World, at: SimTime, action: WardenAction)
             ));
         }
         WardenAction::RequestFunding { amount_major } => {
-            events.push(WorldEvent::new(0, at, EventKind::BudgetChange, format!("Funding request: {amount_major}")));
+            events.push(WorldEvent::new(
+                0,
+                at,
+                EventKind::BudgetChange,
+                format!("Funding request: {amount_major}"),
+            ));
             world.warden.attention = (world.warden.attention - 0.05).max(0.0);
         }
         WardenAction::NoAction { .. } => {}
@@ -399,4 +451,3 @@ pub fn deliver_guard_report(sim: &mut Sim, guard_id: GuardId, report: GuardRepor
     sim.world.warden.inbox.push(id);
     id
 }
-

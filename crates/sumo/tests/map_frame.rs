@@ -73,8 +73,15 @@ fn map_frame_reflects_movement() {
     let after = sim.map_frame();
     let new_pawn = after.prisoners.iter().find(|p| p.id == pid.raw()).unwrap();
     assert_eq!(new_pawn.node_id, 2);
-    assert_ne!(new_pawn.node_id, old_node, "node_id should change after move");
-    assert_ne!((new_pawn.x, new_pawn.y), (old_x, old_y), "coordinates should change after move");
+    assert_ne!(
+        new_pawn.node_id, old_node,
+        "node_id should change after move"
+    );
+    assert_ne!(
+        (new_pawn.x, new_pawn.y),
+        (old_x, old_y),
+        "coordinates should change after move"
+    );
 }
 
 #[test]

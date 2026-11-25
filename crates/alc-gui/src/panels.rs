@@ -1,8 +1,9 @@
 //! Shared panels and small rendering helpers used by the observation views.
 
 use crate::{
+    ViewMode,
     app::{Command, ObserverState},
-    data, theme, ViewMode,
+    data, theme,
 };
 use alc_core::TimeSpeed;
 use eframe::egui;
@@ -74,7 +75,9 @@ pub fn toolbar(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
         let obs = &ctx.snapshot.observation;
         ui.horizontal_wrapped(|ui| {
             ui.add(egui::Label::new(
-                egui::RichText::new("ALCAGENT · LIVING PRISON").strong().color(theme::ACCENT),
+                egui::RichText::new("ALCAGENT · LIVING PRISON")
+                    .strong()
+                    .color(theme::ACCENT),
             ));
             ui.separator();
             ui.label(format!(
@@ -82,13 +85,23 @@ pub fn toolbar(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                 obs.at, obs.days_simulated, obs.population, obs.capacity, obs.guards, obs.gangs
             ));
             ui.separator();
-            ui.label(format!("${:.2} · Health {:.0}%", obs.cash_major, obs.economy_health * 100.0));
+            ui.label(format!(
+                "${:.2} · Health {:.0}%",
+                obs.cash_major,
+                obs.economy_health * 100.0
+            ));
             if obs.lockdown {
-                ui.add(egui::Label::new(egui::RichText::new("LOCKDOWN").color(theme::LOCKED).strong()));
+                ui.add(egui::Label::new(
+                    egui::RichText::new("LOCKDOWN")
+                        .color(theme::LOCKED)
+                        .strong(),
+                ));
             }
             if let Some(msg) = &ctx.state.status {
                 ui.separator();
-                ui.add(egui::Label::new(egui::RichText::new(msg).color(theme::MUTED)));
+                ui.add(egui::Label::new(
+                    egui::RichText::new(msg).color(theme::MUTED),
+                ));
             }
         });
 
@@ -111,7 +124,10 @@ pub fn toolbar(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                 (TimeSpeed::FastForward, "FF"),
                 (TimeSpeed::Extreme, "Extreme"),
             ] {
-                if ui.add(egui::Button::new(label).selected(speed == s)).clicked() {
+                if ui
+                    .add(egui::Button::new(label).selected(speed == s))
+                    .clicked()
+                {
                     ctx.emit(Command::SetSpeed(s));
                 }
             }
@@ -137,7 +153,10 @@ pub fn toolbar(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
             ui.separator();
             ui.label("Autosave days:");
             let mut days = ctx.state.autosave_days;
-            if ui.add(egui::DragValue::new(&mut days).range(0..=365)).changed() {
+            if ui
+                .add(egui::DragValue::new(&mut days).range(0..=365))
+                .changed()
+            {
                 ctx.emit(Command::SetAutosave(days));
             }
         });
@@ -166,7 +185,11 @@ pub fn incident_detail(
         ui.add(egui::Label::new(
             egui::RichText::new(format!(
                 "↳ {} #{}: {}",
-                if link.is_incident { "incident" } else { "event" },
+                if link.is_incident {
+                    "incident"
+                } else {
+                    "event"
+                },
                 link.source_id,
                 link.description
             ))
@@ -218,10 +241,14 @@ pub fn event_detail(ui: &mut egui::Ui, event: &sumo::WorldEvent) {
         theme::kv(ui, "Actors", format!("{:?}", event.actors));
     }
     if event.causes.is_empty() {
-        ui.add(egui::Label::new(egui::RichText::new("No causal notes recorded").color(theme::MUTED)));
+        ui.add(egui::Label::new(
+            egui::RichText::new("No causal notes recorded").color(theme::MUTED),
+        ));
     } else {
         for cause in &event.causes {
-            ui.add(egui::Label::new(egui::RichText::new(format!("↳ {cause}")).small()));
+            ui.add(egui::Label::new(
+                egui::RichText::new(format!("↳ {cause}")).small(),
+            ));
         }
     }
 }

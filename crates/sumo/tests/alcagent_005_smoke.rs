@@ -30,7 +30,8 @@ mod unique {
 
     pub fn temp_dir(tag: &str) -> PathBuf {
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("sumo-alc005-{tag}-{}-{n}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("sumo-alc005-{tag}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -54,8 +55,14 @@ fn save_load_roundtrip_preserves_new_005_state() {
     sim.set_intake_paused(true);
 
     let decision_log_before = sim.decision_log().len();
-    let outcome = sim.deliver_decision(pid, Decision::new(DecisionAction::Socialize { with: peer.raw() }));
-    assert!(outcome.applied, "socialize between two known prisoners must apply");
+    let outcome = sim.deliver_decision(
+        pid,
+        Decision::new(DecisionAction::Socialize { with: peer.raw() }),
+    );
+    assert!(
+        outcome.applied,
+        "socialize between two known prisoners must apply"
+    );
     assert_eq!(sim.decision_log().len(), decision_log_before + 1);
 
     assert!(sim.record_post_release(pid, "parole", 0.25, true));
@@ -116,7 +123,10 @@ fn policy_lockdown_and_intake_controls_emit_events_and_hold_invariants() {
 
     // The engine/world invariant gates must stay clean across the flow.
     let errs = sim.check_invariants();
-    assert!(errs.is_empty(), "policy/lockdown/intake controls left violations: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "policy/lockdown/intake controls left violations: {errs:?}"
+    );
 
     // Intake pause must actually block admissions while beds are free.
     let mut sim2 = Sim::new(0x0500_0003);
@@ -124,7 +134,10 @@ fn policy_lockdown_and_intake_controls_emit_events_and_hold_invariants() {
     sim2.set_speed(TimeSpeed::Extreme);
     sim2.run_days(8);
     assert!(
-        !sim2.events().recent().any(|e| e.kind == EventKind::Admission),
+        !sim2
+            .events()
+            .recent()
+            .any(|e| e.kind == EventKind::Admission),
         "intake paused must block admissions (world intake gate)"
     );
 
@@ -134,7 +147,9 @@ fn policy_lockdown_and_intake_controls_emit_events_and_hold_invariants() {
     sim3.set_speed(TimeSpeed::Extreme);
     sim3.run_days(4);
     assert!(
-        sim3.events().recent().any(|e| e.kind == EventKind::Admission),
+        sim3.events()
+            .recent()
+            .any(|e| e.kind == EventKind::Admission),
         "intake resume must allow admissions again"
     );
 }
@@ -146,11 +161,20 @@ fn construction_queue_progresses_and_completes() {
     let mut sim = Sim::new(0x0500_0004);
     sim.set_speed(TimeSpeed::Extreme);
 
-    let project_id = sim.world_mut().enqueue_construction(alc_world::FacilityKind::Medical, 2, 30);
-    assert_eq!(sim.construction_queue().len(), 1, "enqueued project must appear on the queue");
+    let project_id = sim
+        .world_mut()
+        .enqueue_construction(alc_world::FacilityKind::Medical, 2, 30);
+    assert_eq!(
+        sim.construction_queue().len(),
+        1,
+        "enqueued project must appear on the queue"
+    );
     let queued = &sim.world().construction_queue[0];
     assert_eq!(queued.id, project_id);
-    assert_eq!(queued.total_days, 10, "medical builds take 10 day boundaries");
+    assert_eq!(
+        queued.total_days, 10,
+        "medical builds take 10 day boundaries"
+    );
     assert_eq!(queued.progress_days, 0);
 
     sim.run_days(12);
@@ -167,7 +191,9 @@ fn construction_queue_progresses_and_completes() {
         "completed construction project must reach Completed status"
     );
     assert!(
-        sim.events().recent().any(|e| e.kind == EventKind::ConstructionComplete),
+        sim.events()
+            .recent()
+            .any(|e| e.kind == EventKind::ConstructionComplete),
         "construction completion must emit a ConstructionComplete event"
     );
     assert!(
@@ -188,7 +214,10 @@ fn decision_audit_and_incident_records_are_present() {
 
     // Applied decision -> decision audit + decision log.
     let audit_before = sim.decision_audit_log().len();
-    let outcome = sim.deliver_decision(pid, Decision::new(DecisionAction::Socialize { with: peer.raw() }));
+    let outcome = sim.deliver_decision(
+        pid,
+        Decision::new(DecisionAction::Socialize { with: peer.raw() }),
+    );
     assert!(outcome.applied);
     assert_eq!(sim.decision_audit_log().len(), audit_before + 1);
     let audit = sim.decision_audit_log().last().unwrap();
@@ -207,20 +236,40 @@ fn decision_audit_and_incident_records_are_present() {
         decision_log_before,
         "rejected decisions must not enter the decision log"
     );
-    assert_eq!(sim.decision_audit_log().last().unwrap().validation, "rejected");
+    assert_eq!(
+        sim.decision_audit_log().last().unwrap().validation,
+        "rejected"
+    );
 
     // Conflict decision -> mirrored into the incident log + sidecar.
     let incident_log_before = sim.incident_log().len();
-    let fight = sim.deliver_decision(pid, Decision::new(DecisionAction::Fight { target: peer.raw() }));
-    assert!(fight.applied, "conflict between two known prisoners must apply");
+    let fight = sim.deliver_decision(
+        pid,
+        Decision::new(DecisionAction::Fight { target: peer.raw() }),
+    );
+    assert!(
+        fight.applied,
+        "conflict between two known prisoners must apply"
+    );
     assert!(sim.incident_log().len() > incident_log_before);
     let incident = sim.incident_sidecar().last().unwrap();
     // Real causality: a fresh fight may have no prior cause and no known
     // consequence yet. It must carry a provenance link to its source world
     // event and must NOT use self-referential placeholder ids.
-    assert!(!incident.causal_chain.is_empty(), "incident must carry a provenance causal link");
-    assert_ne!(incident.cause, Some(incident.id), "cause must not be self-referential");
-    assert_ne!(incident.consequence, Some(incident.id), "consequence must not be self-referential");
+    assert!(
+        !incident.causal_chain.is_empty(),
+        "incident must carry a provenance causal link"
+    );
+    assert_ne!(
+        incident.cause,
+        Some(incident.id),
+        "cause must not be self-referential"
+    );
+    assert_ne!(
+        incident.consequence,
+        Some(incident.id),
+        "consequence must not be self-referential"
+    );
     assert!(
         incident.involved_prisoners.contains(&pid) || incident.involved_prisoners.contains(&peer),
         "incident must name an involved prisoner"
@@ -256,19 +305,30 @@ fn rehab_and_contraband_events_are_emitted() {
     );
     let rows = sim.rehab_summaries();
     assert!(
-        rows.iter().any(|r| r.prisoner_id == pid && r.program_key == RehabProgram::Education.key()),
+        rows.iter()
+            .any(|r| r.prisoner_id == pid && r.program_key == RehabProgram::Education.key()),
         "enrolled prisoner must appear in the rehab summaries"
     );
     // Record sync: enrollment must be reflected in world.rehab_records.
-    let recs = sim.world().rehab_records.get(&pid).expect("rehab record entry");
+    let recs = sim
+        .world()
+        .rehab_records
+        .get(&pid)
+        .expect("rehab record entry");
     assert!(
-        recs.iter().any(|r| r.program == RehabProgram::Education && !r.completed && !r.dropped),
+        recs.iter()
+            .any(|r| r.program == RehabProgram::Education && !r.completed && !r.dropped),
         "enroll must sync an active world rehab record"
     );
     assert!(sim.drop_rehab(pid, RehabProgram::Education));
-    let recs = sim.world().rehab_records.get(&pid).expect("rehab record entry");
+    let recs = sim
+        .world()
+        .rehab_records
+        .get(&pid)
+        .expect("rehab record entry");
     assert!(
-        recs.iter().any(|r| r.program == RehabProgram::Education && r.dropped),
+        recs.iter()
+            .any(|r| r.program == RehabProgram::Education && r.dropped),
         "drop must mark the world rehab record dropped"
     );
     assert!(
@@ -293,7 +353,8 @@ fn rehab_and_contraband_events_are_emitted() {
     );
     assert!(
         sim.world().rehab_records.get(&pid2).is_some_and(|recs| {
-            recs.iter().any(|r| r.program == RehabProgram::Counseling && !r.dropped && !r.completed)
+            recs.iter()
+                .any(|r| r.program == RehabProgram::Counseling && !r.dropped && !r.completed)
         }),
         "key-based enroll must sync world rehab record"
     );
@@ -307,7 +368,8 @@ fn rehab_and_contraband_events_are_emitted() {
     );
     assert!(
         sim.world().rehab_records.get(&pid2).is_some_and(|recs| {
-            recs.iter().any(|r| r.program == RehabProgram::Counseling && r.dropped)
+            recs.iter()
+                .any(|r| r.program == RehabProgram::Counseling && r.dropped)
         }),
         "key-based drop must sync world rehab record"
     );
@@ -320,12 +382,20 @@ fn rehab_and_contraband_events_are_emitted() {
     let mut sim = Sim::new(0x0500_0006);
     let pid = sim.world().prisoners[0].id;
     sim.emit_event(
-        WorldEvent::new(0, sim.world().time, EventKind::ContrabandFound, format!("Guard 1 found Weapons on prisoner {}", pid.raw()))
-            .with_actor(pid.raw())
-            .with_cause("discovery by guard 1"),
+        WorldEvent::new(
+            0,
+            sim.world().time,
+            EventKind::ContrabandFound,
+            format!("Guard 1 found Weapons on prisoner {}", pid.raw()),
+        )
+        .with_actor(pid.raw())
+        .with_cause("discovery by guard 1"),
     );
     let cases = sim.contraband_summaries();
-    assert!(!cases.is_empty(), "contraband discovery must surface at least one case");
+    assert!(
+        !cases.is_empty(),
+        "contraband discovery must surface at least one case"
+    );
     let cas = cases
         .iter()
         .find(|c| c.holder == Some(pid))
@@ -354,9 +424,14 @@ fn rehab_and_contraband_events_are_emitted() {
         .into_iter()
         .find(|c| c.case_id == case_id)
         .expect("resolved case still present in summaries");
-    assert!(resolved_case.resolved, "resolved case summary must report resolved");
     assert!(
-        sim.contraband_inventory().iter().any(|c| c.item == "Weapons"),
+        resolved_case.resolved,
+        "resolved case summary must report resolved"
+    );
+    assert!(
+        sim.contraband_inventory()
+            .iter()
+            .any(|c| c.item == "Weapons"),
         "resolved contraband should still appear in inventory rollup"
     );
 }
@@ -397,7 +472,8 @@ fn construction_queue_cancel_and_failure_paths() {
         .world_mut()
         .enqueue_construction(alc_world::FacilityKind::Medical, 1, 20);
     assert!(
-        sim.world_mut().cancel_construction(project_id, "observer cancelled"),
+        sim.world_mut()
+            .cancel_construction(project_id, "observer cancelled"),
         "active construction project should cancel"
     );
     let cancelled = sim
@@ -407,7 +483,10 @@ fn construction_queue_cancel_and_failure_paths() {
         .find(|p| p.id == project_id)
         .expect("cancelled project remains in audit queue");
     assert_eq!(cancelled.status, alc_world::ConstructionStatus::Cancelled);
-    assert_eq!(cancelled.terminal_reason.as_deref(), Some("observer cancelled"));
+    assert_eq!(
+        cancelled.terminal_reason.as_deref(),
+        Some("observer cancelled")
+    );
     assert!(
         sim.events().recent().any(|e| {
             e.kind == EventKind::ConstructionCancelled
@@ -420,7 +499,9 @@ fn construction_queue_cancel_and_failure_paths() {
     // Failure path: missing prerequisite (no admin facility for non-admin build).
     let mut sim = Sim::new(0x0500_000A);
     sim.set_speed(TimeSpeed::Extreme);
-    sim.world_mut().facilities.retain(|f| f.kind != alc_world::FacilityKind::Admin);
+    sim.world_mut()
+        .facilities
+        .retain(|f| f.kind != alc_world::FacilityKind::Admin);
     let failed_id = sim
         .world_mut()
         .enqueue_construction(alc_world::FacilityKind::Education, 1, 20);
@@ -433,13 +514,23 @@ fn construction_queue_cancel_and_failure_paths() {
         .expect("failed project remains in audit queue");
     assert_eq!(failed.status, alc_world::ConstructionStatus::Failed);
     assert!(
-        failed.terminal_reason.as_deref().unwrap_or_default().contains("prerequisite")
-            || failed.terminal_reason.as_deref().unwrap_or_default().contains("admin"),
+        failed
+            .terminal_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("prerequisite")
+            || failed
+                .terminal_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("admin"),
         "missing-admin failure should explain prerequisite: {:?}",
         failed.terminal_reason
     );
     assert!(
-        sim.events().recent().any(|e| e.kind == EventKind::ConstructionFailed),
+        sim.events()
+            .recent()
+            .any(|e| e.kind == EventKind::ConstructionFailed),
         "prerequisite failure should emit ConstructionFailed"
     );
     assert!(
@@ -487,7 +578,9 @@ fn policy_and_decision_audit_consistency_smoke() {
         "lockdown toggle should be audited"
     );
     assert!(
-        control_records.iter().any(|r| r.action == "SetIntakePaused"),
+        control_records
+            .iter()
+            .any(|r| r.action == "SetIntakePaused"),
         "intake pause should be audited"
     );
     assert!(
@@ -505,11 +598,15 @@ fn policy_and_decision_audit_consistency_smoke() {
     assert_eq!(sim.decision_log().len(), decision_log_before + 1);
     let new_audit = &sim.decision_audit_log()[audit_before_decision..];
     assert!(
-        new_audit.iter().any(|r| r.validation == "accepted" && r.source == "agent"),
+        new_audit
+            .iter()
+            .any(|r| r.validation == "accepted" && r.source == "agent"),
         "accepted decision should be audited as agent/accepted"
     );
     assert!(
-        new_audit.iter().any(|r| r.validation == "rejected" && r.source == "agent"),
+        new_audit
+            .iter()
+            .any(|r| r.validation == "rejected" && r.source == "agent"),
         "rejected decision should be audited as agent/rejected"
     );
     assert!(
@@ -546,7 +643,9 @@ fn autosave_quick_load_reenable_behavior() {
     // Explicit re-enable (quick-load behavior): should replace scheduler cleanly.
     loaded.enable_autosave(&dir, 1);
     loaded.run_days(1);
-    let wrote = loaded.maybe_autosave().expect("maybe_autosave after re-enable");
+    let wrote = loaded
+        .maybe_autosave()
+        .expect("maybe_autosave after re-enable");
     assert!(
         wrote || dir.join("world.bin").exists(),
         "re-enabled autosave should be operable"

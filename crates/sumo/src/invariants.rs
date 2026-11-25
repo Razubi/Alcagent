@@ -1,13 +1,13 @@
 //! S6 Invariants: checking for prison simulation state consistency.
-//! 
+//!
 //! These invariants validate that the prison world state remains consistent
 //! across ticks, saves, and decision pipelines. Each function returns a list
 //! of violation strings; an empty list means all invariants hold.
 
+use crate::{EngineState, Policy, Sim};
 use alc_agents::DecisionAction;
 use alc_core::FacilityId;
 use alc_world::World;
-use crate::{EngineState, Sim, Policy};
 use std::collections::HashSet;
 
 /// Maximum number of entries permitted in the incident/decision logs.
@@ -75,10 +75,7 @@ pub fn invariant_pawn_in_exactly_one_place(world: &World) -> bool {
                 }
             }
             None => {
-                violations.push(format!(
-                    "guard {} has no assigned location",
-                    guard.id.raw()
-                ));
+                violations.push(format!("guard {} has no assigned location", guard.id.raw()));
             }
         }
     }
@@ -111,7 +108,7 @@ pub fn invariant_intention_target_exists_and_is_legal(world: &World) -> bool {
                     ));
                 }
             }
-            
+
             if let DecisionAction::MoveTo { target_facility } = &decision.action {
                 let facility_exists = w.facilities.iter().any(|f| f.id.0 == *target_facility);
                 if !facility_exists {
@@ -122,8 +119,10 @@ pub fn invariant_intention_target_exists_and_is_legal(world: &World) -> bool {
                     ));
                 }
             }
-            
-            if let DecisionAction::JoinGang { gang } | DecisionAction::LeadGang { gang } = &decision.action {
+
+            if let DecisionAction::JoinGang { gang } | DecisionAction::LeadGang { gang } =
+                &decision.action
+            {
                 let gang_exists = w.gangs.iter().any(|g| g.id.0 == *gang);
                 if !gang_exists {
                     violations.push(format!(
@@ -254,13 +253,23 @@ pub fn invariant_suspicion_claim_records_reference_existing_pawns(world: &World)
                 a, b, b
             ));
         }
-        
+
         let problematic_fields = [
-            "trust", "friendship", "fear", "respect", "loyalty",
-            "hostility", "attraction", "resentment", "dependency",
-            "rivalry", "debt", "gratitude", "familiarity",
+            "trust",
+            "friendship",
+            "fear",
+            "respect",
+            "loyalty",
+            "hostility",
+            "attraction",
+            "resentment",
+            "dependency",
+            "rivalry",
+            "debt",
+            "gratitude",
+            "familiarity",
         ];
-        
+
         for field in &problematic_fields {
             let val = match *field {
                 "trust" => relationship.trust,
@@ -465,14 +474,21 @@ pub fn invariant_construction_queue_sane(world: &World) -> bool {
                 project.id, project.progress_days, project.total_days
             ));
         }
-        let terminal = matches!(project.status, alc_world::ConstructionStatus::Completed | alc_world::ConstructionStatus::Cancelled | alc_world::ConstructionStatus::Failed);
+        let terminal = matches!(
+            project.status,
+            alc_world::ConstructionStatus::Completed
+                | alc_world::ConstructionStatus::Cancelled
+                | alc_world::ConstructionStatus::Failed
+        );
         if !terminal && project.progress_days >= project.total_days {
             violations.push(format!(
                 "non-terminal construction project {} has progress {} >= total {}",
                 project.id, project.progress_days, project.total_days
             ));
         }
-        if matches!(project.status, alc_world::ConstructionStatus::Completed) && project.progress_days < project.total_days {
+        if matches!(project.status, alc_world::ConstructionStatus::Completed)
+            && project.progress_days < project.total_days
+        {
             violations.push(format!(
                 "completed construction project {} has progress {} < total {}",
                 project.id, project.progress_days, project.total_days
@@ -648,7 +664,9 @@ mod tests {
     fn decision_audit_bound_is_detected() {
         let mut sim = Sim::new(6);
         for _ in 0..=MAX_LOG_ENTRIES {
-            sim.engine_state.decision_audit.push(DecisionAuditRecord::default());
+            sim.engine_state
+                .decision_audit
+                .push(DecisionAuditRecord::default());
         }
         assert!(!invariant_decision_audit_bounded(&sim));
         assert!(!invariant_logs_and_incident_store_bounded(&sim));
@@ -677,7 +695,9 @@ mod tests {
     fn post_release_records_must_reference_allocated_ids() {
         let mut sim = Sim::new(8);
         let next = sim.world.next_prisoner_id;
-        sim.engine_state.post_release.insert(PrisonerId(next), false);
+        sim.engine_state
+            .post_release
+            .insert(PrisonerId(next), false);
         assert!(!invariant_post_release_ids_valid(&sim));
         assert!(!invariant_logs_and_incident_store_bounded(&sim));
 

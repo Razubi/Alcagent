@@ -96,15 +96,35 @@ impl NeedTag {
     /// Coarse category, mirroring design doc §3.2.
     pub fn category(self) -> NeedCategory {
         match self {
-            NeedTag::Hunger | NeedTag::Thirst | NeedTag::Sleep | NeedTag::Fatigue
-            | NeedTag::Hygiene | NeedTag::Health | NeedTag::Medical | NeedTag::Exercise
-            | NeedTag::Temperature | NeedTag::Bathroom => NeedCategory::Physical,
-            NeedTag::Safety | NeedTag::Companionship | NeedTag::Respect | NeedTag::Freedom
-            | NeedTag::Autonomy | NeedTag::Purpose | NeedTag::Stimulation | NeedTag::Hope
-            | NeedTag::Stability | NeedTag::Privacy | NeedTag::Belonging => NeedCategory::Psychological,
-            NeedTag::Friendship | NeedTag::Romance | NeedTag::FamilyContact
-            | NeedTag::GroupAcceptance | NeedTag::Status | NeedTag::Loyalty
-            | NeedTag::Protection | NeedTag::Recognition => NeedCategory::Social,
+            NeedTag::Hunger
+            | NeedTag::Thirst
+            | NeedTag::Sleep
+            | NeedTag::Fatigue
+            | NeedTag::Hygiene
+            | NeedTag::Health
+            | NeedTag::Medical
+            | NeedTag::Exercise
+            | NeedTag::Temperature
+            | NeedTag::Bathroom => NeedCategory::Physical,
+            NeedTag::Safety
+            | NeedTag::Companionship
+            | NeedTag::Respect
+            | NeedTag::Freedom
+            | NeedTag::Autonomy
+            | NeedTag::Purpose
+            | NeedTag::Stimulation
+            | NeedTag::Hope
+            | NeedTag::Stability
+            | NeedTag::Privacy
+            | NeedTag::Belonging => NeedCategory::Psychological,
+            NeedTag::Friendship
+            | NeedTag::Romance
+            | NeedTag::FamilyContact
+            | NeedTag::GroupAcceptance
+            | NeedTag::Status
+            | NeedTag::Loyalty
+            | NeedTag::Protection
+            | NeedTag::Recognition => NeedCategory::Social,
         }
     }
 }
@@ -239,7 +259,11 @@ impl Needs {
             let environment = environment_term(ctx, tag);
             // Both Sleep and Fatigue are driven by the `Sleep` tag (a night's
             // rest relieves both), so a single lookup covers them correctly.
-            let relief = if ctx.relief.contains(&tag) { relief_rate } else { 0.0 };
+            let relief = if ctx.relief.contains(&tag) {
+                relief_rate
+            } else {
+                0.0
+            };
             let delta = hours * (rate * trait_mult.max(0.0) + activity + environment - relief);
             *value = (*value + delta).clamp(0.0, 1.0);
         };
@@ -560,7 +584,9 @@ impl Needs {
     /// Hunger (and, secondarily, fatigue/thirst) makes a prisoner irritable.
     /// Consumed by `Prisoner::aggression_modifier` and the Conflict system.
     pub fn irritability(&self) -> f32 {
-        (self.hunger * 0.65 + self.fatigue * 0.2 + self.thirst * 0.1
+        (self.hunger * 0.65
+            + self.fatigue * 0.2
+            + self.thirst * 0.1
             + (1.0 - self.alertness()) * 0.1)
             .clamp(0.0, 1.0)
     }
@@ -631,9 +657,12 @@ impl Needs {
     /// level is reserved for failing *health*, not unmet need.
     pub fn medical_severity(&self) -> MedicalSeverity {
         let neglect = self.medical_neglect();
-        if self.medical_need >= EMERGENCY_MEDICAL_THRESHOLD || neglect >= CRITICAL_NEGLECT_THRESHOLD {
+        if self.medical_need >= EMERGENCY_MEDICAL_THRESHOLD || neglect >= CRITICAL_NEGLECT_THRESHOLD
+        {
             MedicalSeverity::Emergency
-        } else if self.medical_need >= SEVERE_MEDICAL_THRESHOLD || neglect >= SEVERE_NEGLECT_THRESHOLD {
+        } else if self.medical_need >= SEVERE_MEDICAL_THRESHOLD
+            || neglect >= SEVERE_NEGLECT_THRESHOLD
+        {
             MedicalSeverity::Severe
         } else if self.medical_need >= ELEVATED_MEDICAL_THRESHOLD {
             MedicalSeverity::Elevated
@@ -656,12 +685,31 @@ impl Needs {
 
     fn all_finite(&self) -> bool {
         [
-            self.hunger, self.thirst, self.sleep, self.fatigue, self.hygiene,
-            self.medical_need, self.exercise, self.temperature_comfort, self.bathroom,
-            self.safety, self.companionship, self.respect, self.freedom, self.autonomy,
-            self.purpose, self.stimulation, self.stability, self.privacy, self.belonging,
-            self.friendship, self.family_contact, self.group_acceptance, self.status,
-            self.protection, self.recognition,
+            self.hunger,
+            self.thirst,
+            self.sleep,
+            self.fatigue,
+            self.hygiene,
+            self.medical_need,
+            self.exercise,
+            self.temperature_comfort,
+            self.bathroom,
+            self.safety,
+            self.companionship,
+            self.respect,
+            self.freedom,
+            self.autonomy,
+            self.purpose,
+            self.stimulation,
+            self.stability,
+            self.privacy,
+            self.belonging,
+            self.friendship,
+            self.family_contact,
+            self.group_acceptance,
+            self.status,
+            self.protection,
+            self.recognition,
         ]
         .iter()
         .all(|v| v.is_finite())
@@ -867,14 +915,14 @@ mod tests {
         use DriftActivity as A;
         match minute {
             0..360 => A::Sleep,
-            360..390 => A::None,  // wake
-            390..435 => A::Eat,   // breakfast
+            360..390 => A::None, // wake
+            390..435 => A::Eat,  // breakfast
             435..450 => A::None,
             450..690 => A::Work,
             690..705 => A::None,
-            705..750 => A::Eat,   // lunch
+            705..750 => A::Eat, // lunch
             750..765 => A::None,
-            765..825 => A::Work,  // education
+            765..825 => A::Work, // education
             825..840 => A::None,
             840..930 => A::Yard,
             930..945 => A::None,
@@ -906,20 +954,37 @@ mod tests {
 
     fn assert_all_needs_valid(n: &Needs, step: u32) {
         let values = [
-            ("hunger", n.hunger), ("thirst", n.thirst), ("sleep", n.sleep),
-            ("fatigue", n.fatigue), ("hygiene", n.hygiene),
-            ("medical_need", n.medical_need), ("exercise", n.exercise),
-            ("temperature_comfort", n.temperature_comfort), ("bathroom", n.bathroom),
-            ("safety", n.safety), ("companionship", n.companionship),
-            ("respect", n.respect), ("freedom", n.freedom), ("autonomy", n.autonomy),
-            ("purpose", n.purpose), ("stimulation", n.stimulation),
-            ("stability", n.stability), ("privacy", n.privacy), ("belonging", n.belonging),
-            ("friendship", n.friendship), ("family_contact", n.family_contact),
-            ("group_acceptance", n.group_acceptance), ("status", n.status),
-            ("protection", n.protection), ("recognition", n.recognition),
+            ("hunger", n.hunger),
+            ("thirst", n.thirst),
+            ("sleep", n.sleep),
+            ("fatigue", n.fatigue),
+            ("hygiene", n.hygiene),
+            ("medical_need", n.medical_need),
+            ("exercise", n.exercise),
+            ("temperature_comfort", n.temperature_comfort),
+            ("bathroom", n.bathroom),
+            ("safety", n.safety),
+            ("companionship", n.companionship),
+            ("respect", n.respect),
+            ("freedom", n.freedom),
+            ("autonomy", n.autonomy),
+            ("purpose", n.purpose),
+            ("stimulation", n.stimulation),
+            ("stability", n.stability),
+            ("privacy", n.privacy),
+            ("belonging", n.belonging),
+            ("friendship", n.friendship),
+            ("family_contact", n.family_contact),
+            ("group_acceptance", n.group_acceptance),
+            ("status", n.status),
+            ("protection", n.protection),
+            ("recognition", n.recognition),
         ];
         for (name, v) in values {
-            assert!(v.is_finite() && (0.0..=1.0).contains(&v), "hour {step}: {name}={v}");
+            assert!(
+                v.is_finite() && (0.0..=1.0).contains(&v),
+                "hour {step}: {name}={v}"
+            );
         }
     }
 
@@ -961,25 +1026,43 @@ mod tests {
         }
 
         // Six hours asleep with no food builds a real hunger deficit...
-        assert!(hunger_after_night > initial_hunger + 0.10,
-            "hunger did not rise overnight: {initial_hunger} -> {hunger_after_night}");
+        assert!(
+            hunger_after_night > initial_hunger + 0.10,
+            "hunger did not rise overnight: {initial_hunger} -> {hunger_after_night}"
+        );
         // ...which breakfast then relieves measurably.
-        assert!(hunger_after_breakfast < hunger_after_night - 0.15,
-            "breakfast did not relieve hunger: {hunger_after_night} -> {hunger_after_breakfast}");
+        assert!(
+            hunger_after_breakfast < hunger_after_night - 0.15,
+            "breakfast did not relieve hunger: {hunger_after_night} -> {hunger_after_breakfast}"
+        );
         // Sleep need is paid down overnight, accumulates through the waking day...
-        assert!(sleep_after_night < 0.05, "sleep need not relieved overnight: {sleep_after_night}");
-        assert!(sleep_before_second_night > sleep_after_night + 0.30,
-            "sleep need did not build while awake: {sleep_before_second_night}");
+        assert!(
+            sleep_after_night < 0.05,
+            "sleep need not relieved overnight: {sleep_after_night}"
+        );
+        assert!(
+            sleep_before_second_night > sleep_after_night + 0.30,
+            "sleep need did not build while awake: {sleep_before_second_night}"
+        );
         // ...and drops again during the next sleep block.
-        assert!(sleep_after_second_night < sleep_before_second_night - 0.30,
-            "second sleep block did not relieve sleep need: {sleep_after_second_night}");
+        assert!(
+            sleep_after_second_night < sleep_before_second_night - 0.30,
+            "second sleep block did not relieve sleep need: {sleep_after_second_night}"
+        );
     }
 
     #[test]
     fn temperature_and_bathroom_drift_use_their_own_tags() {
         let relief = [NeedTag::Temperature, NeedTag::Bathroom];
-        let hot_with_relief = NeedDriftContext { relief: &relief, heat: 1.0, ..NeedDriftContext::default() };
-        let hot = NeedDriftContext { heat: 1.0, ..NeedDriftContext::default() };
+        let hot_with_relief = NeedDriftContext {
+            relief: &relief,
+            heat: 1.0,
+            ..NeedDriftContext::default()
+        };
+        let hot = NeedDriftContext {
+            heat: 1.0,
+            ..NeedDriftContext::default()
+        };
         let cool = NeedDriftContext::default();
 
         let mut a = Needs::new();
@@ -1006,7 +1089,10 @@ mod tests {
         n.relieve(NeedTag::Hunger, f32::NAN);
         assert_all_needs_valid(&n, 1);
         n.impulse(NeedTag::Sleep, 0.5);
-        assert!(n.sleep > 0.0 && n.fatigue > 0.0, "sleep impulse must raise both deficits");
+        assert!(
+            n.sleep > 0.0 && n.fatigue > 0.0,
+            "sleep impulse must raise both deficits"
+        );
     }
 
     // -- 0.05 medical/neglect triage hooks (Death/TransferOut pathways) -----
@@ -1035,7 +1121,10 @@ mod tests {
         neglected.medical_need = 0.60;
         neglected.hygiene = 1.0;
         neglected.fatigue = 1.0;
-        assert!(neglected.is_severe_neglect(), "neglect ladder must key off hygiene/fatigue too");
+        assert!(
+            neglected.is_severe_neglect(),
+            "neglect ladder must key off hygiene/fatigue too"
+        );
         assert_eq!(neglected.medical_severity(), MedicalSeverity::Severe);
 
         // Critical neglect needs sustained, near-emergency medical need.

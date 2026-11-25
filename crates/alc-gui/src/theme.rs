@@ -91,7 +91,11 @@ pub fn metric_bar(ui: &mut egui::Ui, label: &str, value: f32, good: bool) {
     ui.horizontal(|ui| {
         ui.label(label);
         let v = value.clamp(0.0, 1.0);
-        let colour = if good { good_colour(v) } else { urgency_colour(v) };
+        let colour = if good {
+            good_colour(v)
+        } else {
+            urgency_colour(v)
+        };
         let bar = egui::ProgressBar::new(v)
             .desired_width(110.0)
             .fill(colour)

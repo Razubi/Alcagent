@@ -89,34 +89,18 @@ pub struct Decision {
 /// format/semantic rejection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DecisionAction {
-    MoveTo {
-        target_facility: u64,
-    },
-    Socialize {
-        with: u64,
-    },
-    Fight {
-        target: u64,
-    },
-    Trade {
-        with: u64,
-        item: String,
-    },
+    MoveTo { target_facility: u64 },
+    Socialize { with: u64 },
+    Fight { target: u64 },
+    Trade { with: u64, item: String },
     Comply,
     Refuse,
     EscapeAttempt,
     RequestMedical,
-    JoinGang {
-        gang: u64,
-    },
+    JoinGang { gang: u64 },
     LeaveGang,
-    LeadGang {
-        gang: u64,
-    },
-    SpreadRumor {
-        about: u64,
-        content: String,
-    },
+    LeadGang { gang: u64 },
+    SpreadRumor { about: u64, content: String },
     None,
 }
 
@@ -344,7 +328,10 @@ impl RawDecision {
     /// legacy [`DecisionValidator`] trait so it can reuse the pipeline.
     pub fn from_decision(decision: &Decision) -> Self {
         let action = decision.action_name().to_string();
-        let target = decision.target_id().map(|id| RawTarget { kind: target_kind(decision).to_string(), id });
+        let target = decision.target_id().map(|id| RawTarget {
+            kind: target_kind(decision).to_string(),
+            id,
+        });
         let mut parameters = BTreeMap::new();
         if let DecisionAction::Trade { item, .. } = &decision.action {
             parameters.insert("item".to_string(), item.clone());
@@ -417,7 +404,11 @@ impl Rejection {
             stage,
             ValidationStage::Format | ValidationStage::Semantic | ValidationStage::Safety
         );
-        Self { stage, reason: reason.into(), retryable }
+        Self {
+            stage,
+            reason: reason.into(),
+            retryable,
+        }
     }
 
     /// Human-readable `stage: reason` message.
@@ -432,9 +423,7 @@ impl Rejection {
 pub enum ValidationResult {
     Accepted(Decision),
     Repaired(Decision),
-    Rejected {
-        reason: String,
-    },
+    Rejected { reason: String },
 }
 
 impl ValidationResult {
@@ -543,7 +532,12 @@ pub struct ActionCandidate {
 
 impl ActionCandidate {
     pub fn new(decision: Decision, expected_utility: f32) -> Self {
-        Self { decision, expected_utility, risk: 0.0, legality: Legality::Legal }
+        Self {
+            decision,
+            expected_utility,
+            risk: 0.0,
+            legality: Legality::Legal,
+        }
     }
 
     pub fn with_risk(mut self, risk: f32) -> Self {
@@ -592,22 +586,44 @@ pub fn validate_format(raw: &RawDecision) -> Result<Decision, Rejection> {
         ));
     }
     if raw.urgency.is_nan() || raw.urgency.is_infinite() {
-        return Err(Rejection::new(ValidationStage::Format, "urgency must be finite"));
+        return Err(Rejection::new(
+            ValidationStage::Format,
+            "urgency must be finite",
+        ));
     }
     if raw.confidence.is_nan() || raw.confidence.is_infinite() {
-        return Err(Rejection::new(ValidationStage::Format, "confidence must be finite"));
+        return Err(Rejection::new(
+            ValidationStage::Format,
+            "confidence must be finite",
+        ));
     }
     if raw.intent.chars().count() > MAX_FREE_TEXT {
-        return Err(Rejection::new(ValidationStage::Format, "intent exceeds 500 chars"));
+        return Err(Rejection::new(
+            ValidationStage::Format,
+            "intent exceeds 500 chars",
+        ));
     }
-    if raw.expected_outcome.as_deref().map_or(false, |s| s.chars().count() > MAX_FREE_TEXT) {
-        return Err(Rejection::new(ValidationStage::Format, "expected_outcome exceeds 500 chars"));
+    if raw
+        .expected_outcome
+        .as_deref()
+        .map_or(false, |s| s.chars().count() > MAX_FREE_TEXT)
+    {
+        return Err(Rejection::new(
+            ValidationStage::Format,
+            "expected_outcome exceeds 500 chars",
+        ));
     }
     if raw.reasoning.chars().count() > 2_000 {
-        return Err(Rejection::new(ValidationStage::Format, "reasoning exceeds 2000 chars"));
+        return Err(Rejection::new(
+            ValidationStage::Format,
+            "reasoning exceeds 2000 chars",
+        ));
     }
     if let Some(target) = &raw.target {
-        if !matches!(target.kind.as_str(), "agent" | "location" | "object" | "gang" | "none") {
+        if !matches!(
+            target.kind.as_str(),
+            "agent" | "location" | "object" | "gang" | "none"
+        ) {
             return Err(Rejection::new(
                 ValidationStage::Format,
                 format!("invalid target kind '{}'", target.kind),
@@ -636,11 +652,22 @@ fn valid_param_key(key: &str) -> bool {
 
 fn build_decision(action: &str, raw: &RawDecision) -> Result<Decision, Rejection> {
     let target = raw.target.as_ref().map(|t| t.id);
-    let missing = || Rejection::new(ValidationStage::Format, format!("{action} requires a target"));
+    let missing = || {
+        Rejection::new(
+            ValidationStage::Format,
+            format!("{action} requires a target"),
+        )
+    };
     let decision_action = match action {
-        "move_to" => DecisionAction::MoveTo { target_facility: target.ok_or_else(missing)? },
-        "socialize" => DecisionAction::Socialize { with: target.ok_or_else(missing)? },
-        "fight" => DecisionAction::Fight { target: target.ok_or_else(missing)? },
+        "move_to" => DecisionAction::MoveTo {
+            target_facility: target.ok_or_else(missing)?,
+        },
+        "socialize" => DecisionAction::Socialize {
+            with: target.ok_or_else(missing)?,
+        },
+        "fight" => DecisionAction::Fight {
+            target: target.ok_or_else(missing)?,
+        },
         "trade" => DecisionAction::Trade {
             with: target.ok_or_else(missing)?,
             item: raw.parameters.get("item").cloned().unwrap_or_default(),
@@ -649,8 +676,12 @@ fn build_decision(action: &str, raw: &RawDecision) -> Result<Decision, Rejection
             about: target.ok_or_else(missing)?,
             content: raw.parameters.get("content").cloned().unwrap_or_default(),
         },
-        "join_gang" => DecisionAction::JoinGang { gang: target.ok_or_else(missing)? },
-        "lead_gang" => DecisionAction::LeadGang { gang: target.ok_or_else(missing)? },
+        "join_gang" => DecisionAction::JoinGang {
+            gang: target.ok_or_else(missing)?,
+        },
+        "lead_gang" => DecisionAction::LeadGang {
+            gang: target.ok_or_else(missing)?,
+        },
         "comply" => DecisionAction::Comply,
         "refuse" => DecisionAction::Refuse,
         "escape_attempt" => DecisionAction::EscapeAttempt,
@@ -661,7 +692,7 @@ fn build_decision(action: &str, raw: &RawDecision) -> Result<Decision, Rejection
             return Err(Rejection::new(
                 ValidationStage::Format,
                 format!("unknown action '{other}'"),
-            ))
+            ));
         }
     };
     Ok(Decision {
@@ -682,10 +713,16 @@ fn build_decision(action: &str, raw: &RawDecision) -> Result<Decision, Rejection
 pub fn validate_semantic(d: &Decision, ctx: &ValidationContext) -> Result<Decision, Rejection> {
     match &d.action {
         DecisionAction::Trade { item, .. } if item.trim().is_empty() => {
-            return Err(Rejection::new(ValidationStage::Semantic, "trade item must be non-empty"));
+            return Err(Rejection::new(
+                ValidationStage::Semantic,
+                "trade item must be non-empty",
+            ));
         }
         DecisionAction::SpreadRumor { content, .. } if content.trim().is_empty() => {
-            return Err(Rejection::new(ValidationStage::Semantic, "rumor content must be non-empty"));
+            return Err(Rejection::new(
+                ValidationStage::Semantic,
+                "rumor content must be non-empty",
+            ));
         }
         _ => {}
     }
@@ -724,7 +761,9 @@ pub fn validate_semantic(d: &Decision, ctx: &ValidationContext) -> Result<Decisi
 pub fn validate_authority(d: &Decision, ctx: &ValidationContext) -> Result<Decision, Rejection> {
     let staff = matches!(ctx.role, Role::Guard | Role::Warden);
     match &d.action {
-        DecisionAction::JoinGang { .. } | DecisionAction::LeaveGang | DecisionAction::LeadGang { .. } => {
+        DecisionAction::JoinGang { .. }
+        | DecisionAction::LeaveGang
+        | DecisionAction::LeadGang { .. } => {
             if staff {
                 return Err(Rejection::new(
                     ValidationStage::Authority,
@@ -774,10 +813,7 @@ pub fn validate_authority(d: &Decision, ctx: &ValidationContext) -> Result<Decis
                 ));
             }
             if ctx.gang_id != Some(*gang) {
-                return Err(Rejection::new(
-                    ValidationStage::Authority,
-                    "gang mismatch",
-                ));
+                return Err(Rejection::new(ValidationStage::Authority, "gang mismatch"));
             }
         }
         _ => {}
@@ -793,7 +829,10 @@ pub fn validate_authority(d: &Decision, ctx: &ValidationContext) -> Result<Decis
 /// engine remains the source of truth for reachability and paths.
 pub fn validate_world_state(d: &Decision, ctx: &ValidationContext) -> Result<Decision, Rejection> {
     if ctx.lockdown && matches!(&d.action, DecisionAction::EscapeAttempt) {
-        return Err(Rejection::new(ValidationStage::WorldState, "lockdown active"));
+        return Err(Rejection::new(
+            ValidationStage::WorldState,
+            "lockdown active",
+        ));
     }
     Ok(d.clone())
 }
@@ -838,7 +877,10 @@ pub fn validate_safety(d: &Decision, ctx: &ValidationContext) -> Result<Decision
     if ctx.agent_id != 0 {
         if let Some(target) = d.entity_target() {
             if target == ctx.agent_id && matches!(&d.action, DecisionAction::Fight { .. }) {
-                return Err(Rejection::new(ValidationStage::Safety, "self-targeting attack"));
+                return Err(Rejection::new(
+                    ValidationStage::Safety,
+                    "self-targeting attack",
+                ));
             }
         }
     }
@@ -889,7 +931,7 @@ fn contains_injection(text: &str) -> bool {
 pub fn clamp_and_repair(d: &Decision, ctx: &ValidationContext) -> Decision {
     let mut out = d.clone();
     let mut repair_reasons: Vec<String> = Vec::new();
-    
+
     match &mut out.action {
         DecisionAction::Trade { item, .. } => {
             let clamped = clamp_text(item, 200);
@@ -913,7 +955,7 @@ pub fn clamp_and_repair(d: &Decision, ctx: &ValidationContext) -> Decision {
         out.action = DecisionAction::Socialize { with: 0 };
         repair_reasons.push("fight de-escalated to socialize due to nearby guards".to_string());
     }
-    
+
     if !repair_reasons.is_empty() {
         out.repair_reason = repair_reasons.join("; ");
         out.outcome = DecisionOutcomeState::Repaired;
@@ -939,7 +981,11 @@ fn clamp_text(text: &str, max: usize) -> String {
 pub fn run_validation_pipeline(raw: &RawDecision, ctx: &ValidationContext) -> ValidationResult {
     let initial = match validate_format(raw) {
         Ok(d) => d,
-        Err(e) => return ValidationResult::Rejected { reason: e.message() },
+        Err(e) => {
+            return ValidationResult::Rejected {
+                reason: e.message(),
+            };
+        }
     };
 
     let stages: [fn(&Decision, &ValidationContext) -> Result<Decision, Rejection>; 6] = [
@@ -955,7 +1001,11 @@ pub fn run_validation_pipeline(raw: &RawDecision, ctx: &ValidationContext) -> Va
     for stage in stages {
         match stage(&current, ctx) {
             Ok(next) => current = next,
-            Err(e) => return ValidationResult::Rejected { reason: e.message() },
+            Err(e) => {
+                return ValidationResult::Rejected {
+                    reason: e.message(),
+                };
+            }
         }
     }
 
@@ -971,7 +1021,9 @@ pub fn run_validation_pipeline(raw: &RawDecision, ctx: &ValidationContext) -> Va
 pub fn run_validation_json(json: &str, ctx: &ValidationContext) -> ValidationResult {
     match parse_raw_decision(json) {
         Ok(raw) => run_validation_pipeline(&raw, ctx),
-        Err(e) => ValidationResult::Rejected { reason: e.message() },
+        Err(e) => ValidationResult::Rejected {
+            reason: e.message(),
+        },
     }
 }
 
@@ -980,18 +1032,29 @@ mod tests {
     use super::*;
 
     fn ctx() -> ValidationContext {
-        ValidationContext { agent_id: 7, role: Role::Prisoner, stamina: 1.0, ..Default::default() }
+        ValidationContext {
+            agent_id: 7,
+            role: Role::Prisoner,
+            stamina: 1.0,
+            ..Default::default()
+        }
     }
 
     #[test]
     fn format_rejects_unknown_action() {
-        let raw = RawDecision { action: "teleport".into(), ..Default::default() };
+        let raw = RawDecision {
+            action: "teleport".into(),
+            ..Default::default()
+        };
         assert!(validate_format(&raw).is_err());
     }
 
     #[test]
     fn lockdown_rejects_escape() {
-        let raw = RawDecision { action: "escape_attempt".into(), ..Default::default() };
+        let raw = RawDecision {
+            action: "escape_attempt".into(),
+            ..Default::default()
+        };
         let mut c = ctx();
         c.lockdown = true;
         match run_validation_pipeline(&raw, &c) {
@@ -1002,11 +1065,19 @@ mod tests {
 
     #[test]
     fn guarded_fight_is_repaired_to_socialize() {
-        let raw = RawDecision { action: "fight".into(), target: Some(RawTarget { kind: "agent".into(), id: 9 }), ..Default::default() };
+        let raw = RawDecision {
+            action: "fight".into(),
+            target: Some(RawTarget {
+                kind: "agent".into(),
+                id: 9,
+            }),
+            ..Default::default()
+        };
         let mut c = ctx();
         c.guards_nearby = 3;
         match run_validation_pipeline(&raw, &c) {
-            ValidationResult::Repaired(d) if matches!(&d.action, DecisionAction::Socialize { .. }) => {}
+            ValidationResult::Repaired(d)
+                if matches!(&d.action, DecisionAction::Socialize { .. }) => {}
             other => panic!("expected repair, got {other:?}"),
         }
     }
@@ -1023,7 +1094,8 @@ mod tests {
     fn json_round_trip_through_pipeline() {
         let json = r#"{"action":"trade","target":{"kind":"agent","id":3},"parameters":{"item":"soap"},"intent":"swap"}"#;
         match run_validation_json(json, &ctx()) {
-            ValidationResult::Accepted(d) if matches!(&d.action, DecisionAction::Trade { with: 3, .. }) => {}
+            ValidationResult::Accepted(d)
+                if matches!(&d.action, DecisionAction::Trade { with: 3, .. }) => {}
             other => panic!("expected accepted trade, got {other:?}"),
         }
     }

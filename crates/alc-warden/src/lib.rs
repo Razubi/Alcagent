@@ -29,10 +29,17 @@ impl WardenTraits {
     pub fn randomized(rng: &mut RngStream) -> Self {
         let r = |rng: &mut RngStream| rng.range(0.1, 0.95) as f32;
         Self {
-            strictness: r(rng), compassion: r(rng), political_ambition: r(rng),
-            financial_discipline: r(rng), risk_tolerance: r(rng), reform_orientation: r(rng),
-            authoritarian_tendencies: r(rng), staff_loyalty: r(rng),
-            corruption_susceptibility: r(rng), reputation_concerns: r(rng), competence: r(rng),
+            strictness: r(rng),
+            compassion: r(rng),
+            political_ambition: r(rng),
+            financial_discipline: r(rng),
+            risk_tolerance: r(rng),
+            reform_orientation: r(rng),
+            authoritarian_tendencies: r(rng),
+            staff_loyalty: r(rng),
+            corruption_susceptibility: r(rng),
+            reputation_concerns: r(rng),
+            competence: r(rng),
         }
     }
 }
@@ -56,21 +63,45 @@ pub enum Objective {
 /// Action the warden can take.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WardenAction {
-    Expand { building: String },
-    HireGuards { count: u32 },
-    FireGuards { count: u32 },
-    PromoteStaff { guard: u64 },
-    ChangePolicy { policy: String, value: f64 },
+    Expand {
+        building: String,
+    },
+    HireGuards {
+        count: u32,
+    },
+    FireGuards {
+        count: u32,
+    },
+    PromoteStaff {
+        guard: u64,
+    },
+    ChangePolicy {
+        policy: String,
+        value: f64,
+    },
     IncreaseSecurity,
     ReduceExpenses,
-    ImproveInfrastructure { facility: u64 },
-    RespondToDisturbance { event_id: u64 },
+    ImproveInfrastructure {
+        facility: u64,
+    },
+    RespondToDisturbance {
+        event_id: u64,
+    },
     NegotiateWithRepresentatives,
-    InvestigateMisconduct { target: u64 },
-    AdjustParoleRecommendation { prisoner: u64, lean: f32 },
-    RequestFunding { amount_major: i64 },
+    InvestigateMisconduct {
+        target: u64,
+    },
+    AdjustParoleRecommendation {
+        prisoner: u64,
+        lean: f32,
+    },
+    RequestFunding {
+        amount_major: i64,
+    },
     /// Explicit "hold steady" — a first-class decision (design §5.5).
-    NoAction { rationale: String },
+    NoAction {
+        rationale: String,
+    },
 }
 
 impl WardenAction {
@@ -111,7 +142,9 @@ impl WardenAction {
             WardenAction::ImproveInfrastructure { .. } => "Repair and upgrade facilities",
             WardenAction::RespondToDisturbance { .. } => "Respond to an active disturbance",
             WardenAction::NegotiateWithRepresentatives => "Engage prisoner representatives",
-            WardenAction::InvestigateMisconduct { .. } => "Investigate staff or prisoner misconduct",
+            WardenAction::InvestigateMisconduct { .. } => {
+                "Investigate staff or prisoner misconduct"
+            }
             WardenAction::AdjustParoleRecommendation { .. } => "Adjust parole recommendation",
             WardenAction::RequestFunding { .. } => "Request additional government funding",
             WardenAction::NoAction { .. } => "Defer decision; no action required",
@@ -198,7 +231,16 @@ impl WardenAuditLog {
         }
     }
 
-    pub fn record(&mut self, time: SimTime, warden_id: WardenId, warden_name: impl Into<String>, action: WardenAction, reason: impl Into<String>, source: DecisionSource, applied: bool) -> u64 {
+    pub fn record(
+        &mut self,
+        time: SimTime,
+        warden_id: WardenId,
+        warden_name: impl Into<String>,
+        action: WardenAction,
+        reason: impl Into<String>,
+        source: DecisionSource,
+        applied: bool,
+    ) -> u64 {
         let r_str = reason.into();
         let id = self.next_id;
         self.next_id = self.next_id.saturating_add(1);
@@ -211,7 +253,11 @@ impl WardenAuditLog {
             rationale: r_str.clone(),
             reason: r_str,
             source,
-            outcome: if applied { alc_agents::decision::DecisionOutcomeState::Accepted } else { alc_agents::decision::DecisionOutcomeState::Rejected },
+            outcome: if applied {
+                alc_agents::decision::DecisionOutcomeState::Accepted
+            } else {
+                alc_agents::decision::DecisionOutcomeState::Rejected
+            },
             applied,
             repair_reason: String::new(),
         };
@@ -238,7 +284,10 @@ impl WardenAuditLog {
 
     /// Records matching a particular action variant.
     pub fn by_action(&self, action: &WardenAction) -> Vec<&WardenDecisionRecord> {
-        self.records.iter().filter(|r| std::mem::discriminant(&r.action) == std::mem::discriminant(action)).collect()
+        self.records
+            .iter()
+            .filter(|r| std::mem::discriminant(&r.action) == std::mem::discriminant(action))
+            .collect()
     }
 
     pub fn clear(&mut self) {
@@ -270,7 +319,7 @@ pub struct Warden {
     pub name: String,
     pub traits: WardenTraits,
     pub philosophy: String,
-    pub inbox: Vec<u64>,          // event ids the warden has "received" (credibility-scored)
+    pub inbox: Vec<u64>, // event ids the warden has "received" (credibility-scored)
     pub last_decision_at: SimTime,
     pub pending_actions: Vec<WardenAction>,
     /// Attention budget: 0..1 remaining administrative capacity.
@@ -471,7 +520,12 @@ fn derive_philosophy(t: &WardenTraits) -> String {
 ///
 /// Capacity and the incident count are read from the [`Warden`] state; use
 /// [`arbitrate_with_context`] to supply them explicitly.
-pub fn arbitrate(warden: &mut Warden, economy: &Economy, population: u32, rng: &mut RngStream) -> WardenAction {
+pub fn arbitrate(
+    warden: &mut Warden,
+    economy: &Economy,
+    population: u32,
+    rng: &mut RngStream,
+) -> WardenAction {
     let incidents = warden
         .security_incidents_this_week
         .max(warden.incidents_this_week);
@@ -532,8 +586,10 @@ pub fn arbitrate_with_context(
         if matches!(obj, Objective::FinancialSustainability) && economy.health() < 0.4 {
             score += 0.25;
         }
-        if matches!(obj, Objective::Security | Objective::EscapePrevention | Objective::ViolenceReduction)
-            && security_incidents_this_week > 0
+        if matches!(
+            obj,
+            Objective::Security | Objective::EscapePrevention | Objective::ViolenceReduction
+        ) && security_incidents_this_week > 0
         {
             score += 0.05 * security_incidents_this_week.min(5) as f32;
         }
@@ -584,7 +640,11 @@ mod tests {
     use alc_economy::Money;
 
     fn warden() -> Warden {
-        Warden::new(WardenId(0), "Test Warden", WardenTraits::randomized(&mut RngStream::new(7, 0)))
+        Warden::new(
+            WardenId(0),
+            "Test Warden",
+            WardenTraits::randomized(&mut RngStream::new(7, 0)),
+        )
     }
 
     #[test]
@@ -602,7 +662,10 @@ mod tests {
         w.set_context(100, 6);
         let e = Economy::default();
         let action = arbitrate(&mut w, &e, 24, &mut RngStream::new(2, 2));
-        assert!(matches!(action, WardenAction::IncreaseSecurity), "{action:?}");
+        assert!(
+            matches!(action, WardenAction::IncreaseSecurity),
+            "{action:?}"
+        );
     }
 
     #[test]
@@ -633,16 +696,25 @@ mod tests {
         w.attention = 0.0;
         let e = Economy::default();
         let action = arbitrate(&mut w, &e, 24, &mut RngStream::new(5, 5));
-        assert!(matches!(action, WardenAction::NoAction { .. }), "{action:?}");
+        assert!(
+            matches!(action, WardenAction::NoAction { .. }),
+            "{action:?}"
+        );
     }
 
     #[test]
     fn attention_budget_limits_concurrent_decisions() {
         let mut w = warden();
         assert!(w.can_decide(AttentionBudget::tactical_cost()));
-        assert_eq!(w.concurrent_decisions_remaining(AttentionBudget::tactical_cost()), 50);
+        assert_eq!(
+            w.concurrent_decisions_remaining(AttentionBudget::tactical_cost()),
+            50
+        );
         w.attention = 0.05; // 5 points
-        assert_eq!(w.concurrent_decisions_remaining(AttentionBudget::tactical_cost()), 2);
+        assert_eq!(
+            w.concurrent_decisions_remaining(AttentionBudget::tactical_cost()),
+            2
+        );
         assert!(!w.can_decide(AttentionBudget::strategic_cost()));
     }
 
@@ -672,16 +744,16 @@ mod tests {
     fn arbitrate_across_states_never_panics_and_returns_engine_applicable_action() {
         let contexts: Vec<(u32, u32, u32, i64, f32)> = vec![
             // (population, capacity, incidents, cash_minor, attention)
-            (40, 100, 0, 25_000_000, 1.0),   // healthy
-            (0, 100, 0, 25_000_000, 1.0),    // empty
-            (40, 100, 0, -1, 1.0),           // bankrupt
-            (95, 100, 0, 25_000_000, 1.0),   // overcrowded
-            (40, 100, 8, 25_000_000, 1.0),   // high incidents / crisis
-            (40, 100, 3, 25_000_000, 1.0),   // low morale proxy / moderate unrest
-            (40, 0, 0, 25_000_000, 1.0),     // no capacity info
-            (40, 100, 0, 25_000_000, 0.0),   // exhausted attention
-            (200, 100, 12, -500_000, 0.0),   // worst case
-            (10, 100, 1, 500_000, 0.3),      // tight finances
+            (40, 100, 0, 25_000_000, 1.0), // healthy
+            (0, 100, 0, 25_000_000, 1.0),  // empty
+            (40, 100, 0, -1, 1.0),         // bankrupt
+            (95, 100, 0, 25_000_000, 1.0), // overcrowded
+            (40, 100, 8, 25_000_000, 1.0), // high incidents / crisis
+            (40, 100, 3, 25_000_000, 1.0), // low morale proxy / moderate unrest
+            (40, 0, 0, 25_000_000, 1.0),   // no capacity info
+            (40, 100, 0, 25_000_000, 0.0), // exhausted attention
+            (200, 100, 12, -500_000, 0.0), // worst case
+            (10, 100, 1, 500_000, 0.3),    // tight finances
         ];
 
         let seeds = [1u64, 7, 42, 99, 1234];

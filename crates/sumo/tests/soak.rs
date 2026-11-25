@@ -9,7 +9,10 @@ fn soak_150_days_fast_forward() {
     sim.set_speed(TimeSpeed::FastForward);
     let target = sim.world().time.add_days(150);
     sim.run_until(target);
-    assert!(sim.world().time >= target, "simulation did not reach target time");
+    assert!(
+        sim.world().time >= target,
+        "simulation did not reach target time"
+    );
     assert!(sim.world().population() <= sim.world().capacity());
     let errs = sim.check_invariants();
     assert!(errs.is_empty(), "invariants violated: {errs:?}");

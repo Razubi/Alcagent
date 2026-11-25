@@ -244,7 +244,10 @@ impl SoakReport {
     }
 
     pub fn invariant_names(&self) -> Vec<&str> {
-        self.violations.iter().map(|v| v.invariant.as_str()).collect()
+        self.violations
+            .iter()
+            .map(|v| v.invariant.as_str())
+            .collect()
     }
 }
 
@@ -274,7 +277,10 @@ pub fn soak_run(world: &mut World, days: u64) -> SoakReport {
 
     let target_days = world.days_simulated.saturating_add(days);
     // Generous tick budget: two real-time minutes-per-tick days plus slack.
-    let max_ticks = days.saturating_mul(1_440).saturating_mul(2).saturating_add(1_000);
+    let max_ticks = days
+        .saturating_mul(1_440)
+        .saturating_mul(2)
+        .saturating_add(1_000);
     let mut stalls = 0u32;
 
     while world.days_simulated < target_days && report.ticks < max_ticks {
@@ -308,11 +314,9 @@ pub fn soak_run(world: &mut World, days: u64) -> SoakReport {
     }
 
     check_world_invariants(world, &mut report.violations);
-    report.violations.sort_by(|a, b| {
-        a.invariant
-            .cmp(&b.invariant)
-            .then(a.detail.cmp(&b.detail))
-    });
+    report
+        .violations
+        .sort_by(|a, b| a.invariant.cmp(&b.invariant).then(a.detail.cmp(&b.detail)));
     report.violations.dedup();
     report.days_simulated = world.days_simulated;
     report.ok = report.violations.is_empty();
@@ -381,10 +385,15 @@ mod tests {
 
     #[test]
     fn contradiction_invariant() {
-        let consistent = vec![(1, "is hostile".to_string(), true), (1, "is friendly".to_string(), false)];
+        let consistent = vec![
+            (1, "is hostile".to_string(), true),
+            (1, "is friendly".to_string(), false),
+        ];
         assert!(invariant_no_contradiction(&consistent));
-        let contradictory =
-            vec![(1, "is hostile".to_string(), true), (1, "is hostile".to_string(), false)];
+        let contradictory = vec![
+            (1, "is hostile".to_string(), true),
+            (1, "is hostile".to_string(), false),
+        ];
         assert!(!invariant_no_contradiction(&contradictory));
         assert!(!invariant_no_contradictory_confirmed_facts(&contradictory));
     }
