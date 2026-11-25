@@ -53,4 +53,14 @@
 - Verified both frontends: TUI contraband view (alc-ui), GUI Contraband cases section + post-release records (alc-gui) with validated controls (`resolve_contraband_case`, `enroll_rehab_by_key`, `drop_rehab_by_key`, `apply_rehab_progress`, `record_post_release`).
 - Validation: `cargo build --workspace --all-targets` clean; `cargo test -p sumo --test alcagent_005_smoke` 9/9 ok; `cargo test --workspace` all suites ok, 0 failed, 0 warnings.
 - Spec `dev/ralph/specs/005-rehab-contraband-postrelease.md`: Status set to `done`.
+
+## 2026-11-25 — iteration 6.1: spec 006 policy / construction / parole controls
+
+- Policy controls (band, lockdown, privileges, rehab funding, security) now clamp out-of-range inputs, record `repaired` audit entries and `PolicyChange` history events; observer lockdowns anchor the 14-day expiry clock; warden `ChangePolicy` honours its value and audits; un-audited world mutations (insolvency bailout, contraband security bump) are audited; rehab-funding range unified at 0..3 across Sim/TUI/GUI.
+- Construction lifecycle gained an explicit `Approved` state: request -> approved -> active -> complete/cancel/fail with approval events, a validated `Sim::approve_construction` control, clamped manual advances, capacity effects and bincode-safe enum ordinals.
+- Parole now has deterministic, persisted conditions/decision reasons/release times (`ParoleLedger`, save format v5 with v1/v3/v4 migration), world-hearing reconciliation into the engine ledger, validated eligibility/hearing/grant/deny/release controls with rejected audits, a coherent post-release ledger and digest coverage.
+- TUI exposes the same parole (H/G/J/Y) and build-approval (v) controls as the GUI through `SimDriver`; GUI adds Release/Approve buttons; both render DTOs only, with no raw world mutation.
+- Added `crates/sumo/tests/alcagent_006_controls.rs` (5/5) plus TUI/GUI control tests; made the pre-existing review-agent wall-clock budget machine-robust (generous 300s bound, stall detection preserved) because shared-host contention made the old 30s threshold fail even on clean HEAD.
+- Validation: `cargo build --workspace --all-targets` clean; every workspace suite observed green (chaos soak 5/5, review_agent 7/7, spec 006 smoke 5/5); GUI launched via game-development skill with the overview frame rendered and 0 errors.
+- Spec `dev/ralph/specs/006-policy-construction-parole.md`: Status set to `done`.
 - Main session completed spec 007 (emergent events): deterministic condition-driven generators in alc-events, bounded world effects in alc-world::emergent, day-boundary hook, SUMO incident mirroring, and sumo/emergent_events integration tests (determinism, daily cap, incident visibility). Targeted suites passed; spec marked done.

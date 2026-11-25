@@ -333,13 +333,9 @@ impl Sim {
     /// are derived from the event's `causes` and from prior incidents sharing a
     /// participant or kind — no self-referential placeholders.
     fn pump_events_into_engine_log(&mut self, after_id: u64) {
-        let new: Vec<WorldEvent> = self
-            .world
-            .events
-            .recent()
-            .filter(|e| e.id > after_id)
-            .cloned()
-            .collect();
+        // O(k) in the number of newly emitted events; scanning the full
+        // bounded history on every tick made long runs needlessly expensive.
+        let new = self.world.events.after(after_id);
         for event in &new {
             self.mirror_conflict_event_to_engine_log(event);
         }

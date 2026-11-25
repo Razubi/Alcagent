@@ -1,6 +1,6 @@
 ﻿# Spec 006 â€” Policy / construction / parole controls
 
-Status: in_progress
+Status: done
 
 ## Requirements
 Institutional control surfaces must be validated, auditable, and consistent across frontends.
