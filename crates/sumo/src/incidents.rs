@@ -11,6 +11,81 @@ use alc_events::EventKind;
 /// Unique identifier for an incident.
 pub type IncidentId = u64;
 
+/// Disposition of an incident after investigation/response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum IncidentDisposition {
+    /// No disposition assigned yet.
+    #[default]
+    None,
+    /// Investigated by staff.
+    Investigated,
+    /// Disciplinary action taken.
+    Disciplinary,
+    /// Medical response required.
+    Medical,
+    /// Incident fully resolved.
+    Resolved,
+}
+
+/// A single response action taken in response to an incident.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResponseAction {
+    /// Type of response.
+    pub action: ResponseActionKind,
+    /// Who performed the response (guard, warden, system).
+    pub responder: Responder,
+    /// Time the response was executed.
+    pub at: SimTime,
+    /// Brief description.
+    pub description: String,
+    /// Whether the action succeeded.
+    pub success: bool,
+}
+
+/// Kind of response action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ResponseActionKind {
+    /// Guard intervention response.
+    GuardIntervention,
+    /// Medical response.
+    MedicalResponse,
+    /// Disciplinary hearing opened.
+    DisciplinaryHearing,
+    /// Segregation assigned.
+    Segregation,
+    /// Privilege revocation.
+    PrivilegeRevocation,
+    /// Investigation opened.
+    InvestigationOpened,
+    /// Lockdown triggered.
+    Lockdown,
+    /// Transfer initiated.
+    Transfer,
+    /// Counseling referral.
+    CounselingReferral,
+    /// Contraband search conducted.
+    ContrabandSearch,
+    /// Verbal warning issued.
+    VerbalWarning,
+    /// Written warning issued.
+    WrittenWarning,
+}
+
+/// Who performed a response action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Responder {
+    /// Guard who responded.
+    Guard(u64),
+    /// Warden who responded.
+    Warden,
+    /// System automated response.
+    System,
+    /// Medical staff response.
+    MedicalStaff,
+    /// Administrative staff response.
+    AdminStaff,
+}
+
 /// Kind of incident, referencing the EventKind taxonomy without modifying it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Incident {
@@ -22,16 +97,37 @@ pub struct Incident {
     pub cause: Option<IncidentId>,
     /// Optional incident id that this one causes (for causality chain).
     pub consequence: Option<IncidentId>,
+    /// Full causal chain: list of incident/event IDs leading to this incident.
+    pub causal_chain: Vec<CausalLink>,
     /// Simulation time when this incident occurred.
     pub timestamp: SimTime,
     /// Location description (wing, node, or free-form).
     pub location: String,
     /// Prisoners involved in this incident.
     pub involved_prisoners: Vec<PrisonerId>,
+    /// Witnesses to this incident (prisoner IDs who observed it).
+    pub witnesses: Vec<PrisonerId>,
     /// Severity of the incident on a scale of 0.0 to 1.0.
     pub severity: f32,
+    /// Current disposition of the incident.
+    #[serde(default)]
+    pub disposition: IncidentDisposition,
+    /// Response actions taken in reaction to this incident.
+    #[serde(default)]
+    pub response_actions: Vec<ResponseAction>,
     /// Whether the incident has been resolved/investigated.
     pub resolved: bool,
+}
+
+/// A link in the causal chain.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CausalLink {
+    /// The incident or event ID that contributed to this incident.
+    pub source_id: u64,
+    /// Whether this is an incident (true) or world event (false).
+    pub is_incident: bool,
+    /// Human-readable description of the causal relationship.
+    pub description: String,
 }
 
 impl Default for Incident {
@@ -41,10 +137,14 @@ impl Default for Incident {
             kind: EventKind::Argument,
             cause: None,
             consequence: None,
+            causal_chain: Vec::new(),
             timestamp: SimTime::default(),
             location: String::new(),
             involved_prisoners: Vec::new(),
+            witnesses: Vec::new(),
             severity: 0.0,
+            disposition: IncidentDisposition::None,
+            response_actions: Vec::new(),
             resolved: false,
         }
     }
@@ -59,10 +159,14 @@ impl Incident {
             kind,
             cause: None,
             consequence: None,
+            causal_chain: Vec::new(),
             timestamp,
             location,
             involved_prisoners,
+            witnesses: Vec::new(),
             severity: 0.5,
+            disposition: IncidentDisposition::None,
+            response_actions: Vec::new(),
             resolved: false,
         }
     }
@@ -76,6 +180,36 @@ impl Incident {
     /// Mark this incident as causing another incident.
     pub fn with_consequence(mut self, consequence: IncidentId) -> Self {
         self.consequence = Some(consequence);
+        self
+    }
+
+    /// Add a causal link to the causal chain.
+    pub fn with_causal_link(mut self, link: CausalLink) -> Self {
+        self.causal_chain.push(link);
+        self
+    }
+
+    /// Add multiple causal links to the causal chain.
+    pub fn with_causal_chain(mut self, chain: Vec<CausalLink>) -> Self {
+        self.causal_chain = chain;
+        self
+    }
+
+    /// Add witnesses to this incident.
+    pub fn with_witnesses(mut self, witnesses: Vec<PrisonerId>) -> Self {
+        self.witnesses = witnesses;
+        self
+    }
+
+    /// Add a response action taken for this incident.
+    pub fn with_response_action(mut self, action: ResponseAction) -> Self {
+        self.response_actions.push(action);
+        self
+    }
+
+    /// Set the incident disposition.
+    pub fn with_disposition(mut self, disposition: IncidentDisposition) -> Self {
+        self.disposition = disposition;
         self
     }
 
@@ -125,6 +259,12 @@ pub struct IncidentFilter {
     ///
     /// `None` accepts both resolved and unresolved incidents.
     pub resolved: Option<bool>,
+    /// Only incidents with this disposition.
+    pub disposition: Option<IncidentDisposition>,
+    /// Only incidents with at least one witness.
+    pub has_witnesses: Option<bool>,
+    /// Only incidents with response actions.
+    pub has_response: Option<bool>,
     /// Keep only the most recent `limit` matches (applied after filtering).
     pub limit: Option<usize>,
 }
@@ -150,6 +290,24 @@ impl IncidentFilter {
     /// Builder helper: restrict to incidents involving one prisoner.
     pub fn with_prisoner(mut self, prisoner: PrisonerId) -> Self {
         self.prisoner = Some(prisoner);
+        self
+    }
+
+    /// Builder helper: restrict to incidents with a specific disposition.
+    pub fn with_disposition(mut self, disposition: IncidentDisposition) -> Self {
+        self.disposition = Some(disposition);
+        self
+    }
+
+    /// Builder helper: restrict to incidents with/without witnesses.
+    pub fn with_witnesses(mut self, has_witnesses: bool) -> Self {
+        self.has_witnesses = Some(has_witnesses);
+        self
+    }
+
+    /// Builder helper: restrict to incidents with/without response actions.
+    pub fn with_response(mut self, has_response: bool) -> Self {
+        self.has_response = Some(has_response);
         self
     }
 
@@ -195,6 +353,21 @@ impl IncidentFilter {
                 return false;
             }
         }
+        if let Some(want) = self.disposition {
+            if incident.disposition != want {
+                return false;
+            }
+        }
+        if let Some(want) = self.has_witnesses {
+            if incident.witnesses.is_empty() == want {
+                return false;
+            }
+        }
+        if let Some(want) = self.has_response {
+            if incident.response_actions.is_empty() == want {
+                return false;
+            }
+        }
         true
     }
 }
@@ -234,6 +407,10 @@ mod tests {
         assert_eq!(inc.timestamp, SimTime { secs: 100 });
         assert!(!inc.resolved);
         assert_eq!(inc.severity, 0.5);
+        assert_eq!(inc.disposition, IncidentDisposition::None);
+        assert!(inc.witnesses.is_empty());
+        assert!(inc.response_actions.is_empty());
+        assert!(inc.causal_chain.is_empty());
     }
 
     #[test]
@@ -243,10 +420,14 @@ mod tests {
             kind: EventKind::Argument,
             cause: None,
             consequence: None,
+            causal_chain: Vec::new(),
             timestamp: SimTime { secs: 50 },
             location: "Cell block".to_string(),
             involved_prisoners: Vec::new(),
+            witnesses: Vec::new(),
             severity: 0.3,
+            disposition: IncidentDisposition::None,
+            response_actions: Vec::new(),
             resolved: false,
         };
         let effect = Incident::new(
@@ -256,9 +437,16 @@ mod tests {
             Vec::new(),
         )
         .with_cause(cause.id)
-        .with_consequence(u64::MAX);
+        .with_consequence(u64::MAX)
+        .with_causal_link(CausalLink {
+            source_id: cause.id,
+            is_incident: true,
+            description: "Escalated from argument".to_string(),
+        });
 
         assert_eq!(effect.cause, Some(1));
+        assert_eq!(effect.causal_chain.len(), 1);
+        assert_eq!(effect.causal_chain[0].source_id, 1);
         // Note: consequence set to max() as placeholder; actual linking
         // happens when incidents are registered in the sidecar Vec.
     }
@@ -270,10 +458,14 @@ mod tests {
             kind: EventKind::Argument,
             cause: None,
             consequence: None,
+            causal_chain: Vec::new(),
             timestamp: SimTime { secs: 50 },
             location: "Yard".to_string(),
             involved_prisoners: Vec::new(),
+            witnesses: Vec::new(),
             severity: 0.3,
+            disposition: IncidentDisposition::None,
+            response_actions: Vec::new(),
             resolved: false,
         };
         let inc2 = Incident {
@@ -281,10 +473,14 @@ mod tests {
             kind: EventKind::Fight,
             cause: None,
             consequence: None,
+            causal_chain: Vec::new(),
             timestamp: SimTime { secs: 150 },
             location: "Yard".to_string(),
             involved_prisoners: Vec::new(),
+            witnesses: Vec::new(),
             severity: 0.7,
+            disposition: IncidentDisposition::Investigated,
+            response_actions: Vec::new(),
             resolved: true,
         };
 
@@ -300,10 +496,14 @@ mod tests {
                 kind: EventKind::Argument,
                 cause: None,
                 consequence: None,
+                causal_chain: Vec::new(),
                 timestamp: SimTime { secs: 50 },
                 location: "Yard A".to_string(),
                 involved_prisoners: vec![PrisonerId(1)],
+                witnesses: Vec::new(),
                 severity: 0.3,
+                disposition: IncidentDisposition::None,
+                response_actions: Vec::new(),
                 resolved: false,
             },
             Incident {
@@ -311,10 +511,18 @@ mod tests {
                 kind: EventKind::Fight,
                 cause: Some(1),
                 consequence: None,
+                causal_chain: vec![CausalLink {
+                    source_id: 1,
+                    is_incident: true,
+                    description: "Escalated from argument".to_string(),
+                }],
                 timestamp: SimTime { secs: 150 },
                 location: "Cell Block B".to_string(),
                 involved_prisoners: vec![PrisonerId(1), PrisonerId(2)],
+                witnesses: Vec::new(),
                 severity: 0.8,
+                disposition: IncidentDisposition::Investigated,
+                response_actions: Vec::new(),
                 resolved: true,
             },
             Incident {
@@ -322,10 +530,14 @@ mod tests {
                 kind: EventKind::Theft,
                 cause: None,
                 consequence: None,
+                causal_chain: Vec::new(),
                 timestamp: SimTime { secs: 250 },
                 location: "Yard A".to_string(),
                 involved_prisoners: vec![PrisonerId(2)],
+                witnesses: Vec::new(),
                 severity: 0.5,
+                disposition: IncidentDisposition::None,
+                response_actions: Vec::new(),
                 resolved: false,
             },
         ]

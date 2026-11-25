@@ -32,11 +32,63 @@ pub const ACTION_CATALOG: &[&str] = &[
 /// Maximum length of a free-text field carried by a decision.
 pub const MAX_FREE_TEXT: usize = 500;
 
+/// Provenance of a decision: who or what produced it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum DecisionProvenance {
+    /// Produced by an AI agent (prisoner/guard).
+    #[default]
+    Agent,
+    /// Produced by the Warden AI.
+    Warden,
+    /// Produced by the player/human operator.
+    Player,
+    /// Produced by a prisoner council/vote.
+    Council,
+    /// Produced by system logic (deterministic fallback, scheduled events).
+    System,
+}
+
+/// Outcome state of a decision after validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum DecisionOutcomeState {
+    /// Proposed but not yet validated.
+    #[default]
+    Proposed,
+    /// Accepted as-is by validation pipeline.
+    Accepted,
+    /// Accepted after repair/clamping by validation pipeline.
+    Repaired,
+    /// Rejected by validation pipeline.
+    Rejected,
+}
+
 /// Structured decision emitted by an agent. Validated by the engine before it
 /// is converted into commands. This is the complete action set from the
 /// design's action catalog subset owned by this crate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Decision {
+pub struct Decision {
+    /// The action variant.
+    pub action: DecisionAction,
+    /// Who or what produced this decision.
+    #[serde(default)]
+    pub provenance: DecisionProvenance,
+    /// Current outcome state after validation.
+    #[serde(default)]
+    pub outcome: DecisionOutcomeState,
+    /// Human-readable rationale for the decision (AI reasoning, player intent, etc.).
+    #[serde(default)]
+    pub rationale: String,
+    /// If repaired, the reason for the repair (clamp reason, safety fix, etc.).
+    #[serde(default)]
+    pub repair_reason: String,
+}
+
+/// Canonical action catalog (design §6.5, Appendix A).
+///
+/// The model may only choose actions from this catalog; anything else is a
+/// format/semantic rejection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DecisionAction {
     MoveTo {
         target_facility: u64,
     },
@@ -71,51 +123,127 @@ pub enum Decision {
 impl Decision {
     /// Canonical action name for this decision.
     pub fn action_name(&self) -> &'static str {
-        match self {
-            Decision::MoveTo { .. } => "move_to",
-            Decision::Socialize { .. } => "socialize",
-            Decision::Fight { .. } => "fight",
-            Decision::Trade { .. } => "trade",
-            Decision::Comply => "comply",
-            Decision::Refuse => "refuse",
-            Decision::EscapeAttempt => "escape_attempt",
-            Decision::RequestMedical => "request_medical",
-            Decision::JoinGang { .. } => "join_gang",
-            Decision::LeaveGang => "leave_gang",
-            Decision::LeadGang { .. } => "lead_gang",
-            Decision::SpreadRumor { .. } => "spread_rumor",
-            Decision::None => "none",
-        }
+        self.action.action_name()
     }
 
     /// Identifier targeted by this decision, when it has one. This includes
     /// facilities and gangs, which are not agents; use [`Decision::entity_target`]
     /// when an agent id is required.
     pub fn target_id(&self) -> Option<u64> {
+        self.action.target_id()
+    }
+
+    /// Agent-like target of this decision (excludes facilities and gangs).
+    pub fn entity_target(&self) -> Option<u64> {
+        self.action.entity_target()
+    }
+
+    /// Free-text fields that must be treated as data, never instructions.
+    pub fn free_text(&self) -> Vec<&str> {
+        self.action.free_text()
+    }
+
+    /// Rough stamina cost used by resource validation.
+    pub fn stamina_cost(&self) -> f32 {
+        self.action.stamina_cost()
+    }
+
+    /// Whether this action is high-stakes and therefore inappropriate while an
+    /// AI deliberation is pending.
+    pub fn is_high_stakes(&self) -> bool {
+        self.action.is_high_stakes()
+    }
+
+    /// Parse a canonical action name into a parameter-free decision where
+    /// possible. Used by tooling and tests; the pipeline itself uses
+    /// [`build_decision`] so parameterised actions are handled too.
+    pub fn parse(action: &str) -> Option<Decision> {
+        DecisionAction::parse(action).map(|action| Decision {
+            action,
+            provenance: DecisionProvenance::Agent,
+            outcome: DecisionOutcomeState::Proposed,
+            rationale: String::new(),
+            repair_reason: String::new(),
+        })
+    }
+
+    /// Create a new decision with the given action and default metadata.
+    pub fn new(action: DecisionAction) -> Self {
+        Self {
+            action,
+            provenance: DecisionProvenance::Agent,
+            outcome: DecisionOutcomeState::Proposed,
+            rationale: String::new(),
+            repair_reason: String::new(),
+        }
+    }
+
+    /// Create a new decision with the given action and provenance.
+    pub fn with_provenance(action: DecisionAction, provenance: DecisionProvenance) -> Self {
+        Self {
+            action,
+            provenance,
+            outcome: DecisionOutcomeState::Proposed,
+            rationale: String::new(),
+            repair_reason: String::new(),
+        }
+    }
+
+    /// Set the rationale for this decision.
+    pub fn with_rationale(mut self, rationale: impl Into<String>) -> Self {
+        self.rationale = rationale.into();
+        self
+    }
+}
+
+impl DecisionAction {
+    /// Canonical action name for this decision.
+    pub fn action_name(&self) -> &'static str {
         match self {
-            Decision::MoveTo { target_facility } => Some(*target_facility),
-            Decision::Socialize { with } => Some(*with),
-            Decision::Fight { target } => Some(*target),
-            Decision::Trade { with, .. } => Some(*with),
-            Decision::JoinGang { gang } => Some(*gang),
-            Decision::LeadGang { gang } => Some(*gang),
-            Decision::SpreadRumor { about, .. } => Some(*about),
-            Decision::Comply
-            | Decision::Refuse
-            | Decision::EscapeAttempt
-            | Decision::RequestMedical
-            | Decision::LeaveGang
-            | Decision::None => None,
+            DecisionAction::MoveTo { .. } => "move_to",
+            DecisionAction::Socialize { .. } => "socialize",
+            DecisionAction::Fight { .. } => "fight",
+            DecisionAction::Trade { .. } => "trade",
+            DecisionAction::Comply => "comply",
+            DecisionAction::Refuse => "refuse",
+            DecisionAction::EscapeAttempt => "escape_attempt",
+            DecisionAction::RequestMedical => "request_medical",
+            DecisionAction::JoinGang { .. } => "join_gang",
+            DecisionAction::LeaveGang => "leave_gang",
+            DecisionAction::LeadGang { .. } => "lead_gang",
+            DecisionAction::SpreadRumor { .. } => "spread_rumor",
+            DecisionAction::None => "none",
+        }
+    }
+
+    /// Identifier targeted by this decision, when it has one. This includes
+    /// facilities and gangs, which are not agents; use [`DecisionAction::entity_target`]
+    /// when an agent id is required.
+    pub fn target_id(&self) -> Option<u64> {
+        match self {
+            DecisionAction::MoveTo { target_facility } => Some(*target_facility),
+            DecisionAction::Socialize { with } => Some(*with),
+            DecisionAction::Fight { target } => Some(*target),
+            DecisionAction::Trade { with, .. } => Some(*with),
+            DecisionAction::JoinGang { gang } => Some(*gang),
+            DecisionAction::LeadGang { gang } => Some(*gang),
+            DecisionAction::SpreadRumor { about, .. } => Some(*about),
+            DecisionAction::Comply
+            | DecisionAction::Refuse
+            | DecisionAction::EscapeAttempt
+            | DecisionAction::RequestMedical
+            | DecisionAction::LeaveGang
+            | DecisionAction::None => None,
         }
     }
 
     /// Agent-like target of this decision (excludes facilities and gangs).
     pub fn entity_target(&self) -> Option<u64> {
         match self {
-            Decision::Socialize { with }
-            | Decision::Fight { target: with }
-            | Decision::Trade { with, .. }
-            | Decision::SpreadRumor { about: with, .. } => Some(*with),
+            DecisionAction::Socialize { with }
+            | DecisionAction::Fight { target: with }
+            | DecisionAction::Trade { with, .. }
+            | DecisionAction::SpreadRumor { about: with, .. } => Some(*with),
             _ => None,
         }
     }
@@ -123,8 +251,8 @@ impl Decision {
     /// Free-text fields that must be treated as data, never instructions.
     pub fn free_text(&self) -> Vec<&str> {
         match self {
-            Decision::Trade { item, .. } => vec![item.as_str()],
-            Decision::SpreadRumor { content, .. } => vec![content.as_str()],
+            DecisionAction::Trade { item, .. } => vec![item.as_str()],
+            DecisionAction::SpreadRumor { content, .. } => vec![content.as_str()],
             _ => Vec::new(),
         }
     }
@@ -132,11 +260,11 @@ impl Decision {
     /// Rough stamina cost used by resource validation.
     pub fn stamina_cost(&self) -> f32 {
         match self {
-            Decision::MoveTo { .. } => 0.05,
-            Decision::Socialize { .. } => 0.02,
-            Decision::Fight { .. } => 0.15,
-            Decision::EscapeAttempt => 0.25,
-            Decision::JoinGang { .. } | Decision::LeadGang { .. } => 0.05,
+            DecisionAction::MoveTo { .. } => 0.05,
+            DecisionAction::Socialize { .. } => 0.02,
+            DecisionAction::Fight { .. } => 0.15,
+            DecisionAction::EscapeAttempt => 0.25,
+            DecisionAction::JoinGang { .. } | DecisionAction::LeadGang { .. } => 0.05,
             _ => 0.0,
         }
     }
@@ -146,26 +274,26 @@ impl Decision {
     pub fn is_high_stakes(&self) -> bool {
         matches!(
             self,
-            Decision::Fight { .. }
-                | Decision::EscapeAttempt
-                | Decision::JoinGang { .. }
-                | Decision::LeaveGang
-                | Decision::LeadGang { .. }
-                | Decision::SpreadRumor { .. }
+            DecisionAction::Fight { .. }
+                | DecisionAction::EscapeAttempt
+                | DecisionAction::JoinGang { .. }
+                | DecisionAction::LeaveGang
+                | DecisionAction::LeadGang { .. }
+                | DecisionAction::SpreadRumor { .. }
         )
     }
 
     /// Parse a canonical action name into a parameter-free decision where
     /// possible. Used by tooling and tests; the pipeline itself uses
     /// [`build_decision`] so parameterised actions are handled too.
-    pub fn parse(action: &str) -> Option<Decision> {
+    pub fn parse(action: &str) -> Option<DecisionAction> {
         match normalize_action(action).as_str() {
-            "comply" => Some(Decision::Comply),
-            "refuse" => Some(Decision::Refuse),
-            "escape_attempt" => Some(Decision::EscapeAttempt),
-            "request_medical" => Some(Decision::RequestMedical),
-            "leave_gang" => Some(Decision::LeaveGang),
-            "none" => Some(Decision::None),
+            "comply" => Some(DecisionAction::Comply),
+            "refuse" => Some(DecisionAction::Refuse),
+            "escape_attempt" => Some(DecisionAction::EscapeAttempt),
+            "request_medical" => Some(DecisionAction::RequestMedical),
+            "leave_gang" => Some(DecisionAction::LeaveGang),
+            "none" => Some(DecisionAction::None),
             _ => None,
         }
     }
@@ -218,10 +346,10 @@ impl RawDecision {
         let action = decision.action_name().to_string();
         let target = decision.target_id().map(|id| RawTarget { kind: target_kind(decision).to_string(), id });
         let mut parameters = BTreeMap::new();
-        if let Decision::Trade { item, .. } = decision {
+        if let DecisionAction::Trade { item, .. } = &decision.action {
             parameters.insert("item".to_string(), item.clone());
         }
-        if let Decision::SpreadRumor { content, .. } = decision {
+        if let DecisionAction::SpreadRumor { content, .. } = &decision.action {
             parameters.insert("content".to_string(), content.clone());
         }
         Self {
@@ -238,10 +366,10 @@ impl RawDecision {
 }
 
 fn target_kind(decision: &Decision) -> &'static str {
-    match decision {
-        Decision::MoveTo { .. } => "location",
-        Decision::JoinGang { .. } | Decision::LeadGang { .. } => "gang",
-        Decision::SpreadRumor { .. } => "agent",
+    match &decision.action {
+        DecisionAction::MoveTo { .. } => "location",
+        DecisionAction::JoinGang { .. } | DecisionAction::LeadGang { .. } => "gang",
+        DecisionAction::SpreadRumor { .. } => "agent",
         _ => "agent",
     }
 }
@@ -509,26 +637,26 @@ fn valid_param_key(key: &str) -> bool {
 fn build_decision(action: &str, raw: &RawDecision) -> Result<Decision, Rejection> {
     let target = raw.target.as_ref().map(|t| t.id);
     let missing = || Rejection::new(ValidationStage::Format, format!("{action} requires a target"));
-    let decision = match action {
-        "move_to" => Decision::MoveTo { target_facility: target.ok_or_else(missing)? },
-        "socialize" => Decision::Socialize { with: target.ok_or_else(missing)? },
-        "fight" => Decision::Fight { target: target.ok_or_else(missing)? },
-        "trade" => Decision::Trade {
+    let decision_action = match action {
+        "move_to" => DecisionAction::MoveTo { target_facility: target.ok_or_else(missing)? },
+        "socialize" => DecisionAction::Socialize { with: target.ok_or_else(missing)? },
+        "fight" => DecisionAction::Fight { target: target.ok_or_else(missing)? },
+        "trade" => DecisionAction::Trade {
             with: target.ok_or_else(missing)?,
             item: raw.parameters.get("item").cloned().unwrap_or_default(),
         },
-        "spread_rumor" => Decision::SpreadRumor {
+        "spread_rumor" => DecisionAction::SpreadRumor {
             about: target.ok_or_else(missing)?,
             content: raw.parameters.get("content").cloned().unwrap_or_default(),
         },
-        "join_gang" => Decision::JoinGang { gang: target.ok_or_else(missing)? },
-        "lead_gang" => Decision::LeadGang { gang: target.ok_or_else(missing)? },
-        "comply" => Decision::Comply,
-        "refuse" => Decision::Refuse,
-        "escape_attempt" => Decision::EscapeAttempt,
-        "request_medical" => Decision::RequestMedical,
-        "leave_gang" => Decision::LeaveGang,
-        "none" => Decision::None,
+        "join_gang" => DecisionAction::JoinGang { gang: target.ok_or_else(missing)? },
+        "lead_gang" => DecisionAction::LeadGang { gang: target.ok_or_else(missing)? },
+        "comply" => DecisionAction::Comply,
+        "refuse" => DecisionAction::Refuse,
+        "escape_attempt" => DecisionAction::EscapeAttempt,
+        "request_medical" => DecisionAction::RequestMedical,
+        "leave_gang" => DecisionAction::LeaveGang,
+        "none" => DecisionAction::None,
         other => {
             return Err(Rejection::new(
                 ValidationStage::Format,
@@ -536,7 +664,13 @@ fn build_decision(action: &str, raw: &RawDecision) -> Result<Decision, Rejection
             ))
         }
     };
-    Ok(decision)
+    Ok(Decision {
+        action: decision_action,
+        provenance: DecisionProvenance::Agent,
+        outcome: DecisionOutcomeState::Proposed,
+        rationale: raw.reasoning.clone(),
+        repair_reason: String::new(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -546,11 +680,11 @@ fn build_decision(action: &str, raw: &RawDecision) -> Result<Decision, Rejection
 /// Stage 2: action-specific semantics — parameter sanity, known targets,
 /// reachable facilities.
 pub fn validate_semantic(d: &Decision, ctx: &ValidationContext) -> Result<Decision, Rejection> {
-    match d {
-        Decision::Trade { item, .. } if item.trim().is_empty() => {
+    match &d.action {
+        DecisionAction::Trade { item, .. } if item.trim().is_empty() => {
             return Err(Rejection::new(ValidationStage::Semantic, "trade item must be non-empty"));
         }
-        Decision::SpreadRumor { content, .. } if content.trim().is_empty() => {
+        DecisionAction::SpreadRumor { content, .. } if content.trim().is_empty() => {
             return Err(Rejection::new(ValidationStage::Semantic, "rumor content must be non-empty"));
         }
         _ => {}
@@ -568,7 +702,7 @@ pub fn validate_semantic(d: &Decision, ctx: &ValidationContext) -> Result<Decisi
         }
     }
     if !ctx.known_facilities.is_empty() {
-        if let Decision::MoveTo { target_facility } = d {
+        if let DecisionAction::MoveTo { target_facility } = &d.action {
             if !ctx.known_facilities.contains(target_facility) {
                 return Err(Rejection::new(
                     ValidationStage::Semantic,
@@ -589,8 +723,8 @@ pub fn validate_semantic(d: &Decision, ctx: &ValidationContext) -> Result<Decisi
 /// role.
 pub fn validate_authority(d: &Decision, ctx: &ValidationContext) -> Result<Decision, Rejection> {
     let staff = matches!(ctx.role, Role::Guard | Role::Warden);
-    match d {
-        Decision::JoinGang { .. } | Decision::LeaveGang | Decision::LeadGang { .. } => {
+    match &d.action {
+        DecisionAction::JoinGang { .. } | DecisionAction::LeaveGang | DecisionAction::LeadGang { .. } => {
             if staff {
                 return Err(Rejection::new(
                     ValidationStage::Authority,
@@ -598,7 +732,7 @@ pub fn validate_authority(d: &Decision, ctx: &ValidationContext) -> Result<Decis
                 ));
             }
         }
-        Decision::EscapeAttempt | Decision::RequestMedical => {
+        DecisionAction::EscapeAttempt | DecisionAction::RequestMedical => {
             if staff {
                 return Err(Rejection::new(
                     ValidationStage::Authority,
@@ -609,8 +743,8 @@ pub fn validate_authority(d: &Decision, ctx: &ValidationContext) -> Result<Decis
         _ => {}
     }
 
-    match d {
-        Decision::JoinGang { .. } => {
+    match &d.action {
+        DecisionAction::JoinGang { .. } => {
             if ctx.in_gang {
                 return Err(Rejection::new(
                     ValidationStage::Authority,
@@ -618,7 +752,7 @@ pub fn validate_authority(d: &Decision, ctx: &ValidationContext) -> Result<Decis
                 ));
             }
         }
-        Decision::LeaveGang => {
+        DecisionAction::LeaveGang => {
             if !ctx.in_gang {
                 return Err(Rejection::new(
                     ValidationStage::Authority,
@@ -626,7 +760,7 @@ pub fn validate_authority(d: &Decision, ctx: &ValidationContext) -> Result<Decis
                 ));
             }
         }
-        Decision::LeadGang { gang } => {
+        DecisionAction::LeadGang { gang } => {
             if !ctx.in_gang {
                 return Err(Rejection::new(
                     ValidationStage::Authority,
@@ -658,7 +792,7 @@ pub fn validate_authority(d: &Decision, ctx: &ValidationContext) -> Result<Decis
 /// Stage 4: preconditions, schedule and lockdown. Kept conservative so the
 /// engine remains the source of truth for reachability and paths.
 pub fn validate_world_state(d: &Decision, ctx: &ValidationContext) -> Result<Decision, Rejection> {
-    if ctx.lockdown && matches!(d, Decision::EscapeAttempt) {
+    if ctx.lockdown && matches!(&d.action, DecisionAction::EscapeAttempt) {
         return Err(Rejection::new(ValidationStage::WorldState, "lockdown active"));
     }
     Ok(d.clone())
@@ -703,7 +837,7 @@ pub fn validate_legality(d: &Decision, _ctx: &ValidationContext) -> Result<Decis
 pub fn validate_safety(d: &Decision, ctx: &ValidationContext) -> Result<Decision, Rejection> {
     if ctx.agent_id != 0 {
         if let Some(target) = d.entity_target() {
-            if target == ctx.agent_id && matches!(d, Decision::Fight { .. }) {
+            if target == ctx.agent_id && matches!(&d.action, DecisionAction::Fight { .. }) {
                 return Err(Rejection::new(ValidationStage::Safety, "self-targeting attack"));
             }
         }
@@ -754,15 +888,35 @@ fn contains_injection(text: &str) -> bool {
 /// stage always succeeds.
 pub fn clamp_and_repair(d: &Decision, ctx: &ValidationContext) -> Decision {
     let mut out = d.clone();
-    match &mut out {
-        Decision::Trade { item, .. } => *item = clamp_text(item, 200),
-        Decision::SpreadRumor { content, .. } => *content = clamp_text(content, MAX_FREE_TEXT),
+    let mut repair_reasons: Vec<String> = Vec::new();
+    
+    match &mut out.action {
+        DecisionAction::Trade { item, .. } => {
+            let clamped = clamp_text(item, 200);
+            if clamped != *item {
+                repair_reasons.push("trade item truncated to 200 chars".to_string());
+                *item = clamped;
+            }
+        }
+        DecisionAction::SpreadRumor { content, .. } => {
+            let clamped = clamp_text(content, MAX_FREE_TEXT);
+            if clamped != *content {
+                repair_reasons.push("rumor content truncated".to_string());
+                *content = clamped;
+            }
+        }
         _ => {}
     }
     // Deterministic de-escalation: a heavily guarded fight becomes a
     // conversation. Preserved from the original DefaultValidator behavior.
-    if matches!(out, Decision::Fight { .. }) && ctx.guards_nearby > 1 {
-        out = Decision::Socialize { with: 0 };
+    if matches!(&out.action, DecisionAction::Fight { .. }) && ctx.guards_nearby > 1 {
+        out.action = DecisionAction::Socialize { with: 0 };
+        repair_reasons.push("fight de-escalated to socialize due to nearby guards".to_string());
+    }
+    
+    if !repair_reasons.is_empty() {
+        out.repair_reason = repair_reasons.join("; ");
+        out.outcome = DecisionOutcomeState::Repaired;
     }
     out
 }
@@ -852,16 +1006,16 @@ mod tests {
         let mut c = ctx();
         c.guards_nearby = 3;
         match run_validation_pipeline(&raw, &c) {
-            ValidationResult::Repaired(Decision::Socialize { .. }) => {}
+            ValidationResult::Repaired(d) if matches!(&d.action, DecisionAction::Socialize { .. }) => {}
             other => panic!("expected repair, got {other:?}"),
         }
     }
 
     #[test]
     fn repeated_decision_is_rejected() {
-        let d = Decision::Comply;
+        let d = Decision::new(DecisionAction::Comply);
         let mut c = ctx();
-        c.last_decision = Some(Decision::Comply);
+        c.last_decision = Some(Decision::new(DecisionAction::Comply));
         assert!(validate_safety(&d, &c).is_err());
     }
 
@@ -869,14 +1023,14 @@ mod tests {
     fn json_round_trip_through_pipeline() {
         let json = r#"{"action":"trade","target":{"kind":"agent","id":3},"parameters":{"item":"soap"},"intent":"swap"}"#;
         match run_validation_json(json, &ctx()) {
-            ValidationResult::Accepted(Decision::Trade { with: 3, .. }) => {}
+            ValidationResult::Accepted(d) if matches!(&d.action, DecisionAction::Trade { with: 3, .. }) => {}
             other => panic!("expected accepted trade, got {other:?}"),
         }
     }
 
     #[test]
     fn forbidden_self_attack_is_rejected() {
-        let d = Decision::Fight { target: 7 };
+        let d = Decision::new(DecisionAction::Fight { target: 7 });
         assert!(validate_safety(&d, &ctx()).is_err());
     }
 }

@@ -3,10 +3,10 @@
 //!
 //! These tests use only sumo's public API plus the public fields on `Sim::engine_state`.
 
-use alc_agents::Decision;
+use alc_agents::{Decision, DecisionAction};
 use alc_core::{PrisonerId, SimTime};
 use alc_events::{EventKind, WorldEvent};
-use sumo::incidents::Incident;
+use sumo::incidents::{Incident, IncidentDisposition};
 use sumo::parole::ParoleStatus;
 use sumo::state_digest::compute_full_state_digest;
 use sumo::{PolicyMode, Sim};
@@ -34,10 +34,14 @@ fn sidecar_incident(pid: PrisonerId) -> Incident {
         kind: EventKind::Fight,
         cause: Some(3),
         consequence: Some(9),
+        causal_chain: Vec::new(),
         timestamp: SimTime::from_secs(1234),
         location: "Yard A".to_string(),
         involved_prisoners: vec![pid],
+        witnesses: Vec::new(),
         severity: 0.5,
+        disposition: IncidentDisposition::None,
+        response_actions: Vec::new(),
         resolved: true,
     }
 }
@@ -62,8 +66,8 @@ fn engine_state_roundtrip_preserves_all_subfields() {
     sim.record_incident(WorldEvent::new(5, SimTime::from_secs(700), EventKind::Argument, "heated argument"));
     sim.record_sidecar_incident(sidecar_incident(pid));
 
-    sim.decision_log_mut().push(Decision::Comply);
-    sim.decision_log_mut().push(Decision::Socialize { with: pid.raw() });
+    sim.decision_log_mut().push(Decision::new(DecisionAction::Comply));
+    sim.decision_log_mut().push(Decision::new(DecisionAction::Socialize { with: pid.raw() }));
 
     sim.set_post_release(PrisonerId(42), true);
     sim.set_post_release(PrisonerId(43), false);
@@ -105,7 +109,7 @@ fn engine_state_roundtrip_preserves_all_subfields() {
 
     // Decision log.
     assert_eq!(loaded.decision_log().len(), 2);
-    assert!(matches!(loaded.decision_log()[0], Decision::Comply));
+    assert!(matches!(loaded.decision_log()[0].action, DecisionAction::Comply));
 
     // Post-release.
     assert_eq!(loaded.post_release().get(&PrisonerId(42)), Some(&true));

@@ -27,7 +27,7 @@ None of these require an external AI model or provider.
 This request is the engine-support layer of the **beta 0.05** update line
 (`Design/Planning/beta-0.05.md`) and the **next-version** plan
 (`Design/Engine/sumo-next.md`). It consolidates the merged findings of the
-Phase-1 audit (`Reports/audit-report.md`, `../sumo/../Reports/sumo-audit.md`, `../sumo/../Reports/testing.md`)
+Phase-1 audit (`../Reports/audit-report.md`, `../../sumo/sumo-engine-research.md`, `../../sumo/SUMO_ROADMAP.md`)
 and the deep-research pass, and absorbs the cross-team framing from
 `Communication/Note's/wave4-support-needed.md` (ordering traps, ownership split).
 

@@ -1,9 +1,7 @@
 # `sumo` Engine API Guide
 
-> This standalone repository contains `sumo` and its 11 `alc-*` dependencies. References to
-> `alcagent` / `alc-ui` describe tools in the parent Project Alcagent repository that depend on
-> this engine; they are not part of this repo. The in-flight wave (§12) landed in the parent
-> working tree first — this repo is pinned to the last verified 2026-11-23 baseline until synced.
+> This guide describes the `sumo` engine (the `sumo` subfolder of this repository). References to
+> `alcagent` / `alc-ui` describe the game and observer in the parent folders of this repo.
 
 `sumo` is the public Rust API of Project Alcagent. It owns an `alc_world::World` and drives it
 forward in deterministic ticks. All world mutations are performed by the engine; agents submit
@@ -367,8 +365,8 @@ cargo test -p sumo --test chaos_soak -- --nocapture  # 730-day, 3 seeds
 The ignored test (`logs_over_limit_are_detected`) is a 10k-entry stress case. All tests use
 fixed seeds and id/time-derived RNG streams; none require a network connection or an AI model.
 
-For design rationale, see [`../../../sumo/docs/Design/Engine/sumo-engine.md`](../../../sumo/docs/Design/Engine/sumo-engine.md)
-and [`../../../sumo/docs/Systems/engine-api.md`](../../../sumo/docs/Systems/engine-api.md).
+For design rationale, see [`../alcagent/Design/Engine/sumo-engine.md`](../alcagent/Design/Engine/sumo-engine.md)
+and [`../alcagent/Systems/engine-api.md`](../alcagent/Systems/engine-api.md).
 
 ---
 

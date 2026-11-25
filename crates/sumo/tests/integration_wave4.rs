@@ -40,10 +40,10 @@ fn wave4_full_flow_runs_and_stays_invariant_clean() {
 
     // Deliver a couple of decisions through the validated pipeline.
     if let Some(pid) = sim.world().prisoners.first().map(|p| p.id) {
-        let _ = sim.deliver_decision(pid, alc_agents::Decision::Comply);
+        let _ = sim.deliver_decision(pid, alc_agents::Decision::new(alc_agents::DecisionAction::Comply));
     }
     if let Some(pid) = sim.world().prisoners.get(1).map(|p| p.id) {
-        let _ = sim.deliver_decision(pid, alc_agents::Decision::RequestMedical);
+        let _ = sim.deliver_decision(pid, alc_agents::Decision::new(alc_agents::DecisionAction::RequestMedical));
     }
 
     // Policy management goes through the engine API so engine_state stays in

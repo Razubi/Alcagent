@@ -42,4 +42,4 @@
 9. Conditions — recorded as ledger adjustments.
 10. Release or continued incarceration.
 
-Note: engine ledger state is not persisted — world saves are the source of truth; `Sim::load` resets the ledger (see `../sumo/docs/../sumo/../Reports/sumo-audit.md`).
+Note: engine ledger state is not persisted — world saves are the source of truth; `Sim::load` resets the ledger (see `../../sumo/sumo-engine-research.md`).

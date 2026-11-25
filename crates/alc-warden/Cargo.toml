@@ -10,6 +10,7 @@ description = "Warden AI: traits, objectives, decision engine, policy."
 alc-core = { workspace = true }
 alc-events = { workspace = true }
 alc-economy = { workspace = true }
+alc-agents = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

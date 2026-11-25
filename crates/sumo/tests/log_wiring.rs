@@ -5,7 +5,7 @@
 //! the incident stores with resolvable causality, and that dry-run proposals
 //! never mutate world or engine state (R1/R2 acceptance).
 
-use alc_agents::Decision;
+use alc_agents::{Decision, DecisionAction};
 use alc_core::{FacilityId, PrisonerId};
 use alc_events::EventKind;
 use sumo::{DecisionType, Sim};
@@ -24,12 +24,12 @@ fn fight_decision_records_decision_and_incident() {
     let incident_log_before = sim.incident_log().len();
     let sidecar_before = sim.incident_sidecar().len();
 
-    let outcome = sim.deliver_decision(p1, Decision::Fight { target: p2.raw() });
+    let outcome = sim.deliver_decision(p1, Decision::new(DecisionAction::Fight { target: p2.raw() }));
     assert!(outcome.applied, "fight between two known prisoners should apply");
 
     // R2: the applied decision is in the audit log.
     assert_eq!(sim.decision_log().len(), decision_log_before + 1);
-    assert_eq!(sim.decision_log().last().unwrap(), &Decision::Fight { target: p2.raw() });
+    assert_eq!(sim.decision_log().last().unwrap().action, DecisionAction::Fight { target: p2.raw() });
 
     // R1: a conflict event was mirrored into both incident stores.
     assert!(sim.incident_log().len() > incident_log_before);
@@ -81,7 +81,7 @@ fn move_to_updates_prisoner_location() {
         .find(|id| Some(*id) != current)
         .expect("bootstrap must provide more than one facility");
 
-    let outcome = sim.deliver_decision(pid, Decision::MoveTo { target_facility: target.0 });
+    let outcome = sim.deliver_decision(pid, Decision::new(DecisionAction::MoveTo { target_facility: target.0 }));
     assert!(outcome.applied, "MoveTo to a valid facility should apply");
 
     assert_eq!(
@@ -116,7 +116,7 @@ fn trade_has_observable_effect() {
 
     let outcome = sim.deliver_decision(
         p1,
-        Decision::Trade { with: p2.raw(), item: "cigarette".into() },
+        Decision::new(DecisionAction::Trade { with: p2.raw(), item: "cigarette".into() }),
     );
     assert!(outcome.applied);
 
@@ -155,7 +155,7 @@ fn rejected_decision_not_recorded() {
     let incidents_before = sim.incident_log().len();
 
     // Unknown target id (well outside the bootstrapped prisoner range).
-    let outcome = sim.deliver_decision(p1, Decision::Fight { target: 999_999 });
+    let outcome = sim.deliver_decision(p1, Decision::new(DecisionAction::Fight { target: 999_999 }));
     assert!(!outcome.applied, "fight against unknown target must be rejected");
     assert!(outcome.result.rejected_reason().is_some());
 
@@ -213,8 +213,8 @@ fn multiple_deliveries_assign_unique_incident_ids() {
     let p1 = sim.world().prisoners[0].id;
     let p2 = sim.world().prisoners[1].id;
 
-    sim.deliver_decision(p1, Decision::Fight { target: p2.raw() });
-    sim.deliver_decision(p2, Decision::Fight { target: p1.raw() });
+    sim.deliver_decision(p1, Decision::new(DecisionAction::Fight { target: p2.raw() }));
+    sim.deliver_decision(p2, Decision::new(DecisionAction::Fight { target: p1.raw() }));
 
     let mut ids: Vec<u64> = sim.incident_sidecar().iter().map(|i| i.id).collect();
     ids.sort_unstable();
@@ -236,7 +236,7 @@ fn move_to_unknown_facility_rejected() {
     let pid = sim.world().prisoners[0].id;
     let before = sim.world().prisoner_location.get(&pid).copied();
 
-    let outcome = sim.deliver_decision(pid, Decision::MoveTo { target_facility: 999_999 });
+    let outcome = sim.deliver_decision(pid, Decision::new(DecisionAction::MoveTo { target_facility: 999_999 }));
     assert!(!outcome.applied);
 
     assert_eq!(sim.world().prisoner_location.get(&pid).copied(), before);

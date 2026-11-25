@@ -11,7 +11,7 @@
 //! no panics/infinite loops (bounded runtime), population never exceeds
 //! capacity, cash not deeply negative, and engine invariants clean.
 
-use alc_agents::{Decision, ValidationResult};
+use alc_agents::{Decision, DecisionAction, ValidationResult};
 use alc_core::{PrisonerId, SimTime, TimeSpeed};
 use std::time::Instant;
 use sumo::Sim;
@@ -85,7 +85,7 @@ fn decision_pipeline_accepts_valid_and_rejects_invalid() {
     let valid_target = sim.world().facilities[0].id.0;
 
     // Valid: move to an existing facility.
-    let accepted = sim.deliver_decision(id, Decision::MoveTo { target_facility: valid_target });
+    let accepted = sim.deliver_decision(id, Decision::new(DecisionAction::MoveTo { target_facility: valid_target }));
     assert!(
         matches!(accepted.result, ValidationResult::Accepted(_) | ValidationResult::Repaired(_)),
         "expected valid decision to be accepted/repaired, got {:?}",
@@ -94,7 +94,7 @@ fn decision_pipeline_accepts_valid_and_rejects_invalid() {
     assert!(accepted.applied, "valid decision should be applied");
 
     // Invalid: unknown target facility.
-    let rejected = sim.deliver_decision(id, Decision::MoveTo { target_facility: 999_999 });
+    let rejected = sim.deliver_decision(id, Decision::new(DecisionAction::MoveTo { target_facility: 999_999 }));
     assert!(
         matches!(rejected.result, ValidationResult::Rejected { .. }),
         "expected invalid decision to be rejected, got {:?}",
@@ -103,7 +103,7 @@ fn decision_pipeline_accepts_valid_and_rejects_invalid() {
     assert!(!rejected.applied, "invalid decision must not be applied");
 
     // Invalid: unknown prisoner id.
-    let unknown = sim.deliver_decision(PrisonerId(u64::MAX), Decision::Comply);
+    let unknown = sim.deliver_decision(PrisonerId(u64::MAX), Decision::new(DecisionAction::Comply));
     assert!(
         matches!(unknown.result, ValidationResult::Rejected { .. }),
         "expected unknown-prisoner decision to be rejected, got {:?}",

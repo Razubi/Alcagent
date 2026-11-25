@@ -297,6 +297,7 @@ dependencies = [
 name = "alc-warden"
 version = "0.1.0"
 dependencies = [
+ "alc-agents",
  "alc-core",
  "alc-economy",
  "alc-events",

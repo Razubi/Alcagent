@@ -16,6 +16,7 @@
 //! `invariants_negative.rs`).
 
 use alc_agents::Decision;
+use alc_agents::decision::DecisionAction;
 use alc_core::{PrisonerId, TimeSpeed};
 use alc_events::{EventKind, WorldEvent};
 use alc_social::RehabProgram;
@@ -53,7 +54,7 @@ fn save_load_roundtrip_preserves_new_005_state() {
     sim.set_intake_paused(true);
 
     let decision_log_before = sim.decision_log().len();
-    let outcome = sim.deliver_decision(pid, Decision::Socialize { with: peer.raw() });
+    let outcome = sim.deliver_decision(pid, Decision::new(DecisionAction::Socialize { with: peer.raw() }));
     assert!(outcome.applied, "socialize between two known prisoners must apply");
     assert_eq!(sim.decision_log().len(), decision_log_before + 1);
 
@@ -187,7 +188,7 @@ fn decision_audit_and_incident_records_are_present() {
 
     // Applied decision -> decision audit + decision log.
     let audit_before = sim.decision_audit_log().len();
-    let outcome = sim.deliver_decision(pid, Decision::Socialize { with: peer.raw() });
+    let outcome = sim.deliver_decision(pid, Decision::new(DecisionAction::Socialize { with: peer.raw() }));
     assert!(outcome.applied);
     assert_eq!(sim.decision_audit_log().len(), audit_before + 1);
     let audit = sim.decision_audit_log().last().unwrap();
@@ -198,7 +199,7 @@ fn decision_audit_and_incident_records_are_present() {
 
     // Rejected decision -> audited, but never enters the decision log.
     let decision_log_before = sim.decision_log().len();
-    let rejected = sim.deliver_decision(PrisonerId(999_999), Decision::Comply);
+    let rejected = sim.deliver_decision(PrisonerId(999_999), Decision::new(DecisionAction::Comply));
     assert!(!rejected.applied);
     assert!(rejected.result.rejected_reason().is_some());
     assert_eq!(
@@ -210,7 +211,7 @@ fn decision_audit_and_incident_records_are_present() {
 
     // Conflict decision -> mirrored into the incident log + sidecar.
     let incident_log_before = sim.incident_log().len();
-    let fight = sim.deliver_decision(pid, Decision::Fight { target: peer.raw() });
+    let fight = sim.deliver_decision(pid, Decision::new(DecisionAction::Fight { target: peer.raw() }));
     assert!(fight.applied, "conflict between two known prisoners must apply");
     assert!(sim.incident_log().len() > incident_log_before);
     let incident = sim.incident_sidecar().last().unwrap();
@@ -494,9 +495,9 @@ fn policy_and_decision_audit_consistency_smoke() {
     // Decision audit consistency: accepted/rejected both audited, only accepted in decision log.
     let decision_log_before = sim.decision_log().len();
     let audit_before_decision = sim.decision_audit_log().len();
-    let ok = sim.deliver_decision(pid, Decision::Comply);
+    let ok = sim.deliver_decision(pid, Decision::new(DecisionAction::Comply));
     assert!(ok.applied, "comply should be accepted: {:?}", ok.result);
-    let bad = sim.deliver_decision(PrisonerId(9_999_999), Decision::Comply);
+    let bad = sim.deliver_decision(PrisonerId(9_999_999), Decision::new(DecisionAction::Comply));
     assert!(!bad.applied);
     assert_eq!(sim.decision_log().len(), decision_log_before + 1);
     let new_audit = &sim.decision_audit_log()[audit_before_decision..];

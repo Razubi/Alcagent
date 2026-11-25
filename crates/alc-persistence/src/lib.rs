@@ -206,6 +206,15 @@ pub struct DecisionAuditRecord {
     pub summary: String,
     pub validation: String,
     pub reason: String,
+    /// Detailed rationale for the decision.
+    #[serde(default)]
+    pub rationale: String,
+    /// If repaired/clamped, the reason for the repair.
+    #[serde(default)]
+    pub repair_reason: String,
+    /// Outcome state (Accepted, Repaired, Rejected, Proposed).
+    #[serde(default)]
+    pub outcome: alc_agents::decision::DecisionOutcomeState,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -625,6 +634,9 @@ mod tests {
             summary: "queued a cell block".into(),
             validation: "accepted".into(),
             reason: "funded".into(),
+            rationale: String::new(),
+            repair_reason: String::new(),
+            outcome: alc_agents::decision::DecisionOutcomeState::Accepted,
         });
         state.incident_sidecar.push(Incident {
             id: 9,

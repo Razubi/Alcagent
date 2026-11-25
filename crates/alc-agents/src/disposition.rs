@@ -11,7 +11,7 @@
 use alc_prisoner::{Prisoner, Traits};
 use serde::{Deserialize, Serialize};
 
-use crate::decision::Decision;
+use crate::decision::{Decision, DecisionAction};
 
 /// Read-only personality snapshot used to bias utility-based decisions.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -93,23 +93,23 @@ pub fn trait_bias(disposition: &Disposition, decision: &Decision) -> f32 {
     let ambition = c(disposition.ambition);
     let leadership = c(disposition.leadership);
 
-    let bias = match decision {
+    let bias = match &decision.action {
         // Discipline keeps routines; impulsiveness erodes them.
-        Decision::Comply => 0.20 * discipline + 0.05 * stability,
-        Decision::Refuse => -0.30 * discipline + 0.10 * impulsive,
+        DecisionAction::Comply => 0.20 * discipline + 0.05 * stability,
+        DecisionAction::Refuse => -0.30 * discipline + 0.10 * impulsive,
         // Aggression/impulse push toward violence; stability restrains it.
-        Decision::Fight { .. } => 0.25 * aggression + 0.15 * impulsive - 0.15 * stability,
-        Decision::Socialize { .. } => 0.25 * social,
-        Decision::Trade { .. } => 0.15 * social + 0.10 * manipulation,
-        Decision::SpreadRumor { .. } => 0.25 * manipulation,
+        DecisionAction::Fight { .. } => 0.25 * aggression + 0.15 * impulsive - 0.15 * stability,
+        DecisionAction::Socialize { .. } => 0.25 * social,
+        DecisionAction::Trade { .. } => 0.15 * social + 0.10 * manipulation,
+        DecisionAction::SpreadRumor { .. } => 0.25 * manipulation,
         // Desperation and risk tolerance make escape thinkable.
-        Decision::EscapeAttempt => 0.25 * risk + 0.15 * hopeless,
-        Decision::JoinGang { .. } | Decision::LeaveGang => {
+        DecisionAction::EscapeAttempt => 0.25 * risk + 0.15 * hopeless,
+        DecisionAction::JoinGang { .. } | DecisionAction::LeaveGang => {
             0.20 * risk + 0.10 * social + 0.10 * hopeless
         }
-        Decision::LeadGang { .. } => 0.20 * leadership + 0.15 * ambition,
+        DecisionAction::LeadGang { .. } => 0.20 * leadership + 0.15 * ambition,
         // Movement/medical attention are need-driven, not personality-driven.
-        Decision::MoveTo { .. } | Decision::RequestMedical | Decision::None => 0.0,
+        DecisionAction::MoveTo { .. } | DecisionAction::RequestMedical | DecisionAction::None => 0.0,
     };
     bias.clamp(-0.5, 0.5)
 }
@@ -122,12 +122,12 @@ mod tests {
     fn neutral_disposition_has_no_effect() {
         let neutral = Disposition::default();
         for action in [
-            Decision::Comply,
-            Decision::Refuse,
-            Decision::Fight { target: 3 },
-            Decision::Socialize { with: 3 },
-            Decision::EscapeAttempt,
-            Decision::RequestMedical,
+            Decision::new(DecisionAction::Comply),
+            Decision::new(DecisionAction::Refuse),
+            Decision::new(DecisionAction::Fight { target: 3 }),
+            Decision::new(DecisionAction::Socialize { with: 3 }),
+            Decision::new(DecisionAction::EscapeAttempt),
+            Decision::new(DecisionAction::RequestMedical),
         ] {
             assert_eq!(trait_bias(&neutral, &action), 0.0, "{action:?}");
         }
@@ -144,14 +144,14 @@ mod tests {
         let d = Disposition::from(&p);
         assert_eq!(d.discipline, 0.9);
         assert_eq!(d.hope, 0.1);
-        assert!(trait_bias(&d, &Decision::Comply) > 0.0);
-        assert!(trait_bias(&d, &Decision::Refuse) < 0.0);
+        assert!(trait_bias(&d, &Decision::new(DecisionAction::Comply)) > 0.0);
+        assert!(trait_bias(&d, &Decision::new(DecisionAction::Refuse)) < 0.0);
         // Desperation raises escape appeal *relative to* a hopeful prisoner;
         // the absolute score also depends on risk tolerance.
-        let desperate = trait_bias(&d, &Decision::EscapeAttempt);
+        let desperate = trait_bias(&d, &Decision::new(DecisionAction::EscapeAttempt));
         let mut hopeful = d;
         hopeful.hope = 0.9;
-        let calm = trait_bias(&hopeful, &Decision::EscapeAttempt);
+        let calm = trait_bias(&hopeful, &Decision::new(DecisionAction::EscapeAttempt));
         assert!(desperate > calm, "desperation should push escape: {desperate} vs {calm}");
     }
 
@@ -163,7 +163,7 @@ mod tests {
             ..Default::default()
         };
         // NaN clamps to 0.0 and +inf clamps to 1.0; no panic, no NaN leak.
-        for action in [Decision::Comply, Decision::Refuse, Decision::Fight { target: 1 }] {
+        for action in [Decision::new(DecisionAction::Comply), Decision::new(DecisionAction::Refuse), Decision::new(DecisionAction::Fight { target: 1 })] {
             let b = trait_bias(&extreme, &action);
             assert!(b.is_finite() && (-0.5..=0.5).contains(&b), "{action:?}: {b}");
         }

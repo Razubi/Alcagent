@@ -7,7 +7,7 @@
 use alc_core::{GuardId, PrisonerId, SimTime};
 use alc_events::EventKind;
 use alc_social::RelationshipDelta;
-use sumo::incidents::Incident;
+use sumo::incidents::{Incident, IncidentDisposition};
 use sumo::{Policy, Sim};
 
 fn fight_incident(id: u64) -> Incident {
@@ -16,10 +16,14 @@ fn fight_incident(id: u64) -> Incident {
         kind: EventKind::Fight,
         cause: None,
         consequence: None,
+        causal_chain: Vec::new(),
         timestamp: SimTime::default(),
         location: "Yard".to_string(),
         involved_prisoners: Vec::new(),
+        witnesses: Vec::new(),
         severity: 0.5,
+        disposition: IncidentDisposition::None,
+        response_actions: Vec::new(),
         resolved: false,
     }
 }

@@ -1615,6 +1615,7 @@ fn render_incidents(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
             kv("Kind", r.kind.clone()),
             kv("At", r.at.to_string()),
             kv("Severity", format!("{:.0}% ({})", r.severity * 100.0, if r.severity >= 0.75 { "critical" } else if r.severity >= 0.4 { "high" } else { "low" })),
+            kv("Disposition", r.disposition.clone()),
             kv("Location", if r.location.is_empty() { "unknown".into() } else { r.location.clone() }),
             kv("Actors (prisoners)", actors),
             kv("Cause chain", r.cause.map(|c| format!("incident #{}", c)).unwrap_or_else(|| "none".into())),

@@ -24,7 +24,7 @@ pub mod memory;
 pub mod orchestrator;
 
 pub use decision::{
-    ACTION_CATALOG, ActionCandidate, Decision, DecisionValidator, DefaultValidator, Legality,
+    ACTION_CATALOG, ActionCandidate, Decision, DecisionAction, DecisionValidator, DefaultValidator, Legality,
     RawDecision, RawTarget, Rejection, Role, ValidationContext, ValidationResult, ValidationStage,
     clamp_and_repair, normalize_action, parse_raw_decision, run_validation_json,
     run_validation_pipeline, validate_authority, validate_decision, validate_format,

@@ -20,7 +20,7 @@ fn agent_observation_includes_brain_inspector_data() {
     // Plant a current decision so the intention surface has real data.
     sim.world_mut()
         .current_decisions
-        .insert(pid, alc_agents::Decision::Comply);
+        .insert(pid, alc_agents::Decision::new(alc_agents::DecisionAction::Comply));
     let obs = sim.agent_observation(pid).expect("prisoner exists");
     assert_eq!(obs.id, pid);
     assert_eq!(obs.memory_summary, sim.world().prisoners[0].memory_summary);

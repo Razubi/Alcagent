@@ -164,6 +164,12 @@ pub struct DecisionAuditRecord {
     pub validation: String,
     /// Reason or engine note.
     pub reason: String,
+    /// Detailed rationale for the decision.
+    pub rationale: String,
+    /// If repaired/clamped, the reason for the repair.
+    pub repair_reason: String,
+    /// Outcome state (Accepted, Repaired, Rejected, Proposed).
+    pub outcome: alc_agents::decision::DecisionOutcomeState,
 }
 
 /// Structured incident record for observer UI (0.05).
@@ -185,6 +191,8 @@ pub struct IncidentRecord {
     pub cause: Option<u64>,
     /// Consequence incident id.
     pub consequence: Option<u64>,
+    /// Disposition.
+    pub disposition: String,
     /// Resolved flag.
     pub resolved: bool,
 }
@@ -200,6 +208,7 @@ impl From<&incidents::Incident> for IncidentRecord {
             involved_prisoners: incident.involved_prisoners.iter().map(|p| p.raw()).collect(),
             cause: incident.cause,
             consequence: incident.consequence,
+            disposition: format!("{:?}", incident.disposition),
             resolved: incident.resolved,
         }
     }
@@ -293,6 +302,9 @@ impl EngineState {
                 summary: r.summary.clone(),
                 validation: r.validation.clone(),
                 reason: r.reason.clone(),
+                rationale: r.rationale.clone(),
+                repair_reason: r.repair_reason.clone(),
+                outcome: r.outcome,
             }).collect(),
             resolved_contraband_cases: self.resolved_contraband_cases.iter().copied().collect(),
             post_release: self.post_release.iter().map(|(k, v)| (k.raw(), *v)).collect(),
@@ -330,10 +342,14 @@ impl EngineState {
                     kind: inc.kind,
                     cause: inc.cause,
                     consequence: inc.consequence,
+                    causal_chain: Vec::new(),
                     timestamp: inc.timestamp,
                     location: inc.location,
                     involved_prisoners: inc.involved_prisoners.into_iter().map(PrisonerId).collect(),
+                    witnesses: Vec::new(),
                     severity: inc.severity,
+                    disposition: incidents::IncidentDisposition::None,
+                    response_actions: Vec::new(),
                     resolved: inc.resolved,
                 }
             }).collect(),
@@ -346,6 +362,9 @@ impl EngineState {
                 summary: r.summary,
                 validation: r.validation,
                 reason: r.reason,
+                rationale: r.rationale,
+                repair_reason: r.repair_reason,
+                outcome: r.outcome,
             }).collect(),
             resolved_contraband_cases: persist.resolved_contraband_cases.into_iter().collect(),
             resolved_contraband_at: std::collections::BTreeMap::new(), // engine-only, not persisted
@@ -518,6 +537,9 @@ impl Sim {
             summary: summary.into(),
             validation: validation.into(),
             reason: reason.into(),
+            rationale: String::new(),
+            repair_reason: String::new(),
+            outcome: alc_agents::decision::DecisionOutcomeState::Accepted,
         });
     }
 
@@ -596,6 +618,9 @@ impl Sim {
                     summary: format!("{:?}", decision),
                     validation: "accepted".to_string(),
                     reason: "applied by world tick".to_string(),
+                    rationale: decision.rationale.clone(),
+                    repair_reason: decision.repair_reason.clone(),
+                    outcome: decision.outcome,
                 });
             }
         }
@@ -677,10 +702,14 @@ impl Sim {
                 kind: event.kind,
                 cause: Some(id),
                 consequence: Some(id),
+                causal_chain: Vec::new(),
                 timestamp: event.at,
                 location: format!("facility {}", event.actors.first().copied().unwrap_or(0)),
                 involved_prisoners,
+                witnesses: Vec::new(),
                 severity,
+                disposition: incidents::IncidentDisposition::None,
+                response_actions: Vec::new(),
                 resolved: false,
             });
             self.engine_state.incidents.push(event);
@@ -2458,6 +2487,9 @@ impl Sim {
             summary,
             validation: "accepted".to_string(),
             reason: "applied by engine".to_string(),
+            rationale: String::new(),
+            repair_reason: String::new(),
+            outcome: alc_agents::decision::DecisionOutcomeState::Accepted,
         });
     }
 

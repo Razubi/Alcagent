@@ -161,9 +161,19 @@ pub struct WardenDecisionRecord {
     pub warden_id: WardenId,
     pub warden_name: String,
     pub action: WardenAction,
+    /// Final rationale for the decision.
+    #[serde(default)]
+    pub rationale: String,
+    /// For legacy reasons this field is kept, but [`rationale`] is preferred.
     pub reason: String,
     pub source: DecisionSource,
+    /// Outcome state of the decision (accepted/rejected/etc).
+    #[serde(default)]
+    pub outcome: alc_agents::decision::DecisionOutcomeState,
     pub applied: bool,
+    /// If repaired/clamped, the reason for the repair.
+    #[serde(default)]
+    pub repair_reason: String,
 }
 
 /// Append-only audit log of warden decisions, bounded to keep memory stable.
@@ -189,6 +199,7 @@ impl WardenAuditLog {
     }
 
     pub fn record(&mut self, time: SimTime, warden_id: WardenId, warden_name: impl Into<String>, action: WardenAction, reason: impl Into<String>, source: DecisionSource, applied: bool) -> u64 {
+        let r_str = reason.into();
         let id = self.next_id;
         self.next_id = self.next_id.saturating_add(1);
         let record = WardenDecisionRecord {
@@ -197,9 +208,12 @@ impl WardenAuditLog {
             warden_id,
             warden_name: warden_name.into(),
             action,
-            reason: reason.into(),
+            rationale: r_str.clone(),
+            reason: r_str,
             source,
+            outcome: if applied { alc_agents::decision::DecisionOutcomeState::Accepted } else { alc_agents::decision::DecisionOutcomeState::Rejected },
             applied,
+            repair_reason: String::new(),
         };
         if self.records.len() >= self.max_records {
             self.records.remove(0);

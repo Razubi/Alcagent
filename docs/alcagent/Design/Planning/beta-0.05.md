@@ -128,13 +128,13 @@ Exec order (Features agent): R4/R5 → R1 → R2 → R3 → H1–H3 → H4–H6 
 - **GUI:** eframe fetch on first build; headless CI (keep TUI path); MSRV interplay (egui ≥1.95 floor); control panel mutates world — engine is read-oriented (AGENTS §19), treat as feature addition.
 - **Engine:** catch-all `_ => ok()` in decision acceptance; parole ledger not persisted on `Sim::load`; `ParoleDenied` loses reason; escape-path divergence (world tick removes escaped; engine path does not); `MoveTo` sets `schedule.wing` approximation; `Trade` effect-free; `stats_since` population history only fills on tick.
 - **Ops:** `Sim::wait_for_event` unbounded-loop footgun; `full_365_day_run_no_invariant_violations` 30 s wall-clock assert (timing flake risk); invariant coverage gaps (decisions/determinism/engine_api/observation/persistence tests).
-- **Social/AI:** double-driving guards (`World::tick` vs `Sim::guard_duty_cycle`); guard-report 3-mappings inconsistency; doc drift (`../sumo/docs/../sumo/../Reports/sumo-audit.md` missing expansion APIs).
+- **Social/AI:** double-driving guards (`World::tick` vs `Sim::guard_duty_cycle`); guard-report 3-mappings inconsistency; doc drift (`../../sumo/sumo-engine-research.md` missing expansion APIs).
 
 ## 8. AGENTS.md phase mapping for beta 0.05
 
 | Phase | Status | Beta-0.05 output |
 |---|---|---|
-| 1 — Investigation | DONE | `../sumo/docs/../sumo/../Reports/sumo-audit.md`, `../Reports/audit-report.md`, `../sumo/../Design/Engine/sumo-engine.md`, `../sumo/../Design/Engine/sumo-expansion.md`; build/test green |
+| 1 — Investigation | DONE | `../../sumo/sumo-engine-research.md`, `../Reports/audit-report.md`, `../Design/Engine/sumo-engine.md`, `../Design/Engine/sumo-expansion.md`; build/test green |
 | 2 — Design | IN PROGRESS | This update list / deep plan |
 | 3 — Implementation | PLANNED | 5-subagent team, disjoint file ownership, engine decision validation |
 | 4 — Testing | PLANNED | new test wave (drivers, parole, expansion_api), invariants, soak/stress |
@@ -144,7 +144,7 @@ Dev/research prereqs (per AGENTS.md): autonomous living-prison simulation direct
 
 ## 9. Next steps
 
-1. Phase 2 (design): finalize this update list → promote to `../sumo/../Design/Engine/sumo-expansion.md` cross-refs; DevOps: version bump `0.5.0-beta.1`, root `CHANGELOG.md`, doc status flips, tests wave.
+1. Phase 2 (design): finalize this update list → promote to `../Design/Engine/sumo-expansion.md` cross-refs; DevOps: version bump `0.5.0-beta.1`, root `CHANGELOG.md`, doc status flips, tests wave.
 2. Phase 3 (implementation): re-launch the 5-subagent developer team with disjoint file ownership (GUI / interactions / capabilities-social-rehab / testing / integration-docs).
 3. Phase 4 (testing): build + test + soak.
 4. Phase 5 (autonomous review).

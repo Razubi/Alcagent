@@ -32,12 +32,14 @@
 
 use crate::Sim;
 use alc_agents::{
-    Decision, DecisionValidator, DefaultValidator, ValidationContext, ValidationResult,
+    Decision, DecisionAction, DecisionValidator, DefaultValidator, ValidationContext,
+    ValidationResult,
 };
 use alc_core::{PrisonerId, RngStream, SimTime};
 use alc_economy::{Account as EconomyAccount, Money};
 use alc_events::{EventKind, WorldEvent};
 use alc_prisoner::Prisoner;
+use crate::incidents::IncidentDisposition;
 use alc_social::{
     apply_escape_consequences, apply_outcome, resolve_conflict, resolve_escape_attempt,
     ConflictOutcome, EscapeOutcome, RelationshipDelta,
@@ -162,20 +164,20 @@ pub enum DecisionType {
 impl DecisionType {
     /// Convert from an [`alc_agents::Decision`] variant.
     pub fn from_decision(decision: &Decision) -> Self {
-        match decision {
-            Decision::MoveTo { .. } => DecisionType::MoveTo,
-            Decision::Socialize { .. } => DecisionType::Socialize,
-            Decision::Fight { .. } => DecisionType::Fight,
-            Decision::Trade { .. } => DecisionType::Trade,
-            Decision::Comply => DecisionType::Comply,
-            Decision::Refuse => DecisionType::Refuse,
-            Decision::EscapeAttempt => DecisionType::EscapeAttempt,
-            Decision::RequestMedical => DecisionType::RequestMedical,
-            Decision::JoinGang { .. } => DecisionType::JoinGang,
-            Decision::LeaveGang => DecisionType::LeaveGang,
-            Decision::LeadGang { .. } => DecisionType::LeadGang,
-            Decision::SpreadRumor { .. } => DecisionType::SpreadRumor,
-            Decision::None => DecisionType::None,
+        match &decision.action {
+            DecisionAction::MoveTo { .. } => DecisionType::MoveTo,
+            DecisionAction::Socialize { .. } => DecisionType::Socialize,
+            DecisionAction::Fight { .. } => DecisionType::Fight,
+            DecisionAction::Trade { .. } => DecisionType::Trade,
+            DecisionAction::Comply => DecisionType::Comply,
+            DecisionAction::Refuse => DecisionType::Refuse,
+            DecisionAction::EscapeAttempt => DecisionType::EscapeAttempt,
+            DecisionAction::RequestMedical => DecisionType::RequestMedical,
+            DecisionAction::JoinGang { .. } => DecisionType::JoinGang,
+            DecisionAction::LeaveGang => DecisionType::LeaveGang,
+            DecisionAction::LeadGang { .. } => DecisionType::LeadGang,
+            DecisionAction::SpreadRumor { .. } => DecisionType::SpreadRumor,
+            DecisionAction::None => DecisionType::None,
         }
     }
 
@@ -188,19 +190,19 @@ impl DecisionType {
     /// targeted decisions.
     pub fn to_decision(self, target: Option<PrisonerId>) -> Decision {
         match self {
-            DecisionType::MoveTo => Decision::MoveTo { target_facility: target.map_or(0, |pid| pid.raw()) },
-            DecisionType::Socialize => Decision::Socialize { with: target.map_or(0, |pid| pid.raw()) },
-            DecisionType::Fight => Decision::Fight { target: target.map_or(0, |pid| pid.raw()) },
-            DecisionType::Trade => Decision::Trade { with: target.map_or(0, |pid| pid.raw()), item: "".into() },
-            DecisionType::Comply => Decision::Comply,
-            DecisionType::Refuse => Decision::Refuse,
-            DecisionType::EscapeAttempt => Decision::EscapeAttempt,
-            DecisionType::RequestMedical => Decision::RequestMedical,
-            DecisionType::JoinGang => Decision::JoinGang { gang: target.map_or(0, |pid| pid.raw()) },
-            DecisionType::LeaveGang => Decision::LeaveGang,
-            DecisionType::LeadGang => Decision::LeadGang { gang: target.map_or(0, |pid| pid.raw()) },
-            DecisionType::SpreadRumor => Decision::SpreadRumor { about: target.map_or(0, |pid| pid.raw()), content: "".into() },
-            DecisionType::None => Decision::None,
+            DecisionType::MoveTo => Decision::new(DecisionAction::MoveTo { target_facility: target.map_or(0, |pid| pid.raw()) }),
+            DecisionType::Socialize => Decision::new(DecisionAction::Socialize { with: target.map_or(0, |pid| pid.raw()) }),
+            DecisionType::Fight => Decision::new(DecisionAction::Fight { target: target.map_or(0, |pid| pid.raw()) }),
+            DecisionType::Trade => Decision::new(DecisionAction::Trade { with: target.map_or(0, |pid| pid.raw()), item: "".into() }),
+            DecisionType::Comply => Decision::new(DecisionAction::Comply),
+            DecisionType::Refuse => Decision::new(DecisionAction::Refuse),
+            DecisionType::EscapeAttempt => Decision::new(DecisionAction::EscapeAttempt),
+            DecisionType::RequestMedical => Decision::new(DecisionAction::RequestMedical),
+            DecisionType::JoinGang => Decision::new(DecisionAction::JoinGang { gang: target.map_or(0, |pid| pid.raw()) }),
+            DecisionType::LeaveGang => Decision::new(DecisionAction::LeaveGang),
+            DecisionType::LeadGang => Decision::new(DecisionAction::LeadGang { gang: target.map_or(0, |pid| pid.raw()) }),
+            DecisionType::SpreadRumor => Decision::new(DecisionAction::SpreadRumor { about: target.map_or(0, |pid| pid.raw()), content: "".into() }),
+            DecisionType::None => Decision::new(DecisionAction::None),
         }
     }
 }
@@ -714,6 +716,9 @@ pub fn deliver(sim: &mut Sim, id: PrisonerId, decision: Decision) -> DecisionOut
             summary: format!("{:?}", decision),
             validation: "rejected".to_string(),
             reason,
+            rationale: decision.rationale.clone(),
+            repair_reason: decision.repair_reason.clone(),
+            outcome: decision.outcome,
         });
         return outcome;
     }
@@ -732,6 +737,9 @@ pub fn deliver(sim: &mut Sim, id: PrisonerId, decision: Decision) -> DecisionOut
         summary: format!("{:?}", decision),
         validation,
         reason: "applied by engine".to_string(),
+        rationale: decision.rationale.clone(),
+        repair_reason: decision.repair_reason.clone(),
+        outcome: decision.outcome,
     });
     sim.emit_events(events.clone());
     mirror_conflict_incidents(sim, &events);
@@ -784,10 +792,14 @@ fn mirror_conflict_incidents(sim: &mut Sim, events: &[WorldEvent]) {
             kind: event.kind,
             cause: Some(id),
             consequence: Some(id),
+            causal_chain: Vec::new(),
             timestamp: event.at,
             location,
             involved_prisoners: involved,
+            witnesses: Vec::new(),
             severity: severity_for(event.kind),
+            disposition: IncidentDisposition::None,
+            response_actions: Vec::new(),
             resolved: false,
         };
         sim.record_sidecar_incident(incident);
@@ -933,8 +945,8 @@ fn current_facility(world: &World, id: PrisonerId) -> Option<u64> {
 fn engine_rules(world: &World, id: PrisonerId, d: &Decision) -> (bool, ValidationResult) {
     let reject = |reason: String| (false, ValidationResult::Rejected { reason });
     let ok = || (true, ValidationResult::Accepted(d.clone()));
-    match d {
-        Decision::MoveTo { target_facility } => {
+    match &d.action {
+        DecisionAction::MoveTo { target_facility } => {
             if world.policies.lockdown {
                 return reject("lockdown active: movement restricted".into());
             }
@@ -943,19 +955,19 @@ fn engine_rules(world: &World, id: PrisonerId, d: &Decision) -> (bool, Validatio
             }
             ok()
         }
-        Decision::Socialize { with } | Decision::Trade { with, .. } => {
+        DecisionAction::Socialize { with } | DecisionAction::Trade { with, .. } => {
             if !world.prisoners.iter().any(|p| p.id.raw() == *with) {
                 return reject("unknown target prisoner".into());
             }
             ok()
         }
-        Decision::Fight { target } => {
+        DecisionAction::Fight { target } => {
             if !world.prisoners.iter().any(|p| p.id.raw() == *target) {
                 return reject("unknown target prisoner".into());
             }
             ok()
         }
-        Decision::SpreadRumor { about, content } => {
+        DecisionAction::SpreadRumor { about, content } => {
             if !world.prisoners.iter().any(|p| p.id.raw() == *about) {
                 return reject("unknown target prisoner".into());
             }
@@ -964,24 +976,24 @@ fn engine_rules(world: &World, id: PrisonerId, d: &Decision) -> (bool, Validatio
             }
             ok()
         }
-        Decision::JoinGang { gang } => {
+        DecisionAction::JoinGang { gang } => {
             if !world.gangs.iter().any(|g| g.id.raw() == *gang) {
                 return reject(format!("unknown gang {gang}"));
             }
             ok()
         }
-        Decision::LeadGang { gang } => match world.gangs.iter().find(|g| g.id.raw() == *gang) {
+        DecisionAction::LeadGang { gang } => match world.gangs.iter().find(|g| g.id.raw() == *gang) {
             None => reject(format!("unknown gang {gang}")),
             Some(g) if !g.members.iter().any(|&m| m == id) => {
                 reject("prisoner is not a member of the gang".into())
             }
             Some(_) => ok(),
         },
-        Decision::EscapeAttempt if world.policies.lockdown => {
+        DecisionAction::EscapeAttempt if world.policies.lockdown => {
             reject("lockdown active: escape attempts blocked".into())
         }
-        Decision::EscapeAttempt => ok(),
-        Decision::RequestMedical | Decision::Comply | Decision::Refuse | Decision::LeaveGang | Decision::None => ok(),
+        DecisionAction::EscapeAttempt => ok(),
+        DecisionAction::RequestMedical | DecisionAction::Comply | DecisionAction::Refuse | DecisionAction::LeaveGang | DecisionAction::None => ok(),
         // All 13 current variants are handled above. The arm is kept as a
         // defensive guard: if a future variant is added to Decision without
         // an engine rule, it must be rejected instead of silently accepted as
@@ -998,8 +1010,8 @@ fn apply(world: &mut World, id: PrisonerId, result: &ValidationResult) -> Vec<Wo
         ValidationResult::Accepted(d) | ValidationResult::Repaired(d) => d.clone(),
         ValidationResult::Rejected { .. } => return events,
     };
-    match decision {
-        Decision::MoveTo { target_facility } => {
+    match decision.action {
+        DecisionAction::MoveTo { target_facility } => {
             if let Some(f) = world.facilities.iter().find(|f| f.id.0 == target_facility) {
                 if let Some(p) = world.prisoners.iter_mut().find(|p| p.id == id) {
                     p.schedule.wing = f.wing;
@@ -1009,7 +1021,7 @@ fn apply(world: &mut World, id: PrisonerId, result: &ValidationResult) -> Vec<Wo
                 world.prisoner_location.insert(id, f.id);
             }
         }
-        Decision::Socialize { with } => {
+        DecisionAction::Socialize { with } => {
             world.social.record(
                 id,
                 PrisonerId(with),
@@ -1017,7 +1029,7 @@ fn apply(world: &mut World, id: PrisonerId, result: &ValidationResult) -> Vec<Wo
             );
             events.push(ev(world.time, EventKind::RelationshipShift, format!("{} socialized with {with}", id.raw()), vec![id.raw()]));
         }
-        Decision::Trade { with, item } => {
+        DecisionAction::Trade { with, item } => {
             let other = PrisonerId(with);
             let both_exist = world.prisoners.iter().any(|p| p.id == id)
                 && world.prisoners.iter().any(|p| p.id == other);
@@ -1048,34 +1060,34 @@ fn apply(world: &mut World, id: PrisonerId, result: &ValidationResult) -> Vec<Wo
                 vec![id.raw(), with],
             ));
         }
-        Decision::Fight { target } => events.extend(fight_events(world, id, PrisonerId(target))),
-        Decision::EscapeAttempt => events.extend(escape_events(world, id)),
-        Decision::SpreadRumor { about, content } => {
+        DecisionAction::Fight { target } => events.extend(fight_events(world, id, PrisonerId(target))),
+        DecisionAction::EscapeAttempt => events.extend(escape_events(world, id)),
+        DecisionAction::SpreadRumor { about, content } => {
             events.push(ev(world.time, EventKind::Rumor, format!("{} spreads rumor about {about}: {content}", id.raw()), vec![id.raw()]));
         }
-        Decision::JoinGang { gang } => {
+        DecisionAction::JoinGang { gang } => {
             if let Some(p) = world.prisoners.iter_mut().find(|p| p.id == id) {
                 p.gang_affiliation = Some(gang);
             }
             events.push(ev(world.time, EventKind::GangRecruit, format!("{} joins gang {gang}", id.raw()), vec![id.raw()]));
         }
-        Decision::LeadGang { gang } => {
+        DecisionAction::LeadGang { gang } => {
             if let Some(g) = world.gangs.iter_mut().find(|g| g.id.raw() == gang) {
                 g.change_leader(id);
             }
             events.push(ev(world.time, EventKind::LeadershipDispute, format!("{} takes leadership of gang {gang}", id.raw()), vec![id.raw()]));
         }
-        Decision::LeaveGang => {
+        DecisionAction::LeaveGang => {
             if let Some(p) = world.prisoners.iter_mut().find(|p| p.id == id) {
                 p.gang_affiliation = None;
             }
         }
-        Decision::RequestMedical => {
+        DecisionAction::RequestMedical => {
             if let Some(p) = world.prisoners.iter_mut().find(|p| p.id == id) {
                 p.needs.medical_need = (p.needs.medical_need + 0.35).min(1.0);
             }
         }
-        Decision::Comply | Decision::Refuse | Decision::None => {}
+        DecisionAction::Comply | DecisionAction::Refuse | DecisionAction::None => {}
     }
     events
 }

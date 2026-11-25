@@ -4,7 +4,7 @@
 //! detect divergence, verify determinism, and provide richer trace fingerprinting.
 
 use crate::{EngineState, PolicyState, ParoleLedger};
-use alc_agents::Decision;
+use alc_agents::{Decision, DecisionAction};
 use std::hash::{Hash, Hasher};
 
 /// Compute a deterministic hash of the engine state for trace verification.
@@ -65,43 +65,43 @@ pub fn compute_state_digest(engine_state: &EngineState) -> u64 {
 }
 
 fn hash_decision(dec: &Decision, hasher: &mut impl Hasher) {
-    match dec {
-        Decision::MoveTo { target_facility } => {
+    match &dec.action {
+        DecisionAction::MoveTo { target_facility } => {
             0u8.hash(hasher); // variant discriminant
             target_facility.hash(hasher);
         }
-        Decision::Socialize { with } => {
+        DecisionAction::Socialize { with } => {
             1u8.hash(hasher);
             with.hash(hasher);
         }
-        Decision::Fight { target } => {
+        DecisionAction::Fight { target } => {
             2u8.hash(hasher);
             target.hash(hasher);
         }
-        Decision::Trade { with, item } => {
+        DecisionAction::Trade { with, item } => {
             3u8.hash(hasher);
             with.hash(hasher);
             item.hash(hasher);
         }
-        Decision::Comply => { 4u8.hash(hasher); }
-        Decision::Refuse => { 5u8.hash(hasher); }
-        Decision::EscapeAttempt => { 6u8.hash(hasher); }
-        Decision::RequestMedical => { 7u8.hash(hasher); }
-        Decision::JoinGang { gang } => {
+        DecisionAction::Comply => { 4u8.hash(hasher); }
+        DecisionAction::Refuse => { 5u8.hash(hasher); }
+        DecisionAction::EscapeAttempt => { 6u8.hash(hasher); }
+        DecisionAction::RequestMedical => { 7u8.hash(hasher); }
+        DecisionAction::JoinGang { gang } => {
             8u8.hash(hasher);
             gang.hash(hasher);
         }
-        Decision::LeaveGang => { 9u8.hash(hasher); }
-        Decision::LeadGang { gang } => {
+        DecisionAction::LeaveGang => { 9u8.hash(hasher); }
+        DecisionAction::LeadGang { gang } => {
             10u8.hash(hasher);
             gang.hash(hasher);
         }
-        Decision::SpreadRumor { about, content } => {
+        DecisionAction::SpreadRumor { about, content } => {
             11u8.hash(hasher);
             about.hash(hasher);
             content.hash(hasher);
         }
-        Decision::None => { 12u8.hash(hasher); }
+        DecisionAction::None => { 12u8.hash(hasher); }
     }
 }
 

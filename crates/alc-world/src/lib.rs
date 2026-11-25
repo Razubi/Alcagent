@@ -462,14 +462,12 @@ impl World {
                         // routine unmet needs saturate the event bus.
                         let base = p.needs.total_pressure();
                         let agitation = p.needs.respect * 0.15 + p.needs.safety * 0.1;
-                        let compliance = if matches!(
-                            self.current_decisions.get(&p.id),
-                            Some(alc_agents::Decision::Comply | alc_agents::Decision::None)
-                        ) {
-                            0.0
+                        let compliance = if let Some(d) = self.current_decisions.get(&p.id) {
+                            matches!(&d.action, alc_agents::decision::DecisionAction::Comply | alc_agents::decision::DecisionAction::None)
                         } else {
-                            0.08
+                            false
                         };
+                        let compliance: f32 = if compliance { 0.0 } else { 0.08 };
                         (base * 0.5 + agitation + compliance).clamp(0.0, 1.0)
                     })
                     .collect();
@@ -694,7 +692,7 @@ impl World {
                         au.partial_cmp(&bu).unwrap_or(std::cmp::Ordering::Equal)
                     })
                     .map(|c| c.decision.clone())
-                    .unwrap_or(Decision::None)
+                    .unwrap_or(Decision::new(alc_agents::decision::DecisionAction::None))
             } else {
                 self.orchestrator
                     .fallback_decision_with_disposition(&candidates, &disposition)
@@ -702,8 +700,8 @@ impl World {
             if may_ai {
                 self.orchestrator.charge(1);
             }
-            if let Decision::MoveTo { target_facility } = decision {
-                new_locations.insert(id, FacilityId(target_facility));
+            if let alc_agents::decision::DecisionAction::MoveTo { target_facility } = &decision.action {
+                new_locations.insert(id, FacilityId(*target_facility));
             }
             decisions.insert(id, decision);
         }
@@ -733,43 +731,43 @@ impl World {
             NeedTag::Hunger | NeedTag::Thirst => self
                 .facility_of_kind(FacilityKind::Kitchen)
                 .map(|f| ActionCandidate::new(
-                    Decision::MoveTo { target_facility: f.raw() },
+                    Decision::new(alc_agents::decision::DecisionAction::MoveTo { target_facility: f.raw() }),
                     0.2 + level,
                 )),
             NeedTag::Sleep => self
                 .facility_of_kind(FacilityKind::CellBlock)
                 .map(|f| ActionCandidate::new(
-                    Decision::MoveTo { target_facility: f.raw() },
+                    Decision::new(alc_agents::decision::DecisionAction::MoveTo { target_facility: f.raw() }),
                     0.2 + level,
                 )),
             NeedTag::Medical => Some(ActionCandidate::new(
-                Decision::RequestMedical,
+                Decision::new(alc_agents::decision::DecisionAction::RequestMedical),
                 0.2 + level * 1.3,
             )),
             NeedTag::Companionship => nearby.map(|other| ActionCandidate::new(
-                Decision::Socialize { with: other.raw() },
+                Decision::new(alc_agents::decision::DecisionAction::Socialize { with: other.raw() }),
                 0.2 + level,
             )),
             NeedTag::Stimulation => self
                 .facility_of_kind(FacilityKind::Recreation)
                 .or_else(|| self.facility_of_kind(FacilityKind::Yard))
                 .map(|f| ActionCandidate::new(
-                    Decision::MoveTo { target_facility: f.raw() }, // wander
+                    Decision::new(alc_agents::decision::DecisionAction::MoveTo { target_facility: f.raw() }), // wander
                     0.2 + level,
                 )),
             NeedTag::Safety => Some(ActionCandidate::new(
-                Decision::Comply, // safest visible option: keep close to staff/order
+                Decision::new(alc_agents::decision::DecisionAction::Comply), // safest visible option: keep close to staff/order
                 0.2 + level,
             )),
             NeedTag::Respect => nearby
                 .map(|other| ActionCandidate::new(
-                    Decision::Fight { target: other.raw() },
+                    Decision::new(alc_agents::decision::DecisionAction::Fight { target: other.raw() }),
                     0.15 + level * 0.5,
                 ).with_risk(0.85).with_legality(Legality::IllegalButPossible)),
             NeedTag::Fatigue => self
                 .facility_of_kind(FacilityKind::CellBlock)
                 .map(|f| ActionCandidate::new(
-                    Decision::MoveTo { target_facility: f.raw() },
+                    Decision::new(alc_agents::decision::DecisionAction::MoveTo { target_facility: f.raw() }),
                     0.2 + level,
                 )),
             // The dominant-need chooser only surfaces the eight weighted tags
@@ -783,11 +781,11 @@ impl World {
         }
         // Baseline alternatives give the fallback chooser a real ranking and
         // keep routine behaviour from collapsing into a single action.
-        out.push(ActionCandidate::new(Decision::Comply, 0.25));
+        out.push(ActionCandidate::new(Decision::new(alc_agents::decision::DecisionAction::Comply), 0.25));
         if p.needs.medical_need > 0.6 {
-            out.push(ActionCandidate::new(Decision::RequestMedical, 0.55));
+            out.push(ActionCandidate::new(Decision::new(alc_agents::decision::DecisionAction::RequestMedical), 0.55));
         }
-        out.push(ActionCandidate::new(Decision::None, 0.05));
+        out.push(ActionCandidate::new(Decision::new(alc_agents::decision::DecisionAction::None), 0.05));
         out
     }
 
@@ -2031,7 +2029,7 @@ mod tests {
         assert_eq!(w.current_activity.len(), w.prisoners.len());
         assert_eq!(w.current_decisions.len(), w.prisoners.len());
         assert_eq!(w.prisoner_location.len(), w.prisoners.len());
-        assert!(w.current_decisions.values().any(|d| *d != Decision::None));
+        assert!(w.current_decisions.values().any(|d| d.action != alc_agents::decision::DecisionAction::None));
     }
 
     #[test]

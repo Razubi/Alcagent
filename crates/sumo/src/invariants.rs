@@ -4,6 +4,7 @@
 //! across ticks, saves, and decision pipelines. Each function returns a list
 //! of violation strings; an empty list means all invariants hold.
 
+use alc_agents::DecisionAction;
 use alc_core::FacilityId;
 use alc_events::EventKind;
 use alc_world::World;
@@ -112,7 +113,7 @@ pub fn invariant_intention_target_exists_and_is_legal(world: &World) -> bool {
                 }
             }
             
-            if let Decision::MoveTo { target_facility } = decision {
+            if let DecisionAction::MoveTo { target_facility } = &decision.action {
                 let facility_exists = w.facilities.iter().any(|f| f.id.0 == *target_facility);
                 if !facility_exists {
                     violations.push(format!(
@@ -123,7 +124,7 @@ pub fn invariant_intention_target_exists_and_is_legal(world: &World) -> bool {
                 }
             }
             
-            if let Decision::JoinGang { gang } | Decision::LeadGang { gang } = decision {
+            if let DecisionAction::JoinGang { gang } | DecisionAction::LeadGang { gang } = &decision.action {
                 let gang_exists = w.gangs.iter().any(|g| g.id.0 == *gang);
                 if !gang_exists {
                     violations.push(format!(

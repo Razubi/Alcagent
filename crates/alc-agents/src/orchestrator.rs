@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use tracing::debug;
 
 use crate::decision::{
-    ActionCandidate, Decision, Legality, RawDecision, Rejection, Role, ValidationContext,
+    ActionCandidate, Decision, DecisionAction, Legality, RawDecision, Rejection, Role, ValidationContext,
     ValidationResult, run_validation_pipeline,
 };
 use crate::disposition::{Disposition, trait_bias};
@@ -566,11 +566,11 @@ impl UtilityChooser {
 /// [`Decision::None`] when no candidate is viable.
 pub fn fallback_utility_decision(candidates: &[ActionCandidate]) -> Decision {
     if candidates.is_empty() {
-        return Decision::None;
+        return Decision::new(DecisionAction::None);
     }
     UtilityChooser::default()
         .choose(candidates)
-        .unwrap_or(Decision::None)
+        .unwrap_or_else(|| Decision::new(DecisionAction::None))
 }
 
 /// Personality-aware fallback: same deterministic ranking, with trait biases
@@ -581,7 +581,7 @@ pub fn fallback_utility_decision_with_disposition(
 ) -> Decision {
     UtilityChooser::default()
         .choose_with_disposition(candidates, disposition)
-        .unwrap_or(Decision::None)
+        .unwrap_or_else(|| Decision::new(DecisionAction::None))
 }
 
 // ---------------------------------------------------------------------------
@@ -889,14 +889,14 @@ mod tests {
     #[test]
     fn fallback_chooser_ranks_by_utility() {
         let candidates = vec![
-            candidate(Decision::Comply, 0.2),
-            candidate(Decision::Socialize { with: 3 }, 0.8),
-            candidate(Decision::Fight { target: 3 }, 0.9)
+            candidate(Decision::new(DecisionAction::Comply), 0.2),
+            candidate(Decision::new(DecisionAction::Socialize { with: 3 }), 0.8),
+            candidate(Decision::new(DecisionAction::Fight { target: 3 }), 0.9)
                 .with_legality(Legality::IllegalButPossible),
         ];
         assert_eq!(
             fallback_utility_decision(&candidates),
-            Decision::Socialize { with: 3 }
+            Decision::new(DecisionAction::Socialize { with: 3 })
         );
     }
 
@@ -918,18 +918,18 @@ mod tests {
             // only difference between the two agents' candidate sets.
             let jitter = (hour % 5) as f32 * 0.005;
             let candidates = vec![
-                candidate(Decision::Comply, 0.35),
-                candidate(Decision::Refuse, 0.40 + jitter)
+                candidate(Decision::new(DecisionAction::Comply), 0.35),
+                candidate(Decision::new(DecisionAction::Refuse), 0.40 + jitter)
                     .with_legality(Legality::IllegalButPossible),
-                candidate(Decision::Fight { target: 9 }, 0.38)
+                candidate(Decision::new(DecisionAction::Fight { target: 9 }), 0.38)
                     .with_risk(0.1)
                     .with_legality(Legality::IllegalButPossible),
-                candidate(Decision::None, 0.05),
+                candidate(Decision::new(DecisionAction::None), 0.05),
             ];
             let hi = fallback_utility_decision_with_disposition(&candidates, &disciplined);
             let lo = fallback_utility_decision_with_disposition(&candidates, &loose);
-            assert!(matches!(hi, Decision::Comply), "hour {hour}: disciplined picked {hi:?}");
-            assert!(matches!(lo, Decision::Refuse), "hour {hour}: undisciplined picked {lo:?}");
+            assert!(matches!(hi.action, DecisionAction::Comply), "hour {hour}: disciplined picked {hi:?}");
+            assert!(matches!(lo.action, DecisionAction::Refuse), "hour {hour}: undisciplined picked {lo:?}");
             hi_compliant += 1;
             lo_defiant += 1;
         }
@@ -938,7 +938,7 @@ mod tests {
 
     #[test]
     fn stale_pending_is_rejected() {
-        let pending = PendingDecision::new(1, 100, Decision::Comply, 0);
+        let pending = PendingDecision::new(1, 100, Decision::new(DecisionAction::Comply), 0);
         assert!(pending.is_stale(200, 50));
         assert!(!pending.is_stale(120, 50));
         let ctx = ValidationContext::default();
@@ -969,7 +969,7 @@ mod tests {
         let decision = crate::decision::validate_format(&raw).unwrap();
         assert_eq!(
             decision,
-            Decision::SpreadRumor { about: 4, content: "guards are coming".into() }
+            Decision::new(DecisionAction::SpreadRumor { about: 4, content: "guards are coming".into() })
         );
     }
 }
