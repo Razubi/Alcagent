@@ -13,15 +13,16 @@
 //! `save_interval_days`; [`migrate`] is the forward-migration hook for future
 //! format versions.
 //!
-//! ## Version 3 (0.05) compatibility
+//! ## Version compatibility
 //!
 //! Version 3 added the decision audit log, autosave interval, policy/intake
-//! flags and the world construction queue. Every 0.05 state struct carries a
-//! container-level `#[serde(default)]`, so a save that omits any of those
-//! fields loads with an empty/sane default instead of failing. Loading is also
-//! version-aware: the format version is peeked from the bincode header before
-//! deserialization so older/newer/corrupt saves produce an actionable error
-//! rather than an opaque `bincode` message.
+//! flags and the world construction queue. Version 4 added structured incident
+//! fields and contraband resolution timestamps. 0.05 state structs carry
+//! container-level `#[serde(default)]` where safe, and loading is version-aware:
+//! the format version is peeked from the bincode header before deserialization
+//! so older/newer/corrupt saves produce an actionable error. Known legacy
+//! bincode layouts (v1, v3) are migrated explicitly; other older serde-default
+//! compatible layouts are stamped forward when decodable.
 
 use alc_core::config::Config;
 use alc_events::WorldEvent;
@@ -314,7 +315,12 @@ impl SaveManager {
         let sf = SaveFile { header, world: world.clone(), engine_state };
         let bytes = bincode::serialize(&sf).map_err(|e| SaveError::Serialize(e.to_string()))?;
         let tmp = self.dir.join("world.tmp");
-        fs::write(&tmp, &bytes)?;
+        {
+            use std::io::Write;
+            let mut f = fs::File::create(&tmp)?;
+            f.write_all(&bytes)?;
+            f.sync_all()?;
+        }
         let final_path = self.dir.join("world.bin");
         fs::rename(&tmp, &final_path)?;
         // Debug sidecar.
@@ -355,6 +361,9 @@ impl SaveManager {
     }
 
     /// Unconditional autosave (legacy behaviour).
+    ///
+    /// Prefer [`Self::save_with_engine`] so engine state is preserved.
+    #[deprecated(note = "Use save_with_engine to avoid engine-less saves")]
     pub fn autosave(&self, world: &alc_world::World) -> Result<(), SaveError> {
         self.save(world)
     }
@@ -362,9 +371,22 @@ impl SaveManager {
     /// Autosave only when `save_interval_days` has elapsed. Returns whether a
     /// save was written. The interval is measured in whole simulation days;
     /// repeated calls on the same due day do not rewrite the save.
+    ///
+    /// Prefer [`Self::autosave_with_engine_if_due`] so engine state is preserved.
+    #[deprecated(note = "Use autosave_with_engine_if_due to avoid engine-less saves")]
     pub fn autosave_if_due(
         &self,
         world: &alc_world::World,
+        save_interval_days: u64,
+    ) -> Result<bool, SaveError> {
+        self.autosave_with_engine_if_due(world, None, save_interval_days)
+    }
+
+    /// Autosave with engine state when the configured interval has elapsed.
+    pub fn autosave_with_engine_if_due(
+        &self,
+        world: &alc_world::World,
+        engine_state: Option<EngineState>,
         save_interval_days: u64,
     ) -> Result<bool, SaveError> {
         let interval = save_interval_days.max(1);
@@ -375,18 +397,21 @@ impl SaveManager {
         if self.last_autosave_day.load(Ordering::Relaxed) == day {
             return Ok(false);
         }
-        self.save(world)?;
+        self.save_with_engine(world, engine_state)?;
         self.last_autosave_day.store(day, Ordering::Relaxed);
         Ok(true)
     }
 
     /// Autosave using the top-level [`Config`] interval.
+    ///
+    /// Prefer [`Self::autosave_with_engine_if_due`] so engine state is preserved.
+    #[deprecated(note = "Use autosave_with_engine_if_due to avoid engine-less saves")]
     pub fn autosave_with_config(
         &self,
         world: &alc_world::World,
         config: &Config,
     ) -> Result<bool, SaveError> {
-        self.autosave_if_due(world, config.save_interval_days)
+        self.autosave_with_engine_if_due(world, None, config.save_interval_days)
     }
 }
 
@@ -428,12 +453,58 @@ struct SaveFileV1 {
     world: alc_world::World,
 }
 
+/// v3 engine layout: predates `resolved_contraband_at`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+struct EngineStateV3 {
+    pub parole: ParoleLedger,
+    pub population_history: Vec<(u64, u32)>,
+    pub incidents: Vec<WorldEvent>,
+    pub incident_sidecar: Vec<Incident>,
+    pub decision_log: Vec<Decision>,
+    pub decision_audit: Vec<DecisionAuditRecord>,
+    pub resolved_contraband_cases: std::collections::BTreeSet<u64>,
+    pub post_release: BTreeMap<u64, bool>,
+    pub policy_state: PolicyState,
+    pub policy_mode: PolicyMode,
+    pub autosave_interval_days: Option<u64>,
+    pub last_autosave_day: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SaveFileV3 {
+    header: SaveHeader,
+    world: alc_world::World,
+    #[serde(default)]
+    engine_state: Option<EngineStateV3>,
+}
+
+impl From<EngineStateV3> for EngineState {
+    fn from(v3: EngineStateV3) -> Self {
+        Self {
+            parole: v3.parole,
+            population_history: v3.population_history,
+            incidents: v3.incidents,
+            incident_sidecar: v3.incident_sidecar,
+            decision_log: v3.decision_log,
+            decision_audit: v3.decision_audit,
+            resolved_contraband_cases: v3.resolved_contraband_cases,
+            post_release: v3.post_release,
+            policy_state: v3.policy_state,
+            policy_mode: v3.policy_mode,
+            autosave_interval_days: v3.autosave_interval_days,
+            last_autosave_day: v3.last_autosave_day,
+            resolved_contraband_at: BTreeMap::new(),
+        }
+    }
+}
+
 /// Migrate a save to the current format version.
 ///
-/// - v1 -> v3: v1 predates `engine_state`; an empty engine state is installed.
-/// - v2 -> v3: adds the decision audit log, autosave interval, policy/intake
-///   flags and the construction queue. All of those fields carry
-///   `#[serde(default)]`, so no explicit field rewriting is required here.
+/// - v1 -> v4: v1 predates `engine_state`; an empty engine state is installed.
+/// - v2/v3 -> v4: fields added since those versions are serde-defaulted in
+///   self-describing formats; for bincode, explicit legacy layouts are used
+///   where trailing-field additions break direct decoding.
 /// - v0 or unknown older versions have no defined layout and are rejected
 ///   with a clear error instead of being silently misinterpreted.
 /// - Newer versions are rejected (never downgraded) with a version mismatch.
@@ -457,9 +528,6 @@ pub fn migrate(sf: SaveFile) -> Result<SaveFile, SaveError> {
         });
     }
 
-    // found < SAVE_FORMAT_VERSION (v1 or v2). Every field added since those
-    // versions is covered by serde defaults, so stamping the new version and
-    // ensuring a usable engine state is sufficient.
     let mut migrated = sf;
     migrated.header.version = SAVE_FORMAT_VERSION;
     if migrated.engine_state.is_none() {
@@ -471,8 +539,8 @@ pub fn migrate(sf: SaveFile) -> Result<SaveFile, SaveError> {
 /// Deserialize then migrate a raw save payload.
 ///
 /// Always peeks the version first so that an undecodable save yields an
-/// actionable error. For v1 binary saves that predate the `engine_state`
-/// field, a legacy two-field layout is attempted as a fallback.
+/// actionable error. Legacy binary layouts are attempted for known older
+/// versions when the current layout cannot decode them.
 pub fn migrate_bytes(bytes: &[u8]) -> Result<SaveFile, SaveError> {
     let version = peek_save_version(bytes).ok_or_else(|| SaveError::Deserialize {
         version: None,
@@ -484,23 +552,25 @@ pub fn migrate_bytes(bytes: &[u8]) -> Result<SaveFile, SaveError> {
 
     let decoded = match deserialize_save(bytes) {
         Ok(sf) => sf,
-        Err(err) => {
-            if version == 1 {
-                // Last resort: a genuine v1 binary payload has no
-                // `engine_state` bytes at all. serde defaults cannot recover
-                // trailing bytes in bincode, so try the exact legacy shape.
-                match bincode::deserialize::<SaveFileV1>(bytes) {
-                    Ok(legacy) => SaveFile {
-                        header: legacy.header,
-                        world: legacy.world,
-                        engine_state: None,
-                    },
-                    Err(_) => return Err(err),
-                }
-            } else {
-                return Err(err);
-            }
-        }
+        Err(err) => match version {
+            1 => match bincode::deserialize::<SaveFileV1>(bytes) {
+                Ok(legacy) => SaveFile {
+                    header: legacy.header,
+                    world: legacy.world,
+                    engine_state: None,
+                },
+                Err(_) => return Err(err),
+            },
+            3 => match bincode::deserialize::<SaveFileV3>(bytes) {
+                Ok(legacy) => SaveFile {
+                    header: legacy.header,
+                    world: legacy.world,
+                    engine_state: legacy.engine_state.map(EngineState::from),
+                },
+                Err(_) => return Err(err),
+            },
+            _ => return Err(err),
+        },
     };
     migrate(decoded)
 }
@@ -550,14 +620,14 @@ mod tests {
         let mut world = alc_world::World::new(1);
         world.days_simulated = 3;
 
-        assert!(!manager.autosave_if_due(&world, 7).unwrap());
+        assert!(!manager.autosave_with_engine_if_due(&world, None, 7).unwrap());
         assert!(!Path::new(&dir).join("world.bin").exists());
 
         world.days_simulated = 7;
-        assert!(manager.autosave_if_due(&world, 7).unwrap());
+        assert!(manager.autosave_with_engine_if_due(&world, None, 7).unwrap());
         assert!(Path::new(&dir).join("world.bin").exists());
         // Repeated calls on the same due day must not rewrite the save.
-        assert!(!manager.autosave_if_due(&world, 7).unwrap());
+        assert!(!manager.autosave_with_engine_if_due(&world, None, 7).unwrap());
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -756,6 +826,38 @@ mod tests {
             assert!(state.post_release.is_empty());
             assert_eq!(state.policy_mode, PolicyMode::Deterministic);
         }
+    }
+
+    #[test]
+    fn migrate_v3_binary_fixture_to_v4() {
+        let dir = unique_dir("v3-fixture");
+        fs::create_dir_all(&dir).unwrap();
+        let world = alc_world::World::new(0xA1C_05);
+        let mut v3_engine = EngineStateV3::default();
+        v3_engine.autosave_interval_days = Some(3);
+        v3_engine.last_autosave_day = Some(9);
+        v3_engine.resolved_contraband_cases.insert(77);
+        v3_engine.post_release.insert(5, true);
+
+        let sf = SaveFileV3 {
+            header: SaveHeader { version: 3, created_at_secs: 12, population: 1 },
+            world: world.clone(),
+            engine_state: Some(v3_engine),
+        };
+        let bytes = bincode::serialize(&sf).expect("serialize v3 fixture");
+        fs::write(dir.join("world.bin"), &bytes).unwrap();
+
+        let manager = SaveManager::new(&dir);
+        let (loaded_world, loaded_engine) = manager.load_with_engine().expect("load migrated v3");
+        assert_eq!(loaded_world.seed, world.seed);
+        let engine = loaded_engine.expect("engine state");
+        assert_eq!(engine.autosave_interval_days, Some(3));
+        assert_eq!(engine.last_autosave_day, Some(9));
+        assert!(engine.resolved_contraband_cases.contains(&77));
+        assert_eq!(engine.post_release.get(&5), Some(&true));
+        assert!(engine.resolved_contraband_at.is_empty());
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

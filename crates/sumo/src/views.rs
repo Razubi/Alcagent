@@ -1,6 +1,5 @@
 //! Read-only summary/view DTOs for observers and UIs (split from `lib.rs`).
 use alc_core::{PrisonerId, SimTime};
-use alc_events::WorldEvent;
 use alc_social::rehab::{RehabPrisonerState, RehabProgram};
 use serde::{Deserialize, Serialize};
 

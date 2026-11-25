@@ -3,7 +3,6 @@ use crate::autosave::AutosaveScheduler;
 use crate::incidents;
 use crate::parole::{ParoleLedger, ParoleStatus};
 use alc_core::{PrisonerId, SimTime};
-use alc_events::WorldEvent;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
