@@ -39,8 +39,8 @@ Running `cargo run -- run N` writes a save to `saves/default` by default. See
 
 ## What you can do with it
 
-- **Observe** a living prison in a 9-view ratatui TUI (institution, prisoner, gang, staff,
-  warden, finances, event timeline, social network, map).
+- **Observe** a living prison in an 11-view ratatui TUI (9 core views plus incident reports and
+  decision audit).
 - **Simulate** long-running worlds headlessly at extreme speed; the same seed always
   reproduces the same institution.
 - **Embed** the engine as the Rust crate `sumo` and drive it through a validated API —
@@ -96,10 +96,10 @@ The engine and its `alc-*` dependencies are also published as a standalone repos
 
 | Audience | Document |
 |---|---|
-| New user / operator | [Quick start above](#quick-start), [CLI & TUI guide](docs/ALCAGENT.md) |
-| Rust developer embedding the engine | [sumo API guide](docs/SUMO_API.md) |
+| New player / operator | [Gameplay & systems](docs/ALCAGENT_GAMEPLAY.md), [CLI & TUI reference](docs/ALCAGENT.md), [quick start](#quick-start) |
+| Rust developer embedding the engine | [sumo engine design](docs/SUMO_ENGINE.md), [sumo API guide](docs/SUMO_API.md) |
 | Contributor | [CONTRIBUTING.md](CONTRIBUTING.md) |
-| Architect / reviewer | [Internal docs index](Documentation/README.md), [project status](Documentation/Project/PROJECT.md) |
+| Architect / reviewer | [Docs index](docs/README.md), [sumo engine research](Documentation/Reports/sumo-engine-research.md), [internal docs](Documentation/README.md), [project status](Documentation/Project/PROJECT.md) |
 | Directive | [agents.md](agents.md) — the full autonomous-development specification |
 
 Detailed system contracts (event taxonomy, guard loop, warden cycle, parole, rehab,
@@ -111,7 +111,7 @@ intent under [`Documentation/Design/`](Documentation/Design/).
 ## Architecture in one paragraph
 
 `sumo::Sim` owns an `alc_world::World` and advances it in ticks. Each tick drifts every
-prisoner's 29 needs, runs a throttled hourly guard-duty sweep, resolves the daily schedule,
+prisoner's 25 needs, runs a throttled hourly guard-duty sweep, resolves the daily schedule,
 lets prisoners choose need-driven actions (trait-biased; AI deliberation is gated by a token
 budget with a deterministic fallback), resolves co-presence encounters, and — at day boundaries —
 accrues finances, progresses sentences, resolves escapes and parole, runs warden arbitration,

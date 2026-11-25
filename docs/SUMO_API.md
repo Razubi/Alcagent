@@ -292,7 +292,8 @@ sim.run_days(365);
 ```
 
 - Files: `world.bin` (versioned bincode, atomic tmp+rename) and `world.debug.json` (debug
-  sidecar). Format version **2**; v1 saves are auto-migrated by `load_with_engine`.
+  sidecar). Format version is **2** in the stable baseline repo; the in-flight wave (§12) bumps
+  it to **3** (adds `decision_audit`). v1 saves are auto-migrated by `load_with_engine`.
 - `Sim::save` persists both `World` and `EngineState` (parole, population history, incident
   logs, decision log, post-release tracking, policy state/mode, autosave interval).
 - `Sim::enable_autosave(dir, interval_days)`, `disable_autosave()`, `maybe_autosave()`;
