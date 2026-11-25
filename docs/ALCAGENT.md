@@ -1,8 +1,8 @@
 # `alcagent` CLI & TUI Reference
 
 `alcagent` is the operator binary for Project Alcagent: it launches either the interactive
-terminal observer or a headless simulation run, using the [`sumo`](SUMO_API.md) engine for every
-world/game function.
+terminal observer or a headless simulation run, using the [`sumo`](../sumo/docs/SUMO_ENGINE.md)
+engine (documented in the separate sumo repository) for every world/game function.
 
 > The **complete** gameplay, systems and controls manual is
 > [`ALCAGENT_GAMEPLAY.md`](ALCAGENT_GAMEPLAY.md). This file is the concise CLI quick reference.
@@ -30,7 +30,7 @@ Executable: `target\debug\alcagent.exe` (Windows). For long runs use
 |---|---|
 | *(none)* / `observe` | Interactive ratatui TUI; `--no-tui` falls back to a 30-day headless report. |
 | `run [DAYS]` | Headless run at extreme speed (default **30** days), prints a report, always saves. |
-| `docs` | Prints `See agents.md (directive) and Documentation/ (index, design, systems, reports)`. |
+| `docs` | Prints `See agents.md (directive) and docs/ (index, design, systems, reports)`. |
 
 ## Global flags (before or after the command)
 

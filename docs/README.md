@@ -1,25 +1,32 @@
 # Project Alcagent — Documentation
 
-Two products are documented here, kept deliberately separate:
+All **Alcagent (game)** documentation lives in this single `docs/` root. The `sumo` engine is a
+separate product with its own repository at `../sumo/docs/`; the two cross-reference each other.
 
-## The game: Alcagent
-
-| Document | Purpose |
-|---|---|
-| [`ALCAGENT_GAMEPLAY.md`](ALCAGENT_GAMEPLAY.md) | **Complete gameplay & systems guide** — what happens in the prison and why (needs, schedules, social/gangs, conflict, escape, economy, warden, rehab/contraband/construction, parole, events), plus controls. |
-| [`ALCAGENT.md`](ALCAGENT.md) | CLI/TUI operator reference — every flag, keybinding and view. |
-
-## The engine: sumo
+## Product guides (Alcagent)
 
 | Document | Purpose |
 |---|---|
-| [`SUMO_ENGINE.md`](SUMO_ENGINE.md) | **Engine product & system design** — architecture, subsystems, vision, current domain-specific vs generalizable parts. |
-| [`SUMO_API.md`](SUMO_API.md) | Complete engine API reference with examples and gotchas. |
+| [`ALCAGENT_GAMEPLAY.md`](ALCAGENT_GAMEPLAY.md) | **Gameplay & systems** — what happens in the prison, why, and how to observe/control it. |
+| [`ALCAGENT.md`](ALCAGENT.md) | CLI/TUI operator quick reference (flags, keys, views). |
 
-## Internal documentation
+Engine guides live in the sumo repo:
+[`SUMO_ENGINE.md`](../sumo/docs/SUMO_ENGINE.md) (product & system design) and
+[`SUMO_API.md`](../sumo/docs/SUMO_API.md) (API reference).
 
-[`../Documentation/README.md`](../Documentation/README.md) holds design intent, system
-contracts, reports and AI handoffs. The master directive is [`../agents.md`](../agents.md).
+## Alcagent-owned internal docs
 
-The engine is also published as a standalone repository at `../sumo`, which carries copies of
-the engine docs (`SUMO_ENGINE.md`, `SUMO_API.md`) plus a copy of the gameplay guide for context.
+| Folder | Contents |
+|---|---|
+| [`Design/Core/`](Design/Core/) | Prisoner, social, warden and AI-agent system designs |
+| [`Design/Planning/`](Design/Planning/) | Product release planning |
+| [`Systems/`](Systems/) | Game-domain contracts (capabilities, parole, guard loop, rehab, warden cycle) |
+| [`Reports/`](Reports/) | Product/workspace audits, integration, testing and game gap report |
+| [`Project/`](Project/) | Product status, design cross-reference, version milestones |
+| [`Communication/`](Communication/) | AI-to-AI handoffs |
+
+Engine-owned internal docs (engine design, interface contracts and the
+[sumo engine research report](../sumo/docs/Reports/sumo-engine-research.md)) live in the
+[sumo repo](../sumo/docs/README.md).
+
+The master directive is [`../agents.md`](../agents.md).

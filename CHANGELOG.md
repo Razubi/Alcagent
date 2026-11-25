@@ -45,8 +45,8 @@
 - Real navigation graph (currently a grid synthesized from facility positions); UI map switch to consume `MapFrame`.
 - Council/shadow modes are behaviorally inert (state only); driver authority unification (`World::tick` vs `sumo` drivers); `&mut Sim` applier signature.
 - Full `KnowledgeStore` (claims/provenance/standing).
-- `Documentation/Communication/Sumo-AI-Team/NEXT-UPDATE-SUPPORT.md` and
-  `Documentation/Communication/Note's/wave4-implementation-status.md` track the details.
+- `docs/Communication/Sumo-AI-Team/NEXT-UPDATE-SUPPORT.md` and
+  `docs/Communication/Note's/wave4-implementation-status.md` track the details.
 
 ### Housekeeping (2026-11-23)
 - Removed obsolete root-level duplicate summaries (`IMPLEMENTATION_SUMMARY*.md`, `S0_STATUS.md`),

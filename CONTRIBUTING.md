@@ -20,15 +20,15 @@ conventions, testing and documentation expectations. The full product specificat
 
 ## Development workflow (AGENTS.md §24)
 
-1. **Investigate** — read the relevant design doc under `Documentation/Design/` and system
-   contract under `Documentation/Systems/`, plus the current code. Use subagents for large audits.
+1. **Investigate** — read the relevant design doc under `docs/Design/` and system
+   contract under `docs/Systems/`, plus the current code. Use subagents for large audits.
 2. **Design** — add/update a design or planning doc before large changes; note dependencies.
 3. **Implement** — small, incremental changes with the crate's file ownership respected. Coordinate
    so two workers never edit the same file simultaneously.
 4. **Test** — add or update tests under `tests/` or `#[cfg(test)]` modules; run the suite.
 5. **Review** — self-review, then independent review via subagents for significant features.
 6. **Document** — update user docs (`README.md`, `docs/`) and internal docs
-   (`Documentation/Project/PROJECT.md`, `design-status.md`, `version-milestones.md`,
+   (`docs/Project/PROJECT.md`, `design-status.md`, `version-milestones.md`,
    `CHANGELOG.md`) in the same change. Stale docs are treated as defects.
 
 ## Build and test
@@ -79,10 +79,10 @@ without first completing its missing modules and adding it to `Cargo.toml`.
 2. Does it need new state? Add it to `World` or `EngineState` with `#[serde(default)]`, bump
    `SAVE_FORMAT_VERSION` only if the binary layout changes incompatibly, and add migration.
 3. Does it need an event? Add an `EventKind` at the end and document emit points in
-   [`Documentation/Systems/event-contract.md`](Documentation/Systems/event-contract.md).
+   [`docs/Systems/event-contract.md`](docs/Systems/event-contract.md).
 4. Does it need an agent action? Add a `Decision` variant plus validation rules and engine
    application, then document it in [`docs/SUMO_API.md`](docs/SUMO_API.md) and
-   [`Documentation/Systems/engine-api.md`](Documentation/Systems/engine-api.md).
+   [`docs/Systems/engine-api.md`](docs/Systems/engine-api.md).
 5. Add tests: unit, integration, and an invariant/soak check for long-run stability.
 
 ## Reporting issues

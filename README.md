@@ -78,7 +78,7 @@ Running `cargo run -- run N` writes a save to `saves/default` by default. See
 │   ├── SUMO_API.md            Complete sumo engine API guide
 │   ├── ALCAGENT.md            CLI + TUI user guide
 │   └── README.md              Documentation index
-└── Documentation/             Internal design, systems, reports, AI handoffs
+└── docs/             Internal design, systems, reports, AI handoffs
     └── README.md              Internal documentation index
 ```
 
@@ -99,12 +99,12 @@ The engine and its `alc-*` dependencies are also published as a standalone repos
 | New player / operator | [Gameplay & systems](docs/ALCAGENT_GAMEPLAY.md), [CLI & TUI reference](docs/ALCAGENT.md), [quick start](#quick-start) |
 | Rust developer embedding the engine | [sumo engine design](docs/SUMO_ENGINE.md), [sumo API guide](docs/SUMO_API.md) |
 | Contributor | [CONTRIBUTING.md](CONTRIBUTING.md) |
-| Architect / reviewer | [Docs index](docs/README.md), [sumo engine research](Documentation/Reports/sumo-engine-research.md), [internal docs](Documentation/README.md), [project status](Documentation/Project/PROJECT.md) |
+| Architect / reviewer | [Docs index](docs/README.md), [sumo engine research](docs/Reports/sumo-engine-research.md), [internal docs](docs/README.md), [project status](docs/Project/PROJECT.md) |
 | Directive | [agents.md](agents.md) — the full autonomous-development specification |
 
 Detailed system contracts (event taxonomy, guard loop, warden cycle, parole, rehab,
-determinism) live under [`Documentation/Systems/`](Documentation/Systems/), and design
-intent under [`Documentation/Design/`](Documentation/Design/).
+determinism) live under [`docs/Systems/`](docs/Systems/), and design
+intent under [`docs/Design/`](docs/Design/).
 
 ---
 
@@ -119,7 +119,7 @@ and admits new prisoners subject to capacity and policy. Everything observable i
 bounded event bus with structured causes; read-only snapshots (`Observation`, `MapFrame`,
 `Stats`, summary types) feed the UI. Worlds are saved as versioned bincode with a JSON debug
 sidecar; seeded RNG streams make replays reproducible. See the
-[internal status document](Documentation/Project/PROJECT.md) for the implemented scope and
+[internal status document](docs/Project/PROJECT.md) for the implemented scope and
 known gaps.
 
 ---
@@ -128,8 +128,8 @@ known gaps.
 
 Active work continues on Wave 4/5 features (navigation graph, council/shadow behavior,
 structured incident chains, full knowledge store, rehab/contraband lifecycle wiring, GUI).
-See [version milestones](Documentation/Project/version-milestones.md) and the
-[Wave 4 status note](Documentation/Communication/Note's/wave4-implementation-status.md).
+See [version milestones](docs/Project/version-milestones.md) and the
+[Wave 4 status note](docs/Communication/Note's/wave4-implementation-status.md).
 
 ## License
 
