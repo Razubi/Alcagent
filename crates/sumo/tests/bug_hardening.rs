@@ -289,7 +289,10 @@ fn save_load_continue_matches_uninterrupted_trace_hash() {
     let mut loaded = Sim::load(&dir).expect("load checkpoint save");
     // Sim::load resets speed to Paused; restore it so the continuation ticks.
     loaded.set_speed(TimeSpeed::Extreme);
-    loaded.run_until(loaded.world().time.add_days(final_day));
+    // Target is absolute from the world epoch: the loaded world's clock already
+    // includes the checkpoint days, so adding `final_day` again would overshoot.
+    let target = alc_core::SimTime::EPOCH.add_days(final_day);
+    loaded.run_until(target);
 
     let uninterrupted_hash = uninterrupted.trace_hash();
     let replayed_hash = loaded.trace_hash();

@@ -215,8 +215,12 @@ fn decision_audit_and_incident_records_are_present() {
     assert!(fight.applied, "conflict between two known prisoners must apply");
     assert!(sim.incident_log().len() > incident_log_before);
     let incident = sim.incident_sidecar().last().unwrap();
-    assert!(incident.cause.is_some(), "incident must carry a cause");
-    assert!(incident.consequence.is_some(), "incident must carry a consequence");
+    // Real causality: a fresh fight may have no prior cause and no known
+    // consequence yet. It must carry a provenance link to its source world
+    // event and must NOT use self-referential placeholder ids.
+    assert!(!incident.causal_chain.is_empty(), "incident must carry a provenance causal link");
+    assert_ne!(incident.cause, Some(incident.id), "cause must not be self-referential");
+    assert_ne!(incident.consequence, Some(incident.id), "consequence must not be self-referential");
     assert!(
         incident.involved_prisoners.contains(&pid) || incident.involved_prisoners.contains(&peer),
         "incident must name an involved prisoner"

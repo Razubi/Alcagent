@@ -4,7 +4,7 @@
 //! engine and a [`UiState`] cursor. No function mutates simulation state: the
 //! observer is strictly read-only (Directive §19).
 
-use crate::{UiState, ViewMode};
+use crate::{CONSTRUCTION_KINDS, UiState, ViewMode};
 use alc_prisoner::Classification;
 use alc_world::FacilityKind;
 use ratatui::prelude::*;
@@ -68,8 +68,8 @@ const ALL_MODES: [ViewMode; 11] = [
 /// Status-bar help text. Kept as constants so tests can assert that the hints
 /// stay in sync with the keys handled in `app::App::handle_key`.
 pub const HELP_WIDE: &str =
-    " │ ↑↓ select · 1-9,0,A view · SPACE pause · +/- speed · S save · Ctrl-L load · N/E/K policy · L/U lock · t/r/R rehab · f/F contraband · m/o filter · q quit";
-pub const HELP_COMPACT: &str = " │ ↑↓ · 1-9,0,A · SPC · +/- · S · Ctrl-L · t/r/R · f/F · m/o · q";
+    " │ ↑↓ select · 1-9,0,A view · SPACE pause · +/- speed · S save · Ctrl-L load · / search · Tab pin · n notes · V auto-pause · N/E/K policy · L/U lock · c/C/x/X/> build (Warden) · t/r/R rehab · f/F contraband · m/o filter · ? help · q quit";
+pub const HELP_COMPACT: &str = " │ ↑↓ 1-9,0,A SPC +/- S Ctrl-L / Tab n V c/C t/r/R f/F m/o ? q";
 
 /// Map a `1`-`9`, `0`, `-` key press to its observation mode.
 pub fn mode_from_index(index: usize) -> Option<ViewMode> {
@@ -246,6 +246,9 @@ pub fn draw(frame: &mut Frame, data: &ViewData, ui: &UiState, status: &AppStatus
 
     render_status(frame, chunks[2], data, ui, status);
 
+    if ui.show_notifications {
+        render_observer_overlay(frame, frame.area(), ui);
+    }
     if ui.show_help {
         render_help_overlay(frame, frame.area());
     }
@@ -266,12 +269,23 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         Line::from("  S           Save"),
         Line::from("  Ctrl-L      Quick load"),
         Line::from(""),
+        Line::from(Span::styled("Observer", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+        Line::from("  /           Search (type, Backspace, Enter/Esc to finish)"),
+        Line::from("  Tab         Pin/unpin selected entity"),
+        Line::from("  n           Toggle observer feed (notices/pins)"),
+        Line::from("  V           Toggle pause-on-critical"),
+        Line::from(""),
         Line::from(Span::styled("Policy Controls", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
         Line::from("  N/E/K       Policy mode cycle"),
         Line::from("  L/U/x       Lockdown"),
         Line::from("  p           Policy mode"),
         Line::from("  [/] ,/. ;/' Policy sliders"),
         Line::from("  b           Toggle intake pause"),
+        Line::from(""),
+        Line::from(Span::styled("Construction (Warden view)", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+        Line::from("  c/C         Cycle build kind / queue project"),
+        Line::from("  x/X         Cancel / mark selected project failed"),
+        Line::from("  >           Advance selected project by 1 day"),
         Line::from(""),
         Line::from(Span::styled("Rehab (Prisoner/Warden views)", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
         Line::from("  t/T         Cycle rehab program"),
@@ -297,6 +311,61 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
     let area = centered_rect(80, 80, area);
     frame.render_widget(Clear, area);
     frame.render_widget(paragraph, area);
+}
+
+fn render_observer_overlay(frame: &mut Frame, area: Rect, ui: &UiState) {
+    let mut lines: Vec<Line<'static>> = vec![
+        Line::from(Span::styled(
+            "=== OBSERVER FEED ===",
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(format!(
+            "  Search: {}",
+            if ui.search.is_empty() { "none".to_string() } else { ui.search.clone() }
+        )),
+        Line::from(format!(
+            "  Auto-pause on critical: {}  ·  Pins: {}",
+            if ui.pause_on_critical { "ON" } else { "off" },
+            ui.bookmarks.len()
+        )),
+        Line::from(format!(
+            "  Bookmarks: {}",
+            if ui.bookmarks.is_empty() {
+                "none".to_string()
+            } else {
+                ui.bookmarks.iter().take(12).map(|id| format!("#{id}")).collect::<Vec<_>>().join(", ")
+            }
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Notifications (newest first)",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        )),
+    ];
+    if ui.notifications.is_empty() {
+        lines.push(Line::from("  No notifications yet."));
+    } else {
+        for msg in ui.notifications.iter().rev().take(10) {
+            lines.push(Line::from(format!("  • {msg}")));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Press n to close. Tab pins the selected entity.",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    let block = Block::default()
+        .title(" Observer Feed ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    let area = centered_rect(70, 70, area);
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(lines).block(block).wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
@@ -417,6 +486,15 @@ fn render_status(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState, s
     spans.push(Span::raw(" │ "));
     spans.push(Span::styled(
         format!("Save:{} Auto:{}", truncate(&status.save_dir, 16), autosave),
+        Style::default().fg(Color::DarkGray),
+    ));
+    spans.push(Span::raw(" │ "));
+    spans.push(Span::styled(
+        format!(
+            "Pins:{} CritPause:{}",
+            ui.bookmarks.len(),
+            if ui.pause_on_critical { "on" } else { "off" }
+        ),
         Style::default().fg(Color::DarkGray),
     ));
     if let Some(msg) = &status.status_msg {
@@ -1201,7 +1279,7 @@ fn render_warden(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
     .block(title_block(format!(" Construction Queue ({}) ", data.construction_queue.len())));
     frame.render_widget(cq_table, right[2]);
 
-    let detail_lines = if let Some(sel_id) = sel_c {
+    let mut detail_lines = if let Some(sel_id) = sel_c {
         if let Some(pjt) = data.construction_queue.iter().find(|p| p.id == sel_id) {
             let prereq_ok = pjt.staff_allocated && pjt.materials_ready && pjt.prereqs_met;
             vec![
@@ -1225,6 +1303,15 @@ fn render_warden(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
     } else {
         vec![plain("No construction projects in queue.")]
     };
+    let sel_kind = ui.construction_kind_index % CONSTRUCTION_KINDS.len();
+    let catalog = CONSTRUCTION_KINDS
+        .iter()
+        .enumerate()
+        .map(|(i, kind)| format!("{}{}", if i == sel_kind { ">" } else { " " }, kind.display()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    detail_lines.push(plain(format!("Catalog: {catalog}")));
+    detail_lines.push(plain("c cycle · C queue · x cancel · X fail · > advance"));
     frame.render_widget(
         Paragraph::new(detail_lines).block(title_block(" Construction Detail ")),
         right[3],
@@ -2259,6 +2346,22 @@ mod tests {
             assert!(help.contains("↑↓"));
         }
         assert!(HELP_WIDE.contains("SPACE"));
+    }
+
+    #[test]
+    fn observer_feed_overlay_renders_notices_and_pins() {
+        let world = alc_world::World::new(3);
+        let data = view_data_from_world(&world);
+        let mut ui = UiState::new();
+        ui.show_notifications = true;
+        ui.notifications.push("Saved to saves".to_string());
+        ui.bookmarks.push(42);
+        ui.pause_on_critical = true;
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|frame| draw(frame, &data, &ui, &status(false)))
+            .unwrap();
+        assert!(ui.show_notifications);
     }
 
     #[test]

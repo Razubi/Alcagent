@@ -74,6 +74,10 @@ fn lifecycle_state_blocks_keep_invariants_clean() {
             escape_motivation_at_exit: world.prisoners[0].escape_motivation(),
         },
         outcome_seed: 0x0E5C_A9E1,
+        employment: true,
+        housing: true,
+        violation: false,
+        return_to_custody: false,
     });
 
     // Live rehab enrollment slot + contraband state for a current prisoner.

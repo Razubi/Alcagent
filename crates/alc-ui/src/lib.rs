@@ -27,6 +27,19 @@ pub enum ViewMode {
     DecisionAudit,
 }
 
+/// Construction projects offered by the observer `c`/`C` controls.
+///
+/// Kept in one place so the keybind handler and Warden view never drift apart.
+pub const CONSTRUCTION_KINDS: [alc_world::FacilityKind; 7] = [
+    alc_world::FacilityKind::CellBlock,
+    alc_world::FacilityKind::Dormitory,
+    alc_world::FacilityKind::Medical,
+    alc_world::FacilityKind::Education,
+    alc_world::FacilityKind::Isolation,
+    alc_world::FacilityKind::Visitor,
+    alc_world::FacilityKind::Workshop,
+];
+
 /// Observer-side selection/filter state (0.05 control wiring).
 ///
 /// The fields added here back the TUI control layer (`app::App`) without
@@ -50,6 +63,10 @@ pub struct UiState {
     pub notifications: Vec<String>,
     /// Pause the simulation automatically on critical incidents.
     pub pause_on_critical: bool,
+    /// Show the notification feed, pinned entities and observer flags.
+    pub show_notifications: bool,
+    /// Selected entry in [`CONSTRUCTION_KINDS`] for the Warden build controls.
+    pub construction_kind_index: usize,
     /// Whether free-text search input is active.
     pub search_active: bool,
     /// Declarative incident query (0.05); [`UiState::filter`] is the accessor.
@@ -78,6 +95,8 @@ impl UiState {
             bookmarks: Vec::new(),
             notifications: Vec::new(),
             pause_on_critical: false,
+            show_notifications: false,
+            construction_kind_index: 0,
             incident_filter: sumo::incidents::IncidentFilter::all(),
             decision_validation_filter: None,
             show_help: false,

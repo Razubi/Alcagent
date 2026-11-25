@@ -8,7 +8,7 @@
 //! The binary crate (`alcagent`) adapts `sumo::Sim` to [`SimDriver`] locally.
 
 use crate::views::{self, AppStatus};
-use crate::{UiState, ViewMode};
+use crate::{CONSTRUCTION_KINDS, UiState, ViewMode};
 use alc_core::TimeSpeed;
 use sumo::{MapFrame, Observation, SimTime, Stats};
 use anyhow::Result;
@@ -182,7 +182,6 @@ pub struct App {
     save_dir: std::path::PathBuf,
     autosave_days: u64,
     status_msg: Option<String>,
-    construction_kind_index: usize,
 }
 
 impl App {
@@ -196,7 +195,6 @@ impl App {
             save_dir: opts.save_dir,
             autosave_days: opts.autosave_days,
             status_msg: None,
-            construction_kind_index: 0,
         };
         // The engine starts paused by default; mirror our playback state.
         let engine_speed = if app.paused {
@@ -407,6 +405,20 @@ impl App {
                 }
             }
 
+            // Observer safety valve: halt on a newly visible critical incident.
+            if self.ui.pause_on_critical && !self.paused {
+                let has_critical = self
+                    .driver
+                    .incident_records()
+                    .into_iter()
+                    .any(|r| r.severity >= 0.75 && !r.resolved);
+                if has_critical {
+                    self.paused = true;
+                    self.driver.set_speed(TimeSpeed::Paused);
+                    self.notify("Auto-paused: unresolved critical incident");
+                }
+            }
+
             self.sync_selection();
             terminal.draw(|frame| self.render(frame))?;
             std::thread::sleep(Duration::from_millis(16));
@@ -549,7 +561,7 @@ impl App {
                 // Manual save via the driver; errors surface through the status.
                 let _ = self.save_now();
             }
-            KeyCode::Char('x') | KeyCode::Char('X') => {
+            KeyCode::Char('x') | KeyCode::Char('X') if !matches!(self.ui.mode, ViewMode::Warden) => {
                 // Toggle lockdown through the validated engine control.
                 let lockdown = !self.driver.policy_summary().lockdown;
                 self.driver.set_lockdown(lockdown);
@@ -629,6 +641,71 @@ impl App {
             }
             KeyCode::Char('?') => {
                 self.ui.show_help = !self.ui.show_help;
+            }
+            KeyCode::Char('/') => {
+                self.ui.search_active = true;
+                self.notify("Search: type to filter, Enter/Esc to finish");
+            }
+            KeyCode::Tab => {
+                let target = match self.ui.mode {
+                    ViewMode::Prisoner => self.ui.selected_prisoner,
+                    ViewMode::Gang => self.ui.selected_gang,
+                    ViewMode::Staff => self.ui.selected_guard,
+                    _ => None,
+                };
+                if let Some(id) = target {
+                    if let Some(pos) = self.ui.bookmarks.iter().position(|b| *b == id) {
+                        self.ui.bookmarks.remove(pos);
+                        self.notify(format!("Unpinned #{id}"));
+                    } else {
+                        self.ui.bookmarks.push(id);
+                        self.notify(format!("Pinned #{id}"));
+                    }
+                } else {
+                    self.notify("Select an entity to pin it");
+                }
+            }
+            KeyCode::Char('n') => {
+                self.ui.show_notifications = !self.ui.show_notifications;
+            }
+            KeyCode::Char('V') => {
+                self.ui.pause_on_critical = !self.ui.pause_on_critical;
+                self.notify(format!("Pause-on-critical {}", if self.ui.pause_on_critical { "on" } else { "off" }));
+            }
+            KeyCode::Char('c') if matches!(self.ui.mode, ViewMode::Warden) => {
+                self.ui.construction_kind_index = (self.ui.construction_kind_index + 1) % CONSTRUCTION_KINDS.len();
+                self.notify(format!("Construction kind: {:?}", CONSTRUCTION_KINDS[self.ui.construction_kind_index]));
+            }
+            KeyCode::Char('C') if matches!(self.ui.mode, ViewMode::Warden) => {
+                let kind = CONSTRUCTION_KINDS[self.ui.construction_kind_index % CONSTRUCTION_KINDS.len()];
+                let capacity = match kind {
+                    alc_world::FacilityKind::CellBlock | alc_world::FacilityKind::Dormitory => 40,
+                    _ => 10,
+                };
+                let id = self.driver.enqueue_construction(kind, 1, capacity);
+                self.notify(format!("Queued {} project #{id} (wing 1, cap {capacity})", kind.display()));
+                self.ui.selected_construction = Some(id);
+            }
+            KeyCode::Char('x') | KeyCode::Char('X') if matches!(self.ui.mode, ViewMode::Warden) => {
+                if let Some(id) = self.ui.selected_construction {
+                    let reason = if matches!(code, KeyCode::Char('X')) { "observer-marked failure" } else { "observer cancellation" };
+                    let ok = if matches!(code, KeyCode::Char('X')) {
+                        self.driver.fail_construction(id, reason)
+                    } else {
+                        self.driver.cancel_construction(id, reason)
+                    };
+                    self.notify(format!("Project #{id} {} {}", reason, if ok { "recorded" } else { "unavailable" }));
+                } else {
+                    self.notify("No construction project selected");
+                }
+            }
+            KeyCode::Char('>') if matches!(self.ui.mode, ViewMode::Warden) => {
+                if let Some(id) = self.ui.selected_construction {
+                    let ok = self.driver.advance_construction(id, 1);
+                    self.notify(format!("Advanced project #{id} by 1 day: {}", if ok { "ok" } else { "unavailable" }));
+                } else {
+                    self.notify("No construction project selected");
+                }
             }
             KeyCode::Char(c @ '1'..='9') => {
                 if let Some(mode) = views::mode_from_index((c as u8 - b'1') as usize) {
@@ -960,6 +1037,57 @@ mod tests {
             app.ui().selected_prisoner,
             app.driver().prisoners().last().map(|p| p.id.0)
         );
+    }
+
+    #[test]
+    fn observer_feed_pin_and_search_keys_work() {
+        let mut app = app();
+        app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE);
+        assert!(app.ui().show_notifications);
+        app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE);
+        assert!(!app.ui().show_notifications);
+
+        app.handle_key(KeyCode::Char('V'), KeyModifiers::NONE);
+        assert!(app.ui().pause_on_critical);
+
+        app.ui_mut().mode = ViewMode::Prisoner;
+        app.ui_mut().selected_prisoner = Some(42);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert!(app.ui().bookmarks.contains(&42));
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert!(!app.ui().bookmarks.contains(&42));
+
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        assert!(app.ui().search_active);
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('b'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Backspace, KeyModifiers::NONE);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(!app.ui().search_active);
+        assert_eq!(app.ui().search, "a");
+
+        app.notify("notice one");
+        assert_eq!(app.ui().notifications.last().map(String::as_str), Some("notice one"));
+        for i in 0..40 {
+            app.notify(format!("notice {i}"));
+        }
+        assert_eq!(app.ui().notifications.len(), 32);
+    }
+
+    #[test]
+    fn construction_keys_cycle_and_queue_in_warden_view() {
+        let mut app = app();
+        app.handle_key(KeyCode::Char('5'), KeyModifiers::NONE);
+        assert_eq!(app.ui().mode, ViewMode::Warden);
+        let before = app.ui().construction_kind_index;
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::NONE);
+        assert_ne!(app.ui().construction_kind_index, before);
+        app.handle_key(KeyCode::Char('C'), KeyModifiers::NONE);
+        assert_eq!(app.ui().selected_construction, Some(0));
+        app.handle_key(KeyCode::Char('>'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('x'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('X'), KeyModifiers::NONE);
+        assert!(app.status_message().is_some());
     }
 
     #[test]

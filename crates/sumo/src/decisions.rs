@@ -1131,11 +1131,32 @@ fn escape_events(world: &mut World, p: PrisonerId) -> Vec<WorldEvent> {
     let mut rng = RngStream::new(world.seed, world.time.secs);
     let outcome =
         resolve_escape_attempt(&mut rng, prisoner.escape_motivation(), world.policies.security_level, 0.5, 0.2);
-    let _c = apply_escape_consequences(outcome, world.policies.security_level, &[p]);
+    let consequences = apply_escape_consequences(outcome, world.policies.security_level, &[p]);
     let kind = match outcome {
         EscapeOutcome::SuccessfulEscape => EventKind::EscapeSucceeded,
         EscapeOutcome::AttemptPrevented => EventKind::EscapePrevented,
         _ => EventKind::EscapeAttempt,
     };
+    if outcome == EscapeOutcome::SuccessfulEscape {
+        // B6: the engine path must remove an escaped prisoner just like the
+        // world's daily escape sweep does, and prune all runtime maps so the
+        // pawn-location invariant stays clean.
+        world.prisoners.retain(|x| x.id != p);
+        world.prisoner_location.remove(&p);
+        world.current_activity.remove(&p);
+        world.current_decisions.remove(&p);
+        let live: std::collections::HashSet<alc_core::PrisonerId> =
+            world.prisoners.iter().map(|x| x.id).collect();
+        world.social.retain(&live);
+        for gang in &mut world.gangs {
+            gang.lose(p);
+        }
+        world.gangs.retain(|g| !g.members.is_empty());
+        // Mirror institutional consequences from the world's escape path.
+        world.policies.security_level = (world.policies.security_level + consequences.security_level_delta).clamp(0.0, 1.0);
+        if consequences.lockdown_recommended {
+            world.policies.lockdown = true;
+        }
+    }
     vec![ev(world.time, kind, format!("escape attempt outcome: {outcome:?}"), vec![p.raw()])]
 }

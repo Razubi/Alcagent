@@ -900,6 +900,10 @@ mod tests {
                     escape_motivation_at_exit: 0.1,
                 },
                 outcome_seed: 42,
+                employment: true,
+                housing: false,
+                violation: false,
+                return_to_custody: false,
             });
             world.next_post_release_id += 1;
             world.rehab_records.entry(pid_u64).or_default().push(alc_world::RehabProgramRecord {
