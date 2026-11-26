@@ -1420,7 +1420,7 @@ impl World {
         }
     }
 
-    fn staff_coverage(&self) -> f32 {
+    pub fn staff_coverage(&self) -> f32 {
         let required: u32 = self.facilities.iter().map(|f| f.staff_required).sum();
         if required == 0 {
             1.0
@@ -1433,7 +1433,7 @@ impl World {
     // Step 3 — schedule resolution (Directive §5)
     // -----------------------------------------------------------------------
 
-    fn schedule_policy(&self) -> SchedulePolicy {
+    pub fn schedule_policy(&self) -> SchedulePolicy {
         SchedulePolicy {
             lockdown: self.policies.lockdown,
             privileges_level: self.policies.privileges_level.max(0.05),
@@ -5129,7 +5129,7 @@ impl World {
 }
 
 /// Map a scheduled activity to the facility that hosts it (Directive §5.1).
-fn facility_for_activity(activity: Activity) -> FacilityKind {
+pub fn facility_for_activity(activity: Activity) -> FacilityKind {
     match activity {
         Activity::Breakfast | Activity::Lunch | Activity::Dinner => FacilityKind::Kitchen,
         Activity::Work | Activity::Program => FacilityKind::Workshop,

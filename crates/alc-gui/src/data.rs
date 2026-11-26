@@ -305,12 +305,7 @@ pub fn guard_posts_summary(world: &World) -> Vec<(String, usize)> {
 /// (mirrors `alc_world::World::staff_coverage`, private to the engine).
 #[must_use]
 pub fn staff_coverage(world: &World) -> f32 {
-    let required: u32 = world.facilities.iter().map(|f| f.staff_required).sum();
-    if required == 0 {
-        1.0
-    } else {
-        (world.guards.len() as f32 / required as f32).min(1.0)
-    }
+    world.staff_coverage()
 }
 
 // ---------------------------------------------------------------------------
@@ -352,15 +347,7 @@ pub fn daily_schedule_rows(world: &World) -> Vec<ScheduleRow> {
 /// (mirrors `alc_world::World::schedule_policy`, private to the engine).
 #[must_use]
 pub fn schedule_policy(world: &World) -> SchedulePolicy {
-    SchedulePolicy {
-        lockdown: world.policies.lockdown,
-        privileges_level: world.policies.privileges_level.max(0.05),
-        security_level: world.policies.security_level,
-        staff_coverage: staff_coverage(world),
-        weather_ok: true,
-        rehab_funding_multiplier: world.policies.rehab_funding_multiplier,
-        allow_refusal: true,
-    }
+    world.schedule_policy()
 }
 
 /// The block active at `minute_of_day` in a resolved schedule, if any
@@ -377,17 +364,7 @@ pub fn current_schedule_block(
 /// `facility_for_activity`, used by the Prison Map screen).
 #[must_use]
 pub fn activity_to_facility_kind(activity: Activity) -> FacilityKind {
-    use Activity as A;
-    match activity {
-        A::Breakfast | A::Lunch | A::Dinner => FacilityKind::Kitchen,
-        A::Work | A::Program => FacilityKind::Workshop,
-        A::Education => FacilityKind::Education,
-        A::Yard => FacilityKind::Yard,
-        A::Medical | A::SickCall => FacilityKind::Medical,
-        A::Visits => FacilityKind::Visitor,
-        A::Recreation | A::Showers | A::Religious | A::FreeTime => FacilityKind::Recreation,
-        A::Wake | A::Lockdown | A::Sleep | A::Count => FacilityKind::CellBlock,
-    }
+    alc_world::facility_for_activity(activity)
 }
 
 // ---------------------------------------------------------------------------
