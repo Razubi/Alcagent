@@ -1255,6 +1255,9 @@ impl Sim {
             future_capacity,
             guards.len() as u32,
             warnings,
+            guards.first().map(|g| g.id.raw()),
+            self.world.facilities.first().map(|f| f.id.0),
+            self.world.prisoners.first().map(|p| p.id.raw()),
         )
     }
 

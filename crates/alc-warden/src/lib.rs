@@ -383,6 +383,12 @@ pub struct WardenStrategySnapshot {
     pub future_capacity: u32,
     pub guard_count: u32,
     pub warnings: Vec<String>,
+    /// Highest-credibility guard id available for promotion.
+    pub top_guard_id: Option<u64>,
+    /// Worst-condition facility id available for infrastructure work.
+    pub top_facility_id: Option<u64>,
+    /// A prisoner id suitable for parole recommendation adjustment.
+    pub parole_candidate: Option<u64>,
 }
 
 impl WardenStrategySnapshot {
@@ -454,6 +460,9 @@ impl WardenStrategySnapshot {
         future_capacity: u32,
         guard_count: u32,
         warnings: Vec<String>,
+        top_guard_id: Option<u64>,
+        top_facility_id: Option<u64>,
+        parole_candidate: Option<u64>,
     ) -> Self {
         let financial_health = Self::classify_finance(health, cash_major, runway_days);
         Self {
@@ -470,6 +479,9 @@ impl WardenStrategySnapshot {
             future_capacity,
             guard_count,
             warnings,
+            top_guard_id,
+            top_facility_id,
+            parole_candidate,
         }
     }
 }
@@ -616,6 +628,69 @@ pub fn decide_strategy(
                 snapshot.guard_count, snapshot.capacity
             ),
         );
+    }
+
+    // Targeted operational actions that are more specific than the objective
+    // vote. These keep the warden's full action surface reachable.
+    if snapshot.report_pressure() >= 3 {
+        if let Some(event_id) = snapshot.priority_report() {
+            conflicts.push("Investigation may divert attention from routine duties".into());
+            return decisive!(
+                WardenAction::InvestigateMisconduct { target: event_id },
+                format!("Report pressure {}; investigating misconduct", snapshot.report_pressure()),
+            );
+        }
+    }
+    if pressure >= 4 {
+        conflicts.push("Negotiation may concede ground to prisoner demands".into());
+        return decisive!(
+            WardenAction::NegotiateWithRepresentatives,
+            format!("Report pressure {pressure}; negotiating with representatives"),
+        );
+    }
+    if snapshot.report_pressure() >= 2 {
+        if let Some(guard) = snapshot.top_guard_id {
+            conflicts.push("Promotion raises payroll expectations".into());
+            return decisive!(
+                WardenAction::PromoteStaff { guard },
+                format!("Report pressure {}; promoting guard {}", snapshot.report_pressure(), guard),
+            );
+        }
+    }
+    if snapshot.guard_count > snapshot.capacity / 15 + 1 && snapshot.runway_days < 30.0 {
+        conflicts.push("Staff cuts reduce coverage and morale".into());
+        return decisive!(
+            WardenAction::FireGuards { count: 1 },
+            format!(
+                "{} guards for {} beds with {:.1} runway days; trimming staff",
+                snapshot.guard_count, snapshot.capacity, snapshot.runway_days
+            ),
+        );
+    }
+    if snapshot.active_construction == 0
+        && crowding > 0.75
+        && crowding <= 0.9
+        && can_spend
+    {
+        if let Some(facility) = snapshot.top_facility_id {
+            conflicts.push("Infrastructure work competes with expansion".into());
+            return decisive!(
+                WardenAction::ImproveInfrastructure { facility },
+                format!("Crowding {crowding:.2}; improving facility {facility}"),
+            );
+        }
+    }
+    if snapshot.population > (snapshot.capacity as f64 * 0.8) as u32 && snapshot.runway_days > 30.0 {
+        if let Some(prisoner) = snapshot.parole_candidate {
+            conflicts.push("Parole adjustment may affect security".into());
+            return decisive!(
+                WardenAction::AdjustParoleRecommendation {
+                    prisoner,
+                    lean: 0.7,
+                },
+                format!("Population {}; adjusting parole recommendation", snapshot.population),
+            );
+        }
     }
 
     // 5. Non-emergency decisions: score all objectives, then let personality
@@ -1348,6 +1423,9 @@ mod tests {
             0,
             8,
             Vec::new(),
+            None,
+            None,
+            None,
         )
     }
 
