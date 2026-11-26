@@ -2710,14 +2710,31 @@ impl World {
                                 format!("Gang clash between {} and {}", a.raw(), b.raw()),
                             )
                         } else {
-                            delta.hostility = 0.06;
-                            delta.resentment = 0.04;
-                            reverse.hostility = 0.05;
-                            reverse.resentment = 0.05;
-                            (
-                                EventKind::Argument,
-                                format!("Argument between {} and {}", a.raw(), b.raw()),
-                            )
+                            let fight_escalation = hostility > 0.45
+                                && (sa.aggression + sb.aggression) * 0.5 > 0.55
+                                && deterrence < 0.35
+                                && rng.chance(0.35);
+                            if fight_escalation {
+                                delta.hostility = 0.12;
+                                delta.resentment = 0.08;
+                                delta.fear = 0.04;
+                                reverse.hostility = 0.10;
+                                reverse.resentment = 0.08;
+                                reverse.fear = 0.04;
+                                (
+                                    EventKind::Fight,
+                                    format!("Fight between {} and {}", a.raw(), b.raw()),
+                                )
+                            } else {
+                                delta.hostility = 0.06;
+                                delta.resentment = 0.04;
+                                reverse.hostility = 0.05;
+                                reverse.resentment = 0.05;
+                                (
+                                    EventKind::Argument,
+                                    format!("Argument between {} and {}", a.raw(), b.raw()),
+                                )
+                            }
                         }
                     } else if roll < hostility + 0.22 {
                         delta.familiarity = 0.05;
