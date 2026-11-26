@@ -359,6 +359,7 @@ pub fn schedule_policy(world: &World) -> SchedulePolicy {
         staff_coverage: staff_coverage(world),
         weather_ok: true,
         rehab_funding_multiplier: world.policies.rehab_funding_multiplier,
+        allow_refusal: true,
     }
 }
 

@@ -1974,6 +1974,7 @@ impl Sim {
             staff_coverage: self.staff_coverage_estimate(),
             weather_ok: true,
             rehab_funding_multiplier: self.world.policies.rehab_funding_multiplier,
+            allow_refusal: true,
         }
     }
 

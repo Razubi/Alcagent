@@ -257,6 +257,10 @@ pub struct SchedulePolicy {
     pub staff_coverage: f32,
     pub weather_ok: bool,
     pub rehab_funding_multiplier: f32,
+    /// When true, a prisoner whose companionship need is low and whose
+    /// discipline is low may roll a refusal and leave the scheduled block
+    /// for idle time instead of complying.
+    pub allow_refusal: bool,
 }
 
 impl Default for SchedulePolicy {
@@ -268,6 +272,7 @@ impl Default for SchedulePolicy {
             staff_coverage: 1.0,
             weather_ok: true,
             rehab_funding_multiplier: 1.0,
+            allow_refusal: true,
         }
     }
 }

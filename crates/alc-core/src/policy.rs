@@ -7,12 +7,37 @@
 use serde::{Deserialize, Serialize};
 
 /// Institutional policies (subset, extensible).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Policies {
     pub lockdown: bool,
     pub privileges_level: f32,
     pub rehab_funding_multiplier: f32,
     pub security_level: f32,
+}
+
+impl<'de> Deserialize<'de> for Policies {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct PoliciesDe {
+            lockdown: bool,
+            privileges_level: f32,
+            rehab_funding_multiplier: f32,
+            security_level: f32,
+        }
+
+        let raw = PoliciesDe::deserialize(deserializer)?;
+        let mut policies = Policies {
+            lockdown: raw.lockdown,
+            privileges_level: raw.privileges_level,
+            rehab_funding_multiplier: raw.rehab_funding_multiplier,
+            security_level: raw.security_level,
+        };
+        policies.normalize();
+        Ok(policies)
+    }
 }
 
 impl Default for Policies {

@@ -1395,6 +1395,7 @@ impl World {
             staff_coverage: self.staff_coverage(),
             weather_ok: true,
             rehab_funding_multiplier: self.policies.rehab_funding_multiplier,
+            allow_refusal: true,
         }
     }
 
@@ -1406,9 +1407,33 @@ impl World {
         let mut activities = HashMap::with_capacity(self.prisoners.len());
         for p in &self.prisoners {
             let schedule = resolve_schedule(p, &template, &policy);
-            let activity = current_block(&schedule, minute)
+            let mut activity = current_block(&schedule, minute)
                 .map(|b| b.block.activity)
                 .unwrap_or(Activity::Sleep);
+
+            // Directive §5: prisoners may refuse scheduled activities. A
+            // prisoner whose companionship need is low and whose discipline
+            // is low can roll a refusal and take idle time instead.
+            if policy.allow_refusal
+                && !matches!(
+                    activity,
+                    Activity::Sleep | Activity::Lockdown | Activity::Medical | Activity::SickCall
+                )
+                && p.needs.companionship < 0.35
+                && p.traits.discipline < 0.35
+            {
+                let refusal_chance = (0.40 * (1.0 - p.needs.companionship.clamp(0.0, 1.0))
+                    + 0.35 * (1.0 - p.traits.discipline.clamp(0.0, 1.0)))
+                .clamp(0.0, 0.75);
+                let mut rng = RngStream::new(
+                    self.seed ^ (minute as u64) ^ 0xA11C_E5ED,
+                    p.id.raw() ^ 0x5EED,
+                );
+                if rng.chance(refusal_chance as f64) {
+                    activity = Activity::FreeTime;
+                }
+            }
+
             activities.insert(p.id, activity);
         }
         self.current_activity = activities;
@@ -2408,8 +2433,7 @@ impl World {
         let nearby = all_ids
             .iter()
             .copied()
-            .find(|&other| other != p.id && locations.get(&other) == my_loc)
-            .or_else(|| all_ids.iter().copied().find(|&other| other != p.id));
+            .find(|&other| other != p.id && locations.get(&other) == my_loc);
 
         let motivated = match need {
             NeedTag::Hunger | NeedTag::Thirst => {
@@ -2500,6 +2524,16 @@ impl World {
             Decision::new(alc_agents::decision::DecisionAction::None),
             0.05,
         ));
+        if p.condition.hope < 0.05 {
+            // MoveTo has a stamina cost of 0.05; don't offer proposals that
+            // can never pass canonical resource validation.
+            out.retain(|c| {
+                !matches!(
+                    c.decision.action,
+                    alc_agents::decision::DecisionAction::MoveTo { .. }
+                )
+            });
+        }
         out
     }
 
@@ -3669,7 +3703,7 @@ impl World {
         }
         // Lockdown / max-security posture halts admissions (Directive §13).
         if self.policies.lockdown
-            || self.policies.security_level >= 0.9
+            || self.policies.security_level >= 1.0
             || self.policies.intake_paused
         {
             return;

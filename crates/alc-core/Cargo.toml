@@ -8,8 +8,6 @@ description = "Core types: time, RNG, IDs, traits shared by the prison simulatio
 
 [dependencies]
 serde = { workspace = true }
-rand = { workspace = true }
-rand_pcg = { workspace = true }
 
 [lints]
 workspace = true
