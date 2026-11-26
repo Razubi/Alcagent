@@ -212,6 +212,18 @@ impl Sim {
         }
     }
 
+    /// Operation budget usage for the most recent tick as `(used, total)`.
+    #[must_use]
+    pub fn tick_budget_usage(&self) -> (u32, u32) {
+        self.world.tick_budget_usage()
+    }
+
+    /// Total items deferred because the tick budget was exhausted.
+    #[must_use]
+    pub fn tick_deferrals(&self) -> u64 {
+        self.world.tick_deferrals()
+    }
+
     /// Access the parole ledger from engine_state.
     pub fn parole(&self) -> &ParoleLedger {
         &self.engine_state.parole

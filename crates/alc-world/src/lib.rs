@@ -477,6 +477,20 @@ pub struct World {
     /// older saves loadable.
     #[serde(default)]
     pub parole_leans: std::collections::BTreeMap<u64, f32>,
+
+    /// Cursor into the per-prisoner need-drift loop. Work beyond
+    /// `max_ops_per_tick` resumes on the next tick in the same order (Spec 003).
+    #[serde(default)]
+    pub deferred_prisoner_cursor: usize,
+    /// Total operations charged in the most recent tick.
+    #[serde(default)]
+    pub tick_ops_used: u32,
+    /// Total items deferred because the tick budget was exhausted.
+    #[serde(default)]
+    pub tick_deferrals: u64,
+    /// Whether the last tick deferred any work.
+    #[serde(default)]
+    pub tick_budget_exhausted: bool,
 }
 
 fn default_history_retention_days() -> u32 {
@@ -512,6 +526,10 @@ impl World {
             gang_history: Vec::new(),
             next_gang_history_id: 1,
             parole_leans: std::collections::BTreeMap::new(),
+            deferred_prisoner_cursor: 0,
+            tick_ops_used: 0,
+            tick_deferrals: 0,
+            tick_budget_exhausted: false,
             economy: Economy::default(),
             policies: Policies::default(),
             events: EventBus::new(50_000),
@@ -619,6 +637,21 @@ impl World {
     /// Re-apply AI configuration to runtime state on a loaded world.
     pub fn configure_ai(&mut self, config: &AiConfig) {
         self.orchestrator.configure(config);
+    }
+
+    /// Operation budget usage for the most recent tick as `(used, total)`.
+    #[must_use]
+    pub fn tick_budget_usage(&self) -> (u32, u32) {
+        (
+            self.tick_ops_used,
+            self.orchestrator.runtime.config.max_ops_per_tick as u32,
+        )
+    }
+
+    /// Total number of items deferred by the tick budget guard so far.
+    #[must_use]
+    pub fn tick_deferrals(&self) -> u64 {
+        self.tick_deferrals
     }
 
     pub fn add_facility(&mut self, kind: FacilityKind, wing: u32, capacity: u32) -> FacilityId {
@@ -1410,6 +1443,8 @@ impl World {
         let day_before = self.time.as_days();
         self.time = self.time.add_mins(dt_mins);
         let now_secs = self.time.as_secs();
+        self.tick_ops_used = 0;
+        self.tick_budget_exhausted = false;
 
         // 1. Needs drift — now modulated by each prisoner's resolved activity,
         //    traits, crowding and staffing (Directive §4.3). Guards/hunger/
@@ -1454,8 +1489,22 @@ impl World {
         let staff_coverage = self.staff_coverage();
         let lockdown = self.policies.lockdown;
         let activities = self.current_activity.clone();
+        let budget = self.orchestrator.runtime.config.max_ops_per_tick.max(1);
+        let count = self.prisoners.len();
+        // Charge one op per prisoner per pass; the cursor guarantees each
+        // prisoner is visited exactly once even when the slice spans ticks.
+        let remaining = budget.saturating_sub(self.tick_ops_used as usize);
+        let take = remaining.min(count.saturating_sub(self.deferred_prisoner_cursor));
+        let start = self.deferred_prisoner_cursor;
+        let end = (start + take).min(count);
+        self.tick_ops_used = self.tick_ops_used.saturating_add(take as u32);
+        self.tick_budget_exhausted = end < count;
+        if self.tick_budget_exhausted {
+            self.tick_deferrals = self.tick_deferrals.saturating_add((count - end) as u64);
+        }
+        self.deferred_prisoner_cursor = if end >= count { 0 } else { end };
 
-        for p in &mut self.prisoners {
+        for p in &mut self.prisoners[start..end] {
             let traits = p.traits.clone();
             let activity = activities.get(&p.id).copied().unwrap_or(Activity::Sleep);
             let relief = relief_for_activity(activity);
@@ -6124,5 +6173,50 @@ mod tests {
         let before_hope = w.prisoners[0].condition.hope;
         w.contraband_effects_step();
         assert!(w.prisoners[0].condition.hope < before_hope);
+    }
+
+    #[test]
+    fn tick_budget_defers_and_resumes_in_order() {
+        let mut config = AiConfig::default();
+        config.max_ops_per_tick = 4;
+        let mut w = World::new_with_config(99, &config);
+        let count = w.prisoners.len();
+        assert!(count > 4, "bootstrap should exceed the tiny test budget");
+        let first_id = w.prisoners[0].id;
+        let last_id = w.prisoners[count - 1].id;
+        w.drift_needs_step(60);
+        assert_eq!(w.tick_budget_usage(), (4, 4));
+        assert!(w.tick_budget_exhausted);
+        assert_eq!(w.deferred_prisoner_cursor, 4);
+        // First slice covered the earliest prisoners; the last was not touched.
+        assert!(w.prisoners[..4].iter().all(|p| p.needs.hunger > 0.0));
+        let last_hunger = w.prisoners[count - 1].needs.hunger;
+
+        // Keep slicing until the cursor wraps; every prisoner is then visited
+        // exactly once and the last prisoner finally drifts.
+        let mut guard = 0;
+        while w.deferred_prisoner_cursor != 0 {
+            w.tick_ops_used = 0;
+            w.drift_needs_step(60);
+            guard += 1;
+            assert!(guard <= count + 1, "cursor must make progress");
+        }
+        assert_eq!(w.deferred_prisoner_cursor, 0);
+        assert!(w.tick_deferrals() > 0);
+        assert!(w.prisoners.last().unwrap().needs.hunger > last_hunger);
+        assert_eq!(w.prisoners[0].id, first_id);
+        assert_eq!(w.prisoners.last().unwrap().id, last_id);
+    }
+
+    #[test]
+    fn default_budget_never_defers_a_bootstrap_world() {
+        let mut w = running(123, TimeSpeed::Paused);
+        w.tick_ops_used = 0;
+        w.drift_needs_step(60);
+        assert!(
+            !w.tick_budget_exhausted,
+            "default 10k budget covers bootstrap"
+        );
+        assert_eq!(w.tick_budget_usage().1, 10_000);
     }
 }

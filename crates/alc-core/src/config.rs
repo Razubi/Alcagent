@@ -63,6 +63,10 @@ pub struct AiConfig {
     /// Hard cap on memory records injected into one provider context.
     #[serde(default = "default_max_context_memories")]
     pub max_context_memories: usize,
+    /// Maximum simulation operations per tick. Excess work is deferred to the
+    /// next tick so a large population cannot stall playback (Spec 003).
+    #[serde(default = "default_max_ops_per_tick")]
+    pub max_ops_per_tick: usize,
 }
 
 fn default_provider() -> String {
@@ -95,6 +99,9 @@ const fn default_max_cache_entries() -> usize {
 const fn default_max_context_memories() -> usize {
     8
 }
+const fn default_max_ops_per_tick() -> usize {
+    10_000
+}
 
 impl Default for AiConfig {
     fn default() -> Self {
@@ -113,6 +120,7 @@ impl Default for AiConfig {
             decision_timeout_secs: default_decision_timeout_secs(),
             max_cache_entries: default_max_cache_entries(),
             max_context_memories: default_max_context_memories(),
+            max_ops_per_tick: default_max_ops_per_tick(),
         }
     }
 }
