@@ -2044,8 +2044,9 @@ impl World {
         rng: &mut RngStream,
     ) {
         let sec_old = self.policies.security_level;
-        self.policies.security_level =
-            (self.policies.security_level + consequences.security_level_delta).clamp(0.0, 1.0);
+        self.policies.security_level = (self.policies.security_level
+            + consequences.security_level_delta)
+        .clamp(0.0, 0.95);
         self.audit_policy_change("security_level", sec_old, self.policies.security_level);
 
         if consequences.lockdown_recommended
@@ -3702,7 +3703,12 @@ impl World {
             return;
         }
         // Lockdown / max-security posture halts admissions (Directive §13).
-        if self.policies.lockdown
+        let lockdown_active = self.policies.lockdown
+            && self
+                .days_simulated
+                .saturating_sub(self.lockdown_since_day)
+                < 14;
+        if lockdown_active
             || self.policies.security_level >= 1.0
             || self.policies.intake_paused
         {
@@ -4790,7 +4796,7 @@ impl World {
             }
             WardenAction::IncreaseSecurity => {
                 let old = self.policies.security_level;
-                self.policies.security_level = (self.policies.security_level + 0.1).min(1.0);
+                self.policies.security_level = (self.policies.security_level + 0.1).min(0.95);
                 self.audit_policy_change("security_level", old, self.policies.security_level);
                 self.events.emit(WorldEvent::new(
                     0,

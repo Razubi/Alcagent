@@ -891,6 +891,11 @@ pub fn validate_world_state(d: &Decision, ctx: &ValidationContext) -> Result<Dec
 /// Stage 5: stamina/action-budget affordability. Token budgets are accounted
 /// by the orchestrator, not by validation.
 pub fn validate_resources(d: &Decision, ctx: &ValidationContext) -> Result<Decision, Rejection> {
+    // A Fight that guards will de-escalate to Socialize is validated after
+    // that repair, so it must not be rejected for the unrepaired Fight cost.
+    if matches!(d.action, DecisionAction::Fight { .. }) && ctx.guards_nearby > 1 {
+        return Ok(d.clone());
+    }
     let cost = d.stamina_cost();
     if ctx.stamina < cost {
         return Err(Rejection::new(
