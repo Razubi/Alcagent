@@ -15,7 +15,7 @@ use alc_agents::{
         DecisionAction, DecisionOutcomeState, DecisionProvenance, DecisionValidation,
         ValidationContext, ValidationResult, ValidationStage, validate_decision_detailed,
     },
-    memory::{EpistemicKind, EpistemicRecord, Memory},
+    memory::{EpistemicKind, EpistemicRecord, LayeredMemory, Memory, MemoryKind, MemoryLayer, MemoryRecord},
 };
 use alc_core::config::AiConfig;
 use alc_core::{FacilityId, GangId, GuardId, PrisonerId, RngStream, SimTime, TimeSpeed, WardenId};
@@ -429,6 +429,11 @@ pub struct World {
     #[serde(default)]
     pub contraband_state: HashMap<PrisonerId, PrisonerContrabandState>,
 
+    /// Per-prisoner layered memory store (0.05 lifecycle). World-owned because
+    /// `Prisoner` lives in `alc-prisoner` which cannot depend on `alc-agents`.
+    #[serde(default)]
+    pub memory_state: HashMap<PrisonerId, LayeredMemory>,
+
     /// Contraband case resolution timestamps (case id -> sim time). Persisted with
     /// serde default for 0.05 lifecycle/audit coherence; engine may also track.
     #[serde(default)]
@@ -506,6 +511,7 @@ impl World {
             post_release_outcomes: Vec::new(),
             next_post_release_id: 1,
             contraband_state: HashMap::new(),
+            memory_state: HashMap::new(),
             resolved_contraband_at: std::collections::BTreeMap::new(),
             contraband_cases: Vec::new(),
             next_contraband_case_id: 1,
@@ -2692,11 +2698,39 @@ impl World {
                     }
                     self.social.record(a, b, delta);
                     self.social.record(b, a, reverse);
+                    let ev_summary = summary.clone();
                     let ev = WorldEvent::new(0, self.time, kind, summary)
                         .with_actor(a.raw())
                         .with_actor(b.raw())
                         .with_cause(cause);
                     let _ = self.events.emit(ev);
+
+                    // Record encounter into per-prisoner memory.
+                    let now = self.time.as_secs();
+                    let mem_kind = match kind {
+                        EventKind::GangClash | EventKind::Fight => MemoryKind::Emotional,
+                        EventKind::Argument | EventKind::Threat => MemoryKind::Social,
+                        EventKind::Rumor => MemoryKind::Semantic,
+                        _ => MemoryKind::Social,
+                    };
+                    let valence = if delta.hostility > 0.0 { -0.3 } else { 0.3 };
+                    let intensity = (delta.hostility + delta.friendship + delta.familiarity).clamp(0.0, 1.0);
+                    if let Some(mem) = self.memory_state.get_mut(&a) {
+                        let mut rec = MemoryRecord::new(MemoryLayer::ShortTerm, mem_kind, ev_summary.clone(), b.raw());
+                        rec.emotional_valence = valence;
+                        rec.emotional_intensity = intensity;
+                        rec.created_at_secs = now;
+                        rec.last_accessed_secs = now;
+                        mem.store(rec);
+                    }
+                    if let Some(mem) = self.memory_state.get_mut(&b) {
+                        let mut rec = MemoryRecord::new(MemoryLayer::ShortTerm, mem_kind, ev_summary.clone(), a.raw());
+                        rec.emotional_valence = valence;
+                        rec.emotional_intensity = intensity;
+                        rec.created_at_secs = now;
+                        rec.last_accessed_secs = now;
+                        mem.store(rec);
+                    }
                 }
             }
         }
@@ -3177,6 +3211,26 @@ impl World {
             self.guards.len() as u32,
             buildings,
         );
+
+        // Per-prisoner memory consolidation (Directive 18).
+        let now = self.time.as_secs();
+        for (pid, mem) in self.memory_state.iter_mut() {
+            mem.consolidate(now);
+            // Update memory_summary on the prisoner for UI/observation.
+            let summary = mem
+                .long_term
+                .iter()
+                .chain(mem.short_term.iter())
+                .take(3)
+                .map(|r| r.summary.as_str())
+                .collect::<Vec<_>>()
+                .join("; ");
+            if let Some(p) = self.prisoners.iter_mut().find(|p| p.id == *pid) {
+                if !summary.is_empty() {
+                    p.memory_summary = summary;
+                }
+            }
+        }
 
         // Facility degradation.
         for f in &mut self.facilities {
@@ -3748,6 +3802,19 @@ impl World {
             );
             self.prisoners.push(p);
             self.register_ai_agent(pid, Role::Prisoner);
+
+            // Seed per-prisoner memory with arrival record.
+            let mut mem = LayeredMemory::new();
+            mem.remember(
+                MemoryKind::Episodic,
+                format!(
+                    "Arrived at the institution (sentence {} days, classification {:?})",
+                    self.prisoners.last().unwrap().sentence_days,
+                    self.prisoners.last().unwrap().classification
+                ),
+                pid.raw(),
+            );
+            self.memory_state.insert(pid, mem);
         }
     }
 
@@ -3760,6 +3827,7 @@ impl World {
         self.prisoner_location.retain(|id, _| !gone.contains(id));
         self.contraband_state.retain(|id, _| !gone.contains(id));
         self.rehab_records.retain(|id, _| !gone.contains(id));
+        self.memory_state.retain(|id, _| !gone.contains(id));
         let departed: Vec<u64> = departed.iter().map(|id| id.raw()).collect();
         self.orchestrator.prune_departed(&departed);
         // Social dyads are pruned by the daily `prune_agent_state` sweep; doing
