@@ -375,6 +375,10 @@ pub struct World {
     /// Institutional memory / history (Directive §18).
     pub history: Vec<WorldEvent>,
 
+    /// Days of full-resolution event history to retain before compaction.
+    #[serde(default = "default_history_retention_days")]
+    pub history_retention_days: u32,
+
     /// Orchestration state (Directive §19).
     pub orchestrator: Orchestrator,
 
@@ -466,6 +470,10 @@ pub struct World {
     pub next_gang_history_id: u64,
 }
 
+fn default_history_retention_days() -> u32 {
+    30
+}
+
 impl World {
     pub fn new(seed: u64) -> Self {
         Self::new_with_config(seed, &AiConfig::default())
@@ -498,6 +506,7 @@ impl World {
             policies: Policies::default(),
             events: EventBus::new(50_000),
             history: Vec::new(),
+            history_retention_days: default_history_retention_days(),
             orchestrator: Orchestrator::from_config(config),
             days_simulated: 0,
             current_activity: HashMap::new(),
@@ -3200,6 +3209,10 @@ impl World {
 
     fn on_day_boundary(&mut self) {
         self.days_simulated += 1;
+
+        // Compact durable event history (Directive 18).
+        let cutoff_day = self.days_simulated.saturating_sub(self.history_retention_days as u64);
+        self.history.retain(|e| e.major || e.at.as_days() >= cutoff_day);
 
         // Daily funding + expenses.
         let pop = self.population();

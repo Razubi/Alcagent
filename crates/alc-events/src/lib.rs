@@ -84,6 +84,43 @@ pub enum EventKind {
     ContrabandConfiscated,
 }
 
+impl EventKind {
+    /// Whether an event is significant enough to survive history compaction.
+    pub fn is_major(self) -> bool {
+        matches!(
+            self,
+            EventKind::GangClash
+                | EventKind::Protests
+                | EventKind::PropertyDamage
+                | EventKind::MedicalEmergency
+                | EventKind::Illness
+                | EventKind::Injury
+                | EventKind::EscapeAttempt
+                | EventKind::EscapePrevented
+                | EventKind::EscapeSucceeded
+                | EventKind::StaffMisconduct
+                | EventKind::Investigation
+                | EventKind::SecurityResponse
+                | EventKind::PolicyChange
+                | EventKind::Expansion
+                | EventKind::FoodShortage
+                | EventKind::EquipmentFailure
+                | EventKind::BudgetChange
+                | EventKind::ParoleBoardDecision
+                | EventKind::LeadershipDispute
+                | EventKind::RehabilitationSuccess
+                | EventKind::ContrabandFound
+                | EventKind::ContrabandConfiscated
+                | EventKind::GangRecruit
+                | EventKind::GangRivalry
+                | EventKind::FamilyCorrespondence
+                | EventKind::Visitor
+                | EventKind::Dialogue
+                | EventKind::Interaction
+        )
+    }
+}
+
 /// A recorded world event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorldEvent {
@@ -100,6 +137,9 @@ pub struct WorldEvent {
     /// Confidence 0..1 that the reported facts are accurate (lower when
     /// relayed via rumors or low-credibility guards).
     pub confidence: f32,
+    /// Whether this event is significant enough to survive history compaction.
+    #[serde(default)]
+    pub major: bool,
 }
 
 impl WorldEvent {
@@ -112,6 +152,7 @@ impl WorldEvent {
             actors: Vec::new(),
             causes: Vec::new(),
             confidence: 1.0,
+            major: kind.is_major(),
         }
     }
 
