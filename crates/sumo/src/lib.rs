@@ -1255,7 +1255,7 @@ impl Sim {
             future_capacity,
             guards.len() as u32,
             warnings,
-            guards.first().map(|g| g.id.raw()),
+            guards.first().map(|g| g.id),
             self.world.facilities.first().map(|f| f.id.0),
             self.world.prisoners.first().map(|p| p.id.raw()),
         )
@@ -3032,6 +3032,11 @@ impl Sim {
             ("Tools", ContrabandItem::Tools, 0.7),
             ("Phones", ContrabandItem::Phones, 0.55),
             ("Money", ContrabandItem::Money, 0.35),
+            ("Alcohol", ContrabandItem::Alcohol, 0.45),
+            ("Cigarettes", ContrabandItem::Cigarettes, 0.25),
+            ("Medicine", ContrabandItem::Medicine, 0.6),
+            ("Blueprints", ContrabandItem::Blueprints, 0.85),
+            ("Radio", ContrabandItem::Radio, 0.65),
         ];
         let (_, item, severity) = candidates
             .into_iter()

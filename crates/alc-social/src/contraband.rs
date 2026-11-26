@@ -13,6 +13,11 @@ pub enum ContrabandItem {
     Tools,
     Phones,
     Money,
+    Alcohol,
+    Cigarettes,
+    Medicine,
+    Blueprints,
+    Radio,
 }
 
 /// A proposed illicit trade between prisoners.
@@ -176,6 +181,11 @@ pub fn contraband_market(
             ContrabandItem::Tools => 70,
             ContrabandItem::Phones => 100,
             ContrabandItem::Money => 50,
+            ContrabandItem::Alcohol => 60,
+            ContrabandItem::Cigarettes => 40,
+            ContrabandItem::Medicine => 90,
+            ContrabandItem::Blueprints => 150,
+            ContrabandItem::Radio => 110,
         };
         let scarcity = 0.7 + rng.next_f64() * 0.8;
         let control_premium = 1.0 + seller_control * 0.2;
@@ -206,12 +216,17 @@ fn pick_item(buyer: &ContrabandPrisonerProfile, rng: &mut RngStream) -> Contraba
             return ContrabandItem::Phones;
         }
     }
-    match (r * 5.0) as u8 {
+    match (r * 10.0) as u8 {
         0 => ContrabandItem::Weapons,
         1 => ContrabandItem::Drugs,
         2 => ContrabandItem::Tools,
         3 => ContrabandItem::Phones,
-        _ => ContrabandItem::Money,
+        4 => ContrabandItem::Money,
+        5 => ContrabandItem::Alcohol,
+        6 => ContrabandItem::Cigarettes,
+        7 => ContrabandItem::Medicine,
+        8 => ContrabandItem::Blueprints,
+        _ => ContrabandItem::Radio,
     }
 }
 
@@ -259,6 +274,11 @@ pub fn contraband_discovery(
                 ContrabandItem::Tools => 0.7,
                 ContrabandItem::Phones => 0.55,
                 ContrabandItem::Money => 0.35,
+                ContrabandItem::Alcohol => 0.45,
+                ContrabandItem::Cigarettes => 0.25,
+                ContrabandItem::Medicine => 0.6,
+                ContrabandItem::Blueprints => 0.85,
+                ContrabandItem::Radio => 0.65,
             };
             let score = chance * (0.5 + severity as f64);
             let found = ContrabandFound {
@@ -328,6 +348,11 @@ pub fn confiscate_contraband(item: ContrabandItem, severity: f32) -> Confiscatio
         ContrabandItem::Phones => ContrabandSeverity::Moderate,
         ContrabandItem::Tools => ContrabandSeverity::Moderate,
         ContrabandItem::Money => ContrabandSeverity::Minimal,
+        ContrabandItem::Alcohol => ContrabandSeverity::Moderate,
+        ContrabandItem::Cigarettes => ContrabandSeverity::Minimal,
+        ContrabandItem::Medicine => ContrabandSeverity::Moderate,
+        ContrabandItem::Blueprints => ContrabandSeverity::Significant,
+        ContrabandItem::Radio => ContrabandSeverity::Moderate,
     };
 
     let disposition = match severity {
