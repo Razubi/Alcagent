@@ -1862,6 +1862,23 @@ impl World {
                 }
             }
             DecisionAction::Socialize { with } => {
+                let topic = if let (Some(a), Some(b)) = (
+                    self.prisoners.iter().find(|p| p.id == id),
+                    self.prisoners.iter().find(|p| p.id.raw() == *with),
+                ) {
+                    alc_social::dialogue::select_topic(
+                        &a.traits,
+                        &b.traits,
+                        &a.needs,
+                        &b.needs,
+                        self.social.get(id, PrisonerId(*with)).friendship,
+                        self.social.get(id, PrisonerId(*with)).hostility,
+                        a.gang_affiliation.map(|g| g),
+                        b.gang_affiliation.map(|g| g),
+                    )
+                } else {
+                    alc_social::dialogue::DialogueTopic::Gossip
+                };
                 self.social.record(
                     id,
                     PrisonerId(*with),
@@ -1875,7 +1892,12 @@ impl World {
                 events.push(Self::decision_event(
                     self.time,
                     EventKind::RelationshipShift,
-                    format!("{} socialized with {with}", id.raw()),
+                    format!(
+                        "{} socialized with {} about {}",
+                        id.raw(),
+                        with,
+                        topic.as_str()
+                    ),
                     vec![id.raw()],
                 ));
             }

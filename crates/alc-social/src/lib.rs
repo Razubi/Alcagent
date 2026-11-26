@@ -4,6 +4,7 @@
 
 pub mod conflict;
 pub mod contraband;
+pub mod dialogue;
 pub mod escape;
 pub mod gang;
 pub mod parole;
