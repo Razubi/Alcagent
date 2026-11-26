@@ -873,8 +873,11 @@ fn objective_weight(
     cash_major: f32,
 ) -> f32 {
     match obj {
-        Objective::Security => traits.strictness * 0.7 + traits.authoritarian_tendencies * 0.3,
-        Objective::FinancialSustainability => traits.financial_discipline,
+        Objective::Security => traits.strictness * 0.7 + traits.authoritarian_tendencies * 0.3
+            - traits.corruption_susceptibility * 0.1,
+        Objective::FinancialSustainability => {
+            traits.financial_discipline + traits.corruption_susceptibility * 0.2
+        }
         Objective::StaffMorale => traits.staff_loyalty,
         Objective::PrisonerWelfare => traits.compassion,
         Objective::PublicReputation => traits.reputation_concerns,
