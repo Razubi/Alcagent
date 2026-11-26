@@ -2112,9 +2112,11 @@ impl World {
         rng: &mut RngStream,
     ) {
         let sec_old = self.policies.security_level;
-        self.policies.security_level = (self.policies.security_level
-            + consequences.security_level_delta)
-        .clamp(0.0, 0.95);
+        if self.policies.security_level < 0.95 {
+            self.policies.security_level = (self.policies.security_level
+                + consequences.security_level_delta)
+            .clamp(0.0, 0.95);
+        }
         self.audit_policy_change("security_level", sec_old, self.policies.security_level);
 
         if consequences.lockdown_recommended
@@ -3238,7 +3240,10 @@ impl World {
                     self.warden.security_incidents_this_week =
                         self.warden.security_incidents_this_week.saturating_add(1);
                     let old_security = self.policies.security_level;
-                    self.policies.security_level = clamp01(old_security + 0.04 * severity);
+                    if old_security < 0.95 {
+                        self.policies.security_level =
+                            clamp01(old_security + 0.04 * severity).min(0.95);
+                    }
                     self.audit_policy_change(
                         "security_level",
                         old_security,
@@ -3364,9 +3369,9 @@ impl World {
             self.warden.reset_weekly_incidents();
             // Sustained gang pressure keeps the institution on edge even when
             // no single incident crossed the reporting threshold.
-            if gang_pressure > 0.6 {
+            if gang_pressure > 0.6 && self.policies.security_level < 0.95 {
                 let old = self.policies.security_level;
-                self.policies.security_level = clamp01(old + 0.03 * gang_pressure);
+                self.policies.security_level = clamp01(old + 0.03 * gang_pressure).min(0.95);
                 self.audit_policy_change("security_level", old, self.policies.security_level);
                 self.events.emit(WorldEvent::new(
                     0,
@@ -4342,8 +4347,10 @@ impl World {
         if let Some(found) = contraband_discovery(&self.guards, &profiles, &mut rng2) {
             self.record_contraband_discovery(found.clone());
             let sec_old = self.policies.security_level;
-            self.policies.security_level =
-                (self.policies.security_level + 0.02 * found.severity).min(1.0);
+            if sec_old < 0.95 {
+                self.policies.security_level =
+                    (self.policies.security_level + 0.02 * found.severity).min(0.95);
+            }
             self.audit_policy_change("security_level", sec_old, self.policies.security_level);
         }
     }
@@ -4947,7 +4954,9 @@ impl World {
             }
             WardenAction::IncreaseSecurity => {
                 let old = self.policies.security_level;
-                self.policies.security_level = (self.policies.security_level + 0.1).min(0.95);
+                if self.policies.security_level < 0.95 {
+                    self.policies.security_level = (self.policies.security_level + 0.1).min(0.95);
+                }
                 self.audit_policy_change("security_level", old, self.policies.security_level);
                 self.events.emit(WorldEvent::new(
                     0,
