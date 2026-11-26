@@ -512,7 +512,24 @@ fn hooks_for(newcomer: &Prisoner, existing: &[Prisoner]) -> ArrivalSocialHooks {
                 delta: RelationshipDeltaSeed::friendship_seed(
                     0.4 + newcomer.traits.sociability * 0.4,
                 ),
-                reason: format!("shared {kind:?} background"),
+                reason: format!("old friend: shared {kind:?} background"),
+            });
+        }
+
+        // Old rivals: opposing backgrounds and competitive traits seed hostility.
+        if BackgroundKind::infer(other) != kind
+            && (newcomer.traits.aggression > 0.5 || newcomer.traits.leadership > 0.6)
+            && (other.traits.aggression > 0.45 || other.traits.leadership > 0.5)
+        {
+            let intensity = (newcomer.traits.aggression * 0.3
+                + other.traits.aggression * 0.2
+                + newcomer.traits.leadership * 0.2)
+            .clamp(0.2, 0.9);
+            out.rivalry_seeds.push(RivalrySeed {
+                newcomer: newcomer.id,
+                other: other.id,
+                intensity,
+                reason: format!("old rival: opposing {} vs {}", kind.tag(), BackgroundKind::infer(other).tag()),
             });
         }
 
