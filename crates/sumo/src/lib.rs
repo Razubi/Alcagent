@@ -64,6 +64,9 @@ pub mod invariants;
 
 pub mod state_digest;
 
+/// Spatial indexing, LOD, and city-generation hooks (Spec 009).
+pub mod spatial;
+
 pub use alc_world::World;
 
 /// Re-export core types for UI and external consumers.
@@ -222,6 +225,39 @@ impl Sim {
     #[must_use]
     pub fn tick_deferrals(&self) -> u64 {
         self.world.tick_deferrals()
+    }
+
+    /// Profiling snapshot with tick budget usage and agent/LOD counts (Spec 009).
+    #[must_use]
+    pub fn profiling(&self) -> spatial::ProfilingSnapshot {
+        let mut grid = spatial::SpatialGrid::default();
+        for p in &self.world.prisoners {
+            let cell = self
+                .world
+                .prisoner_location
+                .get(&p.id)
+                .map(|f| f.0)
+                .unwrap_or(0);
+            grid.insert(p.id.raw(), cell);
+        }
+        let (used, total) = self.tick_budget_usage();
+        let city = <spatial::GridCityGenerator as spatial::CityGenerator>::generate(
+            &spatial::GridCityGenerator,
+            self.world.seed,
+            (0, 0),
+        );
+        spatial::ProfilingSnapshot {
+            tick_ops_used: used,
+            tick_ops_budget: total,
+            tick_deferrals: self.tick_deferrals(),
+            agents_indexed: grid.len(),
+            agents_full: self.world.prisoners.len(),
+            agents_reduced: 0,
+            agents_minimal: 0,
+            city_districts: city.districts.len(),
+            city_buildings: city.districts.iter().map(|d| d.buildings.len()).sum(),
+            city_population_seeded: city.districts.iter().map(|d| d.population).sum(),
+        }
     }
 
     /// Access the parole ledger from engine_state.

@@ -1527,11 +1527,17 @@ impl World {
                 .contraband_state
                 .get(&p.id)
                 .map(|st| {
-                    st.inventory
+                    let mut names: Vec<String> = st
+                        .inventory
                         .iter()
                         .filter(|(item, count)| **count > 0 && item.is_addictive())
                         .map(|(item, _)| item.as_str().to_string())
-                        .collect()
+                        .collect();
+                    // Stable ordering: `addicted_items` is persisted and
+                    // surfaced to observers, so it cannot depend on the
+                    // randomized iteration order of `HashMap`.
+                    names.sort();
+                    names
                 })
                 .unwrap_or_default();
             if !addictive.is_empty() {
@@ -4514,11 +4520,14 @@ impl World {
         use alc_social::contraband::ContrabandItem;
         let ids: Vec<PrisonerId> = self.prisoners.iter().map(|p| p.id).collect();
         for id in ids {
-            let items: Vec<(ContrabandItem, u32)> = self
+            let mut items: Vec<(ContrabandItem, u32)> = self
                 .contraband_state
                 .get(&id)
                 .map(|state| state.inventory.iter().map(|(&k, &v)| (k, v)).collect())
                 .unwrap_or_default();
+            // HashMap iteration order is randomized per process; sort by a
+            // stable discriminant so item effects replay identically.
+            items.sort_by_key(|(item, _)| item.as_str());
             let Some(p) = self.prisoners.iter_mut().find(|p| p.id == id) else {
                 continue;
             };

@@ -3231,6 +3231,9 @@ mod tests {
                 schedule: p.schedule.clone(),
                 skills: p.skills.clone(),
                 memory_summary: p.memory_summary.clone(),
+                bio: p.bio.clone(),
+                crime: p.crime.clone(),
+                crime_category: p.crime_category,
             })
             .collect();
         let pressure = world.gang_pressure();
@@ -3328,6 +3331,11 @@ mod tests {
                 mistakes: g.mistake_count(),
                 violations: g.violation_count(),
                 tracked_opinions: g.opinion_count(),
+                needs: g.needs,
+                off_duty: g.off_duty,
+                off_duty_activity: g.off_duty_activity,
+                performance: g.performance_score(),
+                bonds: g.bonds.clone(),
                 history: g.history.clone(),
             })
             .collect();
