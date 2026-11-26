@@ -278,7 +278,11 @@ pub fn generate_intake_with(rng: &mut RngStream, id: PrisonerId) -> Prisoner {
             rng.range(0.45, 0.95) as f32 - (1.0 - p.traits.emotional_stability) * 0.2,
         ),
         hope,
-        addiction: if kind == BackgroundKind::Drug { 0.2 } else { 0.0 },
+        addiction: if kind == BackgroundKind::Drug {
+            0.2
+        } else {
+            0.0
+        },
         addicted_items: Vec::new(),
     };
 
@@ -524,12 +528,16 @@ fn hooks_for(newcomer: &Prisoner, existing: &[Prisoner]) -> ArrivalSocialHooks {
             let intensity = (newcomer.traits.aggression * 0.3
                 + other.traits.aggression * 0.2
                 + newcomer.traits.leadership * 0.2)
-            .clamp(0.2, 0.9);
+                .clamp(0.2, 0.9);
             out.rivalry_seeds.push(RivalrySeed {
                 newcomer: newcomer.id,
                 other: other.id,
                 intensity,
-                reason: format!("old rival: opposing {} vs {}", kind.tag(), BackgroundKind::infer(other).tag()),
+                reason: format!(
+                    "old rival: opposing {} vs {}",
+                    kind.tag(),
+                    BackgroundKind::infer(other).tag()
+                ),
             });
         }
 

@@ -1255,11 +1255,30 @@ mod tests {
 /// Generate a deterministic gang name from RNG and culture/background.
 pub fn generate_gang_name(rng: &mut RngStream, culture: &str) -> String {
     const NAMES: [&str; 24] = [
-        "Iron Saints", "Red Hand", "Black Wolves", "Night Crew", "Stone Syndicate",
-        "Glass Serpents", "Blue Collar", "Cold Front", "Dead Reckoning", "Last Resort",
-        "Quiet Riot", "Iron Gate", "Broken Halo", "Shadow Market", "Steel Union",
-        "Lost Boys", "Dark Harbor", "Second Chance", "Iron Fist", "Paper Tigers",
-        "Silent Accord", "Rust Kings", "White Noise", "Final Word",
+        "Iron Saints",
+        "Red Hand",
+        "Black Wolves",
+        "Night Crew",
+        "Stone Syndicate",
+        "Glass Serpents",
+        "Blue Collar",
+        "Cold Front",
+        "Dead Reckoning",
+        "Last Resort",
+        "Quiet Riot",
+        "Iron Gate",
+        "Broken Halo",
+        "Shadow Market",
+        "Steel Union",
+        "Lost Boys",
+        "Dark Harbor",
+        "Second Chance",
+        "Iron Fist",
+        "Paper Tigers",
+        "Silent Accord",
+        "Rust Kings",
+        "White Noise",
+        "Final Word",
     ];
     let name = NAMES[(rng.next_u64() as usize) % NAMES.len()];
     if culture.is_empty() || culture == "new" {
@@ -1268,4 +1287,3 @@ pub fn generate_gang_name(rng: &mut RngStream, culture: &str) -> String {
         format!("{} {}", name, culture)
     }
 }
-

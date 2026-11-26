@@ -268,6 +268,7 @@ pub fn action_label(action: &WardenAction) -> &'static str {
         WardenAction::AdjustParoleRecommendation { .. } => "AdjustParoleRecommendation",
         WardenAction::RequestFunding { .. } => "RequestFunding",
         WardenAction::NoAction { .. } => "NoAction",
+        WardenAction::DismissGuard { .. } => "DismissGuard",
     }
 }
 
@@ -556,6 +557,15 @@ fn marginal_effect(view: &StateView, action: &WardenAction) -> [f32; Drive::COUN
         }
         WardenAction::NoAction { .. } => {
             // The reference point: holding steady neither helps nor hurts.
+        }
+        WardenAction::DismissGuard { .. } => {
+            // A specific dismissal trades coverage for payroll and morale,
+            // similar to a targeted staff cut.
+            u[SECURITY] = -0.25;
+            u[FINANCE] = 0.20;
+            u[MORALE] = -0.25;
+            u[REPUTATION] = -0.05;
+            u[STABILITY] = -0.15;
         }
     }
     u

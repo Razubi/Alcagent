@@ -37,7 +37,10 @@ impl ContrabandItem {
     }
 
     pub fn is_addictive(self) -> bool {
-        matches!(self, ContrabandItem::Drugs | ContrabandItem::Alcohol | ContrabandItem::Cigarettes)
+        matches!(
+            self,
+            ContrabandItem::Drugs | ContrabandItem::Alcohol | ContrabandItem::Cigarettes
+        )
     }
 }
 

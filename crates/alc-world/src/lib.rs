@@ -15,7 +15,10 @@ use alc_agents::{
         DecisionAction, DecisionOutcomeState, DecisionProvenance, DecisionValidation,
         ValidationContext, ValidationResult, ValidationStage, validate_decision_detailed,
     },
-    memory::{EpistemicKind, EpistemicRecord, LayeredMemory, Memory, MemoryKind, MemoryLayer, MemoryRecord},
+    memory::{
+        EpistemicKind, EpistemicRecord, LayeredMemory, Memory, MemoryKind, MemoryLayer,
+        MemoryRecord,
+    },
 };
 use alc_core::config::AiConfig;
 use alc_core::{FacilityId, GangId, GuardId, PrisonerId, RngStream, SimTime, TimeSpeed, WardenId};
@@ -468,6 +471,12 @@ pub struct World {
     pub gang_history: Vec<GangHistoryEntry>,
     #[serde(default)]
     pub next_gang_history_id: u64,
+
+    /// One-shot warden parole recommendation leans (prisoner id -> lean in
+    /// `-1..1`). Consumed by the next parole hearing; `#[serde(default)]` keeps
+    /// older saves loadable.
+    #[serde(default)]
+    pub parole_leans: std::collections::BTreeMap<u64, f32>,
 }
 
 fn default_history_retention_days() -> u32 {
@@ -502,6 +511,7 @@ impl World {
             next_gang_id: 1,
             gang_history: Vec::new(),
             next_gang_history_id: 1,
+            parole_leans: std::collections::BTreeMap::new(),
             economy: Economy::default(),
             policies: Policies::default(),
             events: EventBus::new(50_000),
@@ -1149,6 +1159,7 @@ impl World {
             at: self.time,
             lockdown: self.policies.lockdown,
             security_level: self.policies.security_level,
+            corruption_pressure: self.warden.traits.corruption_susceptibility,
         }
     }
 
@@ -1215,8 +1226,21 @@ impl World {
         let guard_ids: Vec<GuardId> = self.guards.iter().map(|g| g.id).collect();
         let mut guard_reports = Vec::new();
         let mut guard_interactions: Vec<GuardInteraction> = Vec::new();
+        let mut off_duty_ids: Vec<GuardId> = Vec::new();
 
         for gid in guard_ids {
+            let off_duty_now = self
+                .guards
+                .iter()
+                .find(|g| g.id == gid)
+                .is_some_and(|g| g.off_duty_ticks > 0);
+            if off_duty_now {
+                if let Some(guard) = self.guards.iter_mut().find(|g| g.id == gid) {
+                    guard.off_duty_recovery_tick(self.time);
+                }
+                off_duty_ids.push(gid);
+                continue;
+            }
             let observed = self.guard_observations(gid);
             let Some(guard) = self.guards.iter_mut().find(|g| g.id == gid) else {
                 continue;
@@ -1227,6 +1251,10 @@ impl World {
             guard_interactions.extend(result.interactions);
             guard_reports.extend(result.reports.into_iter().map(|r| (gid, r)));
         }
+
+        // Guards who share an off-duty block form durable social bonds. This is
+        // deliberately world-owned: guards never mutate each other directly.
+        self.update_guard_bonds(&off_duty_ids);
 
         // Guard interactions are validated consequences applied by the world,
         // never arbitrary writes from the guard subagent itself.
@@ -1304,11 +1332,66 @@ impl World {
             if id == 0 {
                 continue;
             }
+            // A corrupt warden occasionally buries inconvenient reports. This is
+            // observable as a StaffMisconduct event even though the report never
+            // reaches the inbox.
+            let corruption = self.warden.traits.corruption_susceptibility.clamp(0.0, 1.0);
+            if corruption > 0.55 && !report.requests_assistance {
+                let cover_chance = ((corruption - 0.5) as f64 * 0.35).clamp(0.0, 0.20);
+                let mut cover_rng = RngStream::new(self.seed, id ^ 0x00C0_FFEE);
+                if cover_rng.chance(cover_chance) {
+                    self.events.emit(
+                        WorldEvent::new(
+                            0,
+                            self.time,
+                            EventKind::StaffMisconduct,
+                            format!(
+                                "Report {id} from guard {} buried by administrative review",
+                                gid.raw()
+                            ),
+                        )
+                        .with_actor(gid.raw())
+                        .with_cause("warden corruption"),
+                    );
+                    continue;
+                }
+            }
             self.warden.inbox.push(id);
             if self.warden.inbox.len() > 200 {
                 let drop = self.warden.inbox.len() - 200;
                 self.warden.inbox.drain(0..drop);
             }
+        }
+    }
+
+    /// Pair guards who share an off-duty block so their social lives leave a
+    /// durable trace without letting guards mutate each other directly.
+    fn update_guard_bonds(&mut self, off_duty: &[GuardId]) {
+        if off_duty.len() < 2 {
+            return;
+        }
+        let day = self.days_simulated;
+        let mut ids = off_duty.to_vec();
+        ids.sort_by_key(|id| id.raw());
+        for pair in ids.chunks(2) {
+            if pair.len() != 2 {
+                continue;
+            }
+            let (a, b) = (pair[0], pair[1]);
+            let Some(ai) = self.guards.iter().position(|g| g.id == a) else {
+                continue;
+            };
+            let Some(bi) = self.guards.iter().position(|g| g.id == b) else {
+                continue;
+            };
+            if ai == bi {
+                continue;
+            }
+            let (lo, hi) = if ai < bi { (ai, bi) } else { (bi, ai) };
+            let (left, right) = self.guards.split_at_mut(hi);
+            let (g1, g2) = (&mut left[lo], &mut right[0]);
+            g1.form_bond(g2.id, day);
+            g2.form_bond(g1.id, day);
         }
     }
 
@@ -1410,8 +1493,7 @@ impl World {
                     p.needs.impulse(NeedTag::Stimulation, 0.01);
                 }
             } else if p.condition.addiction > 0.0 {
-                p.condition.addiction =
-                    (p.condition.addiction - 0.0005 * dt_mins as f32).max(0.0);
+                p.condition.addiction = (p.condition.addiction - 0.0005 * dt_mins as f32).max(0.0);
                 if p.condition.addiction > 0.3 {
                     p.needs.impulse(NeedTag::Medical, 0.01);
                 }
@@ -2113,9 +2195,8 @@ impl World {
     ) {
         let sec_old = self.policies.security_level;
         if self.policies.security_level < 0.95 {
-            self.policies.security_level = (self.policies.security_level
-                + consequences.security_level_delta)
-            .clamp(0.0, 0.95);
+            self.policies.security_level =
+                (self.policies.security_level + consequences.security_level_delta).clamp(0.0, 0.95);
         }
         self.audit_policy_change("security_level", sec_old, self.policies.security_level);
 
@@ -2795,9 +2876,15 @@ impl World {
                         _ => MemoryKind::Social,
                     };
                     let valence = if delta.hostility > 0.0 { -0.3 } else { 0.3 };
-                    let intensity = (delta.hostility + delta.friendship + delta.familiarity).clamp(0.0, 1.0);
+                    let intensity =
+                        (delta.hostility + delta.friendship + delta.familiarity).clamp(0.0, 1.0);
                     if let Some(mem) = self.memory_state.get_mut(&a) {
-                        let mut rec = MemoryRecord::new(MemoryLayer::ShortTerm, mem_kind, ev_summary.clone(), b.raw());
+                        let mut rec = MemoryRecord::new(
+                            MemoryLayer::ShortTerm,
+                            mem_kind,
+                            ev_summary.clone(),
+                            b.raw(),
+                        );
                         rec.emotional_valence = valence;
                         rec.emotional_intensity = intensity;
                         rec.created_at_secs = now;
@@ -2805,7 +2892,12 @@ impl World {
                         mem.store(rec);
                     }
                     if let Some(mem) = self.memory_state.get_mut(&b) {
-                        let mut rec = MemoryRecord::new(MemoryLayer::ShortTerm, mem_kind, ev_summary.clone(), a.raw());
+                        let mut rec = MemoryRecord::new(
+                            MemoryLayer::ShortTerm,
+                            mem_kind,
+                            ev_summary.clone(),
+                            a.raw(),
+                        );
                         rec.emotional_valence = valence;
                         rec.emotional_intensity = intensity;
                         rec.created_at_secs = now;
@@ -3286,8 +3378,11 @@ impl World {
         self.days_simulated += 1;
 
         // Compact durable event history (Directive 18).
-        let cutoff_day = self.days_simulated.saturating_sub(self.history_retention_days as u64);
-        self.history.retain(|e| e.major || e.at.as_days() >= cutoff_day);
+        let cutoff_day = self
+            .days_simulated
+            .saturating_sub(self.history_retention_days as u64);
+        self.history
+            .retain(|e| e.major || e.at.as_days() >= cutoff_day);
 
         // Daily funding + expenses.
         let pop = self.population();
@@ -3584,6 +3679,12 @@ impl World {
                 )
                 .with_actor(id.raw()),
             );
+            let lean = self
+                .parole_leans
+                .get(&id.raw())
+                .copied()
+                .unwrap_or(0.0)
+                .clamp(-1.0, 1.0);
             let Some(p) = self.prisoners.iter().find(|p| p.id == id) else {
                 continue;
             };
@@ -3603,7 +3704,8 @@ impl World {
             let risk = p.escape_motivation() * 0.5
                 + p.traits.aggression * 0.25
                 + (1.0 - p.condition.mental_health.clamp(0.0, 1.0)) * 0.25;
-            let chance = (0.25 + behavior * 0.35 + rehab * 0.25 - risk * 0.25).clamp(0.02, 0.95);
+            let chance = (0.25 + behavior * 0.35 + rehab * 0.25 - risk * 0.25 + lean * 0.20)
+                .clamp(0.02, 0.98);
 
             let mut rng =
                 RngStream::new(self.seed, id.raw() ^ (self.days_simulated << 16) ^ 0xBA20);
@@ -3618,7 +3720,7 @@ impl World {
                     )
                     .with_actor(id.raw())
                     .with_cause(format!(
-                        "behavior {behavior:.2}, rehab {rehab:.2}, risk {risk:.2}"
+                        "behavior {behavior:.2}, rehab {rehab:.2}, risk {risk:.2}, lean {lean:.2}"
                     )),
                 );
             } else {
@@ -3631,10 +3733,12 @@ impl World {
                     )
                     .with_actor(id.raw())
                     .with_cause(format!(
-                        "behavior {behavior:.2}, rehab {rehab:.2}, risk {risk:.2}"
+                        "behavior {behavior:.2}, rehab {rehab:.2}, risk {risk:.2}, lean {lean:.2}"
                     )),
                 );
             }
+            // A recommendation is a one-shot signal to the next hearing.
+            self.parole_leans.remove(&id.raw());
         }
 
         if !released.is_empty() {
@@ -3846,14 +3950,8 @@ impl World {
         }
         // Lockdown / max-security posture halts admissions (Directive §13).
         let lockdown_active = self.policies.lockdown
-            && self
-                .days_simulated
-                .saturating_sub(self.lockdown_since_day)
-                < 14;
-        if lockdown_active
-            || self.policies.security_level >= 1.0
-            || self.policies.intake_paused
-        {
+            && self.days_simulated.saturating_sub(self.lockdown_since_day) < 14;
+        if lockdown_active || self.policies.security_level >= 1.0 || self.policies.intake_paused {
             return;
         }
         let cap = self.capacity();
@@ -4881,6 +4979,8 @@ impl World {
     /// and UI paths delegate here so policy, staffing, construction and budget
     /// consequences have a single implementation.
     pub fn apply_warden_action(&mut self, action: WardenAction) {
+        let action_for_adapt = action.clone();
+        let events_before = self.events.len();
         match action {
             WardenAction::Expand { building } => {
                 let kind = match building.as_str() {
@@ -5025,55 +5125,153 @@ impl World {
                 }
             }
             WardenAction::NegotiateWithRepresentatives => {
-                self.events.emit(WorldEvent::new(
-                    0,
-                    self.time,
-                    EventKind::PolicyChange,
-                    "Warden met with prisoner representatives",
-                ));
+                // Representatives bring the prisoners' most acute shared
+                // grievance. The warden concedes on the matching policy knob
+                // instead of producing an empty meeting event.
+                let pop = self.prisoners.len().max(1) as f32;
+                let avg =
+                    |f: &dyn Fn(&Prisoner) -> f32| self.prisoners.iter().map(f).sum::<f32>() / pop;
+                let respect = avg(&|p| p.needs.respect);
+                let freedom = avg(&|p| p.needs.freedom);
+                let medical = avg(&|p| p.needs.medical_need);
+                let mut concessions: Vec<String> = Vec::new();
+                if respect >= 0.55 {
+                    let old = self.policies.privileges_level;
+                    self.policies.privileges_level =
+                        (self.policies.privileges_level + 0.10).clamp(0.0, 1.0);
+                    self.audit_policy_change(
+                        "privileges_level",
+                        old,
+                        self.policies.privileges_level,
+                    );
+                    concessions.push("expanded privileges".to_string());
+                }
+                if freedom >= 0.55 && self.policies.security_level > 0.45 {
+                    let old = self.policies.security_level;
+                    self.policies.security_level = (self.policies.security_level - 0.05).max(0.45);
+                    self.audit_policy_change("security_level", old, self.policies.security_level);
+                    concessions.push("relaxed security posture".to_string());
+                }
+                if medical >= 0.50 {
+                    let old = self.policies.rehab_funding_multiplier;
+                    self.policies.rehab_funding_multiplier =
+                        (self.policies.rehab_funding_multiplier + 0.10).clamp(0.2, 2.0);
+                    self.audit_policy_change(
+                        "rehab_funding_multiplier",
+                        old,
+                        self.policies.rehab_funding_multiplier,
+                    );
+                    concessions.push("increased medical/rehab funding".to_string());
+                }
+                if concessions.is_empty() {
+                    concessions.push("no material concession; grievances acknowledged".to_string());
+                }
+                for prisoner in &mut self.prisoners {
+                    prisoner.needs.impulse(NeedTag::Respect, -0.02);
+                    prisoner.needs.impulse(NeedTag::Freedom, -0.01);
+                }
+                self.events.emit(
+                    WorldEvent::new(
+                        0,
+                        self.time,
+                        EventKind::PolicyChange,
+                        format!(
+                            "Warden negotiated with representatives: {}",
+                            concessions.join(", ")
+                        ),
+                    )
+                    .with_cause(format!(
+                        "respect {respect:.2}, freedom {freedom:.2}, medical {medical:.2}"
+                    )),
+                );
             }
             WardenAction::FireGuards { count } => {
                 let count = count.min(16).min(self.guards.len() as u32);
+                let mut fired = Vec::new();
                 for _ in 0..count {
-                    if let Some(guard) = self.guards.pop() {
+                    // Remove the weakest performer rather than whichever guard
+                    // happens to sit at the end of the roster.
+                    let worst = self
+                        .guards
+                        .iter()
+                        .enumerate()
+                        .min_by(|(_, a), (_, b)| {
+                            a.performance_score()
+                                .total_cmp(&b.performance_score())
+                                .then_with(|| b.id.raw().cmp(&a.id.raw()))
+                        })
+                        .map(|(idx, _)| idx);
+                    if let Some(idx) = worst {
+                        let guard = self.guards.remove(idx);
                         self.guard_location.remove(&guard.id);
+                        fired.push(guard.id.raw());
+                        self.events.emit(
+                            WorldEvent::new(
+                                0,
+                                self.time,
+                                EventKind::PolicyChange,
+                                format!(
+                                    "Guard {} released from service (performance {:.2})",
+                                    guard.id.raw(),
+                                    guard.performance_score()
+                                ),
+                            )
+                            .with_actor(guard.id.raw())
+                            .with_cause("warden staff reduction"),
+                        );
                     }
                 }
                 self.events.emit(WorldEvent::new(
                     0,
                     self.time,
                     EventKind::PolicyChange,
-                    format!("Fired {count} guards"),
+                    format!("Fired {} guards: {:?}", fired.len(), fired),
                 ));
             }
             WardenAction::PromoteStaff { guard } => {
                 if let Some(g) = self.guards.iter_mut().find(|g| g.id.raw() == guard) {
+                    let old_rank = g.rank;
                     g.rank = match g.rank {
                         GuardRank::Officer => GuardRank::Sergeant,
                         GuardRank::Sergeant => GuardRank::Lieutenant,
                         GuardRank::Lieutenant => GuardRank::Captain,
                         GuardRank::Captain => GuardRank::Captain,
                     };
-                    self.events.emit(WorldEvent::new(
-                        0,
-                        self.time,
-                        EventKind::PolicyChange,
-                        format!("Guard {guard} promoted to {:?}", g.rank),
-                    ));
+                    g.authority = g.rank.authority_cap();
+                    g.morale = (g.morale + 0.08).min(1.0);
+                    g.loyalty = (g.loyalty + 0.05).min(1.0);
+                    self.events.emit(
+                        WorldEvent::new(
+                            0,
+                            self.time,
+                            EventKind::PolicyChange,
+                            format!(
+                                "Guard {guard} promoted {:?} -> {:?} (performance {:.2})",
+                                old_rank,
+                                g.rank,
+                                g.performance_score()
+                            ),
+                        )
+                        .with_actor(guard),
+                    );
                 }
             }
             WardenAction::ImproveInfrastructure { facility } => {
                 if let Some(f) = self.facilities.iter_mut().find(|f| f.id.0 == facility) {
+                    let old = f.condition;
                     f.condition = (f.condition + 0.05).min(1.0);
-                    self.events.emit(WorldEvent::new(
-                        0,
-                        self.time,
-                        EventKind::PolicyChange,
-                        format!(
-                            "Facility {facility} condition improved to {:.2}",
-                            f.condition
-                        ),
-                    ));
+                    self.events.emit(
+                        WorldEvent::new(
+                            0,
+                            self.time,
+                            EventKind::PolicyChange,
+                            format!(
+                                "Facility {facility} condition {old:.2} -> {:.2}",
+                                f.condition
+                            ),
+                        )
+                        .with_cause("warden infrastructure investment"),
+                    );
                 }
             }
             WardenAction::RespondToDisturbance { event_id } => {
@@ -5085,20 +5283,85 @@ impl World {
                 ));
             }
             WardenAction::InvestigateMisconduct { target } => {
-                self.events.emit(WorldEvent::new(
-                    0,
-                    self.time,
-                    EventKind::Investigation,
-                    format!("Misconduct investigation initiated: {target}"),
-                ));
+                let target_event = self
+                    .events
+                    .recent()
+                    .find(|event| event.id == target)
+                    .cloned();
+                let actor = target_event
+                    .as_ref()
+                    .and_then(|event| event.actors.first().copied());
+                let mut detail = format!("event {target} could not be resolved");
+                let mut found = false;
+                if let Some(actor) = actor {
+                    if let Some(idx) = self.guards.iter().position(|g| g.id.raw() == actor) {
+                        let guard = &self.guards[idx];
+                        let suspicious = ((1.0 - guard.integrity) * 0.65
+                            + self.warden.traits.corruption_susceptibility * 0.35)
+                            .clamp(0.0, 1.0);
+                        let mut rng = RngStream::new(
+                            self.seed,
+                            target ^ (self.days_simulated << 9) ^ 0x1A5E_57_u64,
+                        );
+                        found = rng.chance((0.20 + suspicious as f64 * 0.65).clamp(0.0, 0.9));
+                        detail = format!("guard {actor} investigated for event {target}");
+                    } else if let Some(idx) =
+                        self.prisoners.iter().position(|p| p.id.raw() == actor)
+                    {
+                        let prisoner = &mut self.prisoners[idx];
+                        let mut rng = RngStream::new(
+                            self.seed,
+                            target ^ (self.days_simulated << 11) ^ 0x1A5E_57_u64,
+                        );
+                        found = rng.chance(0.55);
+                        if found {
+                            prisoner.schedule.disciplinary_status = true;
+                            prisoner.needs.impulse(NeedTag::Respect, 0.05);
+                            prisoner.needs.impulse(NeedTag::Safety, 0.04);
+                        }
+                        detail = format!("prisoner {actor} investigated for event {target}");
+                    }
+                }
+                if let Some(idx) =
+                    actor.and_then(|actor| self.guards.iter().position(|g| g.id.raw() == actor))
+                {
+                    self.guards[idx].apply_investigation(found, self.days_simulated, &detail);
+                }
+                let (kind, verb) = if found {
+                    (EventKind::StaffMisconduct, "substantiated")
+                } else {
+                    (EventKind::Investigation, "found no evidence")
+                };
+                self.events.emit(
+                    WorldEvent::new(
+                        0,
+                        self.time,
+                        kind,
+                        format!("Misconduct investigation {verb}: {detail}"),
+                    )
+                    .with_actor(actor.unwrap_or(0))
+                    .with_cause(format!("warden investigation of event {target}")),
+                );
             }
             WardenAction::AdjustParoleRecommendation { prisoner, lean } => {
-                self.events.emit(WorldEvent::new(
-                    0,
-                    self.time,
-                    EventKind::ParoleBoardDecision,
-                    format!("Parole recommendation adjusted: prisoner {prisoner} lean={lean:.2}"),
-                ));
+                let lean = lean.clamp(-1.0, 1.0);
+                let known = self.prisoners.iter().any(|p| p.id.raw() == prisoner);
+                if known {
+                    self.parole_leans.insert(prisoner, lean);
+                }
+                self.events.emit(
+                    WorldEvent::new(
+                        0,
+                        self.time,
+                        EventKind::ParoleBoardDecision,
+                        format!(
+                            "Parole recommendation adjusted: prisoner {prisoner} lean={lean:.2}{}",
+                            if known { "" } else { " (unknown prisoner)" }
+                        ),
+                    )
+                    .with_actor(prisoner)
+                    .with_cause("warden parole recommendation"),
+                );
             }
             WardenAction::RequestFunding { amount_major } => {
                 // Funding is a real budget inflow, not just an event. A 30-day
@@ -5133,7 +5396,35 @@ impl World {
                 self.warden.attention = (self.warden.attention - 0.05).max(0.0);
             }
             WardenAction::NoAction { .. } => {}
+            WardenAction::DismissGuard { guard } => {
+                if let Some(idx) = self.guards.iter().position(|g| g.id.raw() == guard) {
+                    let dismissed = self.guards.remove(idx);
+                    self.guard_location.remove(&dismissed.id);
+                    self.events.emit(
+                        WorldEvent::new(
+                            0,
+                            self.time,
+                            EventKind::PolicyChange,
+                            format!(
+                                "Guard {guard} dismissed by direct order (performance {:.2})",
+                                dismissed.performance_score()
+                            ),
+                        )
+                        .with_actor(guard)
+                        .with_cause("warden staff control"),
+                    );
+                } else {
+                    self.events.emit(WorldEvent::new(
+                        0,
+                        self.time,
+                        EventKind::Investigation,
+                        format!("Dismissal ignored: unknown guard {guard}"),
+                    ));
+                }
+            }
         }
+        let applied = self.events.len() > events_before;
+        self.warden.adapt_from_outcome(&action_for_adapt, applied);
     }
 }
 
@@ -5645,5 +5936,106 @@ mod tests {
         record.completed = true;
         let signal = RehabProgramRecord::progress_signal(&[record]);
         assert!((0.0..=1.0).contains(&signal));
+    }
+
+    #[test]
+    fn warden_staff_controls_validate_and_emit_auditable_events() {
+        let mut w = running(7_004, TimeSpeed::Paused);
+        let before = w.guards.len();
+        let worst = w
+            .guards
+            .iter()
+            .min_by(|a, b| a.performance_score().total_cmp(&b.performance_score()))
+            .unwrap()
+            .id
+            .raw();
+        let events_before = w.events.len();
+        w.apply_warden_action(WardenAction::DismissGuard { guard: u64::MAX });
+        assert_eq!(
+            w.events.len(),
+            events_before + 1,
+            "invalid id must be audited"
+        );
+        assert_eq!(w.guards.len(), before);
+        w.apply_warden_action(WardenAction::DismissGuard { guard: worst });
+        assert_eq!(w.guards.len(), before - 1);
+        assert!(
+            w.events
+                .recent()
+                .any(|e| { e.summary.contains("dismissed") && e.actors.contains(&worst) })
+        );
+
+        let best = w
+            .guards
+            .iter()
+            .max_by(|a, b| a.performance_score().total_cmp(&b.performance_score()))
+            .unwrap()
+            .id
+            .raw();
+        let rank_before = w.guards.iter().find(|g| g.id.raw() == best).unwrap().rank;
+        w.apply_warden_action(WardenAction::PromoteStaff { guard: best });
+        let guard = w.guards.iter().find(|g| g.id.raw() == best).unwrap();
+        assert!(guard.rank > rank_before || rank_before == GuardRank::Captain);
+        assert!(guard.morale > 0.0);
+    }
+
+    #[test]
+    fn warden_parole_lean_changes_next_hearing() {
+        let mut w = running(7_005, TimeSpeed::Paused);
+        let id = w.prisoners[0].id.raw();
+        w.apply_warden_action(WardenAction::AdjustParoleRecommendation {
+            prisoner: id,
+            lean: 1.0,
+        });
+        assert_eq!(w.parole_leans.get(&id), Some(&1.0));
+        assert!(
+            w.events
+                .recent()
+                .any(|e| e.summary.contains("Parole recommendation"))
+        );
+    }
+
+    #[test]
+    fn warden_negotiation_concedes_on_pressure() {
+        let mut w = running(7_006, TimeSpeed::Paused);
+        for p in &mut w.prisoners {
+            p.needs.respect = 0.95;
+        }
+        let old = w.policies.privileges_level;
+        w.apply_warden_action(WardenAction::NegotiateWithRepresentatives);
+        assert!(w.policies.privileges_level > old);
+        assert!(w.events.recent().any(|e| e.summary.contains("negotiated")));
+    }
+
+    #[test]
+    fn investigation_produces_substantiated_or_cleared_outcome() {
+        let mut w = running(7_007, TimeSpeed::Paused);
+        let guard = w.guards[0].id.raw();
+        let event = w.events.emit(
+            WorldEvent::new(0, w.time, EventKind::GuardReport, "test misconduct report")
+                .with_actor(guard),
+        );
+        w.warden.traits.corruption_susceptibility = 0.95;
+        w.guards[0].integrity = 0.05;
+        let before = w.events.len();
+        w.apply_warden_action(WardenAction::InvestigateMisconduct { target: event });
+        assert!(w.events.len() > before);
+        assert!(
+            w.events
+                .recent()
+                .any(|e| { e.summary.contains("investigation") || e.summary.contains("evidence") })
+        );
+    }
+
+    #[test]
+    fn warden_adapts_traits_from_repeated_applied_actions() {
+        let mut w = running(7_008, TimeSpeed::Paused);
+        let before = w.warden.traits.compassion;
+        for _ in 0..6 {
+            w.apply_warden_action(WardenAction::NegotiateWithRepresentatives);
+        }
+        assert!(w.warden.traits.compassion > before);
+        assert!(w.warden.outcome_streak > 0);
+        assert!(w.warden.philosophy.len() > 3);
     }
 }

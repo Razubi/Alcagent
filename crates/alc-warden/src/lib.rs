@@ -122,6 +122,11 @@ pub enum WardenAction {
     NoAction {
         rationale: String,
     },
+    /// Dismiss one specific guard (UI staff control). Appended last so bincode
+    /// variant indices for existing saves remain stable.
+    DismissGuard {
+        guard: u64,
+    },
 }
 
 impl WardenAction {
@@ -142,6 +147,7 @@ impl WardenAction {
             WardenAction::AdjustParoleRecommendation { .. } => "Adjust parole recommendation",
             WardenAction::RequestFunding { .. } => "Request funding",
             WardenAction::NoAction { .. } => "Hold steady",
+            WardenAction::DismissGuard { .. } => "Dismiss guard",
         }
     }
 
@@ -168,6 +174,7 @@ impl WardenAction {
             WardenAction::AdjustParoleRecommendation { .. } => "Adjust parole recommendation",
             WardenAction::RequestFunding { .. } => "Request additional government funding",
             WardenAction::NoAction { .. } => "Defer decision; no action required",
+            WardenAction::DismissGuard { .. } => "Dismiss an underperforming guard",
         }
     }
 
@@ -637,7 +644,10 @@ pub fn decide_strategy(
             conflicts.push("Investigation may divert attention from routine duties".into());
             return decisive!(
                 WardenAction::InvestigateMisconduct { target: event_id },
-                format!("Report pressure {}; investigating misconduct", snapshot.report_pressure()),
+                format!(
+                    "Report pressure {}; investigating misconduct",
+                    snapshot.report_pressure()
+                ),
             );
         }
     }
@@ -653,7 +663,11 @@ pub fn decide_strategy(
             conflicts.push("Promotion raises payroll expectations".into());
             return decisive!(
                 WardenAction::PromoteStaff { guard },
-                format!("Report pressure {}; promoting guard {}", snapshot.report_pressure(), guard),
+                format!(
+                    "Report pressure {}; promoting guard {}",
+                    snapshot.report_pressure(),
+                    guard
+                ),
             );
         }
     }
@@ -667,11 +681,7 @@ pub fn decide_strategy(
             ),
         );
     }
-    if snapshot.active_construction == 0
-        && crowding > 0.75
-        && crowding <= 0.9
-        && can_spend
-    {
+    if snapshot.active_construction == 0 && crowding > 0.75 && crowding <= 0.9 && can_spend {
         if let Some(facility) = snapshot.top_facility_id {
             conflicts.push("Infrastructure work competes with expansion".into());
             return decisive!(
@@ -680,7 +690,8 @@ pub fn decide_strategy(
             );
         }
     }
-    if snapshot.population > (snapshot.capacity as f64 * 0.8) as u32 && snapshot.runway_days > 30.0 {
+    if snapshot.population > (snapshot.capacity as f64 * 0.8) as u32 && snapshot.runway_days > 30.0
+    {
         if let Some(prisoner) = snapshot.parole_candidate {
             conflicts.push("Parole adjustment may affect security".into());
             return decisive!(
@@ -688,7 +699,10 @@ pub fn decide_strategy(
                     prisoner,
                     lean: 0.7,
                 },
-                format!("Population {}; adjusting parole recommendation", snapshot.population),
+                format!(
+                    "Population {}; adjusting parole recommendation",
+                    snapshot.population
+                ),
             );
         }
     }
@@ -873,8 +887,10 @@ fn objective_weight(
     cash_major: f32,
 ) -> f32 {
     match obj {
-        Objective::Security => traits.strictness * 0.7 + traits.authoritarian_tendencies * 0.3
-            - traits.corruption_susceptibility * 0.1,
+        Objective::Security => {
+            traits.strictness * 0.7 + traits.authoritarian_tendencies * 0.3
+                - traits.corruption_susceptibility * 0.1
+        }
         Objective::FinancialSustainability => {
             traits.financial_discipline + traits.corruption_susceptibility * 0.2
         }
@@ -941,6 +957,11 @@ pub struct Warden {
     /// Auditable decision log (append-only, bounded). New field in 0.05.
     #[serde(default)]
     pub audit_log: WardenAuditLog,
+    /// Consecutive outcome sentiment: positive when decisions land, negative
+    /// when they are repeatedly deferred or impossible. Drives small trait
+    /// adaptation after major runs.
+    #[serde(default)]
+    pub outcome_streak: i32,
 }
 
 impl Warden {
@@ -959,6 +980,7 @@ impl Warden {
             incidents_this_week: 0,
             last_action_day: 0,
             audit_log: WardenAuditLog::default(),
+            outcome_streak: 0,
         }
     }
 
@@ -1006,6 +1028,55 @@ impl Warden {
     /// Most recent `n` decision records (newest first).
     pub fn recent_decisions(&self, n: usize) -> Vec<&WardenDecisionRecord> {
         self.audit_log.recent(n)
+    }
+
+    /// Adapt the warden's traits slightly from the observed outcome of an
+    /// applied decision. Repeated success makes the warden bolder; repeated
+    /// failure makes them more cautious. Philosophy is recomputed after a
+    /// sustained streak so major events can change their governing outlook.
+    pub fn adapt_from_outcome(&mut self, action: &WardenAction, applied: bool) {
+        if matches!(action, WardenAction::NoAction { .. }) {
+            return;
+        }
+        let delta = if applied { 0.005 } else { -0.010 };
+        let bump = |value: &mut f32, delta: f32| {
+            *value = (*value + delta).clamp(0.05, 0.95);
+        };
+        match action {
+            WardenAction::Expand { .. } | WardenAction::ImproveInfrastructure { .. } => {
+                bump(&mut self.traits.risk_tolerance, delta);
+            }
+            WardenAction::HireGuards { .. }
+            | WardenAction::FireGuards { .. }
+            | WardenAction::DismissGuard { .. }
+            | WardenAction::PromoteStaff { .. } => {
+                bump(&mut self.traits.staff_loyalty, delta);
+            }
+            WardenAction::InvestigateMisconduct { .. }
+            | WardenAction::RespondToDisturbance { .. }
+            | WardenAction::IncreaseSecurity => {
+                bump(&mut self.traits.authoritarian_tendencies, delta);
+            }
+            WardenAction::NegotiateWithRepresentatives
+            | WardenAction::AdjustParoleRecommendation { .. } => {
+                bump(&mut self.traits.compassion, delta);
+            }
+            WardenAction::RequestFunding { .. } | WardenAction::ReduceExpenses => {
+                bump(&mut self.traits.financial_discipline, delta);
+            }
+            WardenAction::ChangePolicy { .. } => {
+                bump(&mut self.traits.strictness, delta);
+            }
+            WardenAction::NoAction { .. } => {}
+        }
+        self.outcome_streak = if applied {
+            (self.outcome_streak + 1).min(10)
+        } else {
+            (self.outcome_streak - 1).max(-10)
+        };
+        if self.outcome_streak.unsigned_abs() >= 5 {
+            self.philosophy = derive_philosophy(&self.traits);
+        }
     }
 
     /// Borrow the full audit log.

@@ -40,6 +40,7 @@ fn guard_context(sim: &Sim, at: SimTime) -> DutyContext {
         at,
         lockdown: sim.world.policies.lockdown,
         security_level: sim.world.policies.security_level,
+        corruption_pressure: sim.world.warden.traits.corruption_susceptibility,
     }
 }
 

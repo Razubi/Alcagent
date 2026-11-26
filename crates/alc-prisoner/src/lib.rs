@@ -462,7 +462,9 @@ impl CrimeCategory {
     pub fn base_classification(self) -> Classification {
         match self {
             CrimeCategory::Property | CrimeCategory::PublicOrder => Classification::Minimum,
-            CrimeCategory::Drug | CrimeCategory::Fraud | CrimeCategory::WhiteCollar => Classification::Low,
+            CrimeCategory::Drug | CrimeCategory::Fraud | CrimeCategory::WhiteCollar => {
+                Classification::Low
+            }
             CrimeCategory::Violent | CrimeCategory::Weapons => Classification::High,
             CrimeCategory::Organized | CrimeCategory::Sexual => Classification::Maximum,
         }

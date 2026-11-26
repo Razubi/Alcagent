@@ -876,6 +876,20 @@ fn staff(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                             g.tracked_opinions, g.mistakes, g.violations
                         ),
                     );
+                    if g.off_duty {
+                        theme::kv(
+                            ui,
+                            "Status",
+                            format!("off-duty: {}", g.off_duty_activity.label()),
+                        );
+                    } else {
+                        theme::kv(ui, "Status", "on duty");
+                    }
+                    theme::kv(
+                        ui,
+                        "Performance / bonds",
+                        format!("{:.2} / {}", g.performance, g.bonds.len()),
+                    );
                     theme::metric_bar(ui, "Competence", g.competence, true);
                     theme::metric_bar(ui, "Experience", g.experience, true);
                     theme::metric_bar(ui, "Morale", g.morale, true);
@@ -883,6 +897,26 @@ fn staff(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                     theme::metric_bar(ui, "Stress", g.stress, false);
                     theme::metric_bar(ui, "Loyalty", g.loyalty, true);
                     theme::metric_bar(ui, "Integrity", g.integrity, true);
+                    panels::section(ui, "Needs (higher = more unmet)", |ui| {
+                        theme::metric_bar(ui, "Rest", g.needs.rest, false);
+                        theme::metric_bar(ui, "Social", g.needs.social, false);
+                        theme::metric_bar(ui, "Safety", g.needs.safety, false);
+                        theme::metric_bar(ui, "Purpose", g.needs.purpose, false);
+                        theme::metric_bar(ui, "Hygiene", g.needs.hygiene, false);
+                        theme::metric_bar(ui, "Stimulation", g.needs.stimulation, false);
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("Promote").clicked() {
+                            ctx.emit(Command::WardenAction(
+                                alc_warden::WardenAction::PromoteStaff { guard: g.id },
+                            ));
+                        }
+                        if ui.button("Dismiss").clicked() {
+                            ctx.emit(Command::WardenAction(
+                                alc_warden::WardenAction::DismissGuard { guard: g.id },
+                            ));
+                        }
+                    });
                     panels::section(ui, "Recent duty log", |ui| {
                         for entry in g.history.iter().rev().take(12) {
                             ui.add(egui::Label::new(egui::RichText::new(entry).small()));

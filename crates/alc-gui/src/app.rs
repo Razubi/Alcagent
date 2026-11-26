@@ -870,7 +870,15 @@ mod tests {
 
     #[test]
     fn queued_commands_are_drained_before_snapshot_capture() {
-        let mut app = App::new(0xC0FFEE_20);
+        // Use an explicit default-settings path: `App::new` loads user
+        // preferences from `saves/alc-gui/settings.json`, which can legitimately
+        // start on any view and made this test depend on local files.
+        let mut app = App::configured(
+            sumo::Sim::new(0xC0FFEE_20),
+            settings::Settings::default(),
+            std::path::Path::new("saves/alc-gui/settings.json"),
+        );
+        app.state.view = ViewMode::InstitutionOverview;
         assert_eq!(app.state.view, ViewMode::InstitutionOverview);
         app.commands.push(Command::SetView(ViewMode::Map));
         app.commands.push(Command::SetAutosave(3));

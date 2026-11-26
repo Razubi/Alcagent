@@ -1146,6 +1146,11 @@ impl Sim {
                 mistakes: g.mistake_count(),
                 violations: g.violation_count(),
                 tracked_opinions: g.opinion_count(),
+                needs: g.needs,
+                off_duty: g.off_duty,
+                off_duty_activity: g.off_duty_activity,
+                performance: g.performance_score(),
+                bonds: g.bonds.clone(),
                 history: g.history.iter().rev().take(16).rev().cloned().collect(),
             })
             .collect()
@@ -1195,6 +1200,8 @@ impl Sim {
         let queue = self.construction_queue();
         let economy = self.economy();
         let guards = self.guards();
+        let facilities = self.facilities();
+        let prisoners = self.prisoners();
         let policy = self.policy_summary();
 
         let recent: Vec<&DecisionAuditRecord> = self
@@ -1242,6 +1249,28 @@ impl Sim {
             .collect();
         let future_capacity: u32 = active.iter().map(|p| p.capacity).sum();
 
+        // Promotion targets the best performer, infrastructure targets the
+        // worst-condition facility, and parole targets the strongest eligible
+        // candidate. Previously these were "first entry", which made the
+        // warden's targeted actions arbitrary.
+        let top_guard = guards
+            .iter()
+            .max_by(|a, b| a.performance.total_cmp(&b.performance))
+            .map(|g| g.id);
+        let worst_facility = facilities
+            .iter()
+            .min_by(|a, b| a.condition.total_cmp(&b.condition))
+            .map(|f| f.id);
+        let parole_candidate = prisoners
+            .iter()
+            .filter(|p| p.sentence_days > 0 && p.sentence_served_days * 2 >= p.sentence_days)
+            .max_by(|a, b| {
+                let score =
+                    |p: &PrisonerSummary| p.reputation * 0.6 + p.condition.mental_health * 0.4;
+                score(a).total_cmp(&score(b))
+            })
+            .map(|p| p.id.raw());
+
         WardenStrategySnapshot::new(
             budget.population,
             budget.capacity,
@@ -1255,9 +1284,9 @@ impl Sim {
             future_capacity,
             guards.len() as u32,
             warnings,
-            guards.first().map(|g| g.id),
-            self.world.facilities.first().map(|f| f.id.0),
-            self.world.prisoners.first().map(|p| p.id.raw()),
+            top_guard,
+            worst_facility,
+            parole_candidate,
         )
     }
 

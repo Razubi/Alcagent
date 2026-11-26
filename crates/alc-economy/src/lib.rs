@@ -313,8 +313,10 @@ impl Economy {
         let medical = Money::from_major(1).mul(population as f64 * 0.35);
         let education = Money::from_major(1).mul(population as f64 * 0.15);
         let rehabilitation = Money::from_major(1).mul(population as f64 * 0.1);
-        let security_equipment = Money::from_major(2).mul(buildings as f64 * 0.25 + guards as f64 * 0.1);
-        let transportation = Money::from_major(1).mul(population as f64 * 0.05 + guards as f64 * 0.1);
+        let security_equipment =
+            Money::from_major(2).mul(buildings as f64 * 0.25 + guards as f64 * 0.1);
+        let transportation =
+            Money::from_major(1).mul(population as f64 * 0.05 + guards as f64 * 0.1);
         let supplies = Money::from_major(1).mul(population as f64 * 0.25);
         let admin = Money::from_major(1).mul(guards as f64 * 0.2 + buildings as f64 * 0.1);
         let total = food

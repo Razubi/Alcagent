@@ -133,7 +133,7 @@ impl Default for ShiftRotation {
         Self {
             current_shift: 0,
             ticks_on_shift: 0,
-            rotation_period_ticks: 480, // abstract: e.g. 8h * 60m
+            rotation_period_ticks: 8, // eight hourly duty ticks before a rest block
             consecutive_shifts: 0,
         }
     }
@@ -284,6 +284,10 @@ pub struct DutyContext {
     pub at: SimTime,
     pub lockdown: bool,
     pub security_level: f32,
+    /// Warden-level tolerance for corner-cutting, 0..1. Biases guard
+    /// violations and makes corruption a visible environmental pressure.
+    #[serde(default)]
+    pub corruption_pressure: f32,
 }
 
 /// Outcome of one duty-loop pass.
@@ -369,13 +373,128 @@ impl GuardNeeds {
 
     /// Recover needs during off-duty rest.
     pub fn recover_off_duty(&mut self) {
-        self.rest = (self.rest - 0.05).clamp(0.0, 1.0);
-        self.social = (self.social - 0.02).clamp(0.0, 1.0);
-        self.safety = (self.safety - 0.01).clamp(0.0, 1.0);
-        self.hygiene = (self.hygiene - 0.03).clamp(0.0, 1.0);
-        self.stimulation = (self.stimulation - 0.02).clamp(0.0, 1.0);
-        self.purpose = (self.purpose + 0.01).clamp(0.0, 1.0);
+        self.recover_with(OffDutyActivity::Rest);
     }
+
+    /// Recover one off-duty block with the chosen activity. Rest restores the
+    /// most physical needs, socialising restores belonging, and training trades
+    /// some rest for purpose and stimulation.
+    pub fn recover_with(&mut self, activity: OffDutyActivity) {
+        let (rest, social, purpose, stimulation, hygiene) = match activity {
+            OffDutyActivity::Rest => (0.09, 0.02, 0.01, 0.01, 0.05),
+            OffDutyActivity::Socialize => (0.04, 0.10, 0.02, 0.03, 0.03),
+            OffDutyActivity::Train => (0.03, 0.02, 0.08, 0.06, 0.04),
+            OffDutyActivity::OffHoursPatrol => (0.01, 0.01, 0.06, 0.02, 0.01),
+        };
+        self.rest = (self.rest - rest).clamp(0.0, 1.0);
+        self.social = (self.social - social).clamp(0.0, 1.0);
+        self.safety = (self.safety - 0.02).clamp(0.0, 1.0);
+        self.hygiene = (self.hygiene - hygiene).clamp(0.0, 1.0);
+        self.stimulation = (self.stimulation - stimulation).clamp(0.0, 1.0);
+        self.purpose = (self.purpose - purpose).clamp(0.0, 1.0);
+    }
+
+    /// Average unmet need across every tracked need.
+    #[must_use]
+    pub fn pressure(&self) -> f32 {
+        (self.rest + self.social + self.safety + self.purpose + self.hygiene + self.stimulation)
+            / 6.0
+    }
+
+    /// Performance penalty from unmet needs, weighted toward rest and safety.
+    #[must_use]
+    pub fn performance_penalty(&self) -> f32 {
+        (self.rest * 0.35
+            + self.safety * 0.20
+            + self.hygiene * 0.15
+            + self.purpose * 0.12
+            + self.stimulation * 0.10
+            + self.social * 0.08)
+            .clamp(0.0, 1.0)
+    }
+
+    /// Most urgent unmet need and its value.
+    #[must_use]
+    pub fn dominant(&self) -> (GuardNeedKind, f32) {
+        let mut best = (GuardNeedKind::Rest, self.rest);
+        for (kind, value) in [
+            (GuardNeedKind::Social, self.social),
+            (GuardNeedKind::Safety, self.safety),
+            (GuardNeedKind::Purpose, self.purpose),
+            (GuardNeedKind::Hygiene, self.hygiene),
+            (GuardNeedKind::Stimulation, self.stimulation),
+        ] {
+            if value > best.1 {
+                best = (kind, value);
+            }
+        }
+        best
+    }
+}
+
+/// Guard need labels for UI and narrative text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GuardNeedKind {
+    Rest,
+    Social,
+    Safety,
+    Purpose,
+    Hygiene,
+    Stimulation,
+}
+
+impl GuardNeedKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Rest => "rest",
+            Self::Social => "social",
+            Self::Safety => "safety",
+            Self::Purpose => "purpose",
+            Self::Hygiene => "hygiene",
+            Self::Stimulation => "stimulation",
+        }
+    }
+}
+
+/// How a guard spends an off-duty block. Off-duty behaviour is deliberately
+/// simple but has real next-shift consequences.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum OffDutyActivity {
+    #[default]
+    Rest,
+    Socialize,
+    Train,
+    OffHoursPatrol,
+}
+
+impl OffDutyActivity {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Rest => "rest",
+            Self::Socialize => "socialize",
+            Self::Train => "train",
+            Self::OffHoursPatrol => "off-hours patrol",
+        }
+    }
+
+    /// Deterministic activity selection from a guard's id and shift.
+    #[must_use]
+    pub fn for_guard(id: GuardId, shift: u8) -> Self {
+        match (id.raw().wrapping_add(shift as u64)) % 4 {
+            0 => Self::Rest,
+            1 => Self::Socialize,
+            2 => Self::Train,
+            _ => Self::OffHoursPatrol,
+        }
+    }
+}
+
+/// A durable off-duty social bond between two guards.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GuardBond {
+    pub guard: GuardId,
+    pub strength: f32,
+    pub last_day: u64,
 }
 
 /// Kind of direct guard → prisoner interaction produced by a duty tick.
@@ -460,6 +579,18 @@ pub struct Guard {
     /// Guard needs (rest, social, safety, purpose, hygiene, stimulation).
     #[serde(default)]
     pub needs: GuardNeeds,
+    /// Whether the guard is currently in an off-duty recovery block.
+    #[serde(default)]
+    pub off_duty: bool,
+    /// Activity chosen for the current/last off-duty block.
+    #[serde(default)]
+    pub off_duty_activity: OffDutyActivity,
+    /// Remaining hourly ticks in the current off-duty block.
+    #[serde(default)]
+    pub off_duty_ticks: u8,
+    /// Bounded off-duty social bonds with other guards.
+    #[serde(default)]
+    pub bonds: Vec<GuardBond>,
 }
 
 fn default_authority() -> AuthorityLevel {
@@ -482,6 +613,9 @@ impl Guard {
         let experience = rng.range(0.0, 1.0) as f32;
         let fatigue: f32 = 0.0;
         let credibility = (competence * 0.5 + experience * 0.3 + (1.0 - fatigue) * 0.2) as f32;
+        let mut rotation = ShiftRotation::default();
+        // Stagger rest blocks so the whole shift never goes off duty at once.
+        rotation.ticks_on_shift = (id.raw() % rotation.rotation_period_ticks.max(1) as u64) as u32;
         Self {
             id,
             name: name.into(),
@@ -499,17 +633,26 @@ impl Guard {
             shift: 0,
             history: Vec::new(),
             authority: rank.authority_cap(),
-            rotation: ShiftRotation::default(),
+            rotation,
             report_credibility: credibility.clamp(0.05, 0.99),
             last_escalation_hour: 0,
             cumulative_mistakes: 0,
             cumulative_violations: 0,
             needs: GuardNeeds::default(),
+            off_duty: false,
+            off_duty_activity: OffDutyActivity::Rest,
+            off_duty_ticks: 0,
+            bonds: Vec::new(),
         }
     }
 
-    /// Duty tick: fatigue rises, stress from incidents decays slowly.
-    pub fn tick(&mut self, _at: SimTime, incident_load: f32) {
+    /// Duty tick: fatigue rises, stress from incidents decays slowly, and every
+    /// eight hourly duty ticks the guard enters a short off-duty recovery block.
+    pub fn tick(&mut self, at: SimTime, incident_load: f32) {
+        if self.off_duty_ticks > 0 {
+            self.off_duty_recovery_tick(at);
+            return;
+        }
         let rotated = self.rotation.advance();
         self.shift = self.rotation.current_shift;
         let fatigue_rate = 0.008 + self.post.risk_profile() * 0.004;
@@ -523,15 +666,119 @@ impl Guard {
         }
         if rotated {
             self.experience = (self.experience + 0.0005).min(1.0);
-            self.current_task = "patrol".into();
-            // Abstract off-shift recovery marker in history (stub).
-            self.push_history(format!("shift rotation -> {}", self.shift));
+            self.begin_off_duty(at);
             if self.rotation.consecutive_shifts >= 6 {
                 self.stress = (self.stress + 0.02).min(1.0);
                 self.morale = (self.morale - 0.01).max(0.0);
             }
         }
         self.report_credibility = self.compute_credibility(true);
+    }
+
+    /// Begin a two-hour off-duty recovery block with a deterministic activity.
+    pub fn begin_off_duty(&mut self, at: SimTime) {
+        self.off_duty_activity = OffDutyActivity::for_guard(self.id, self.shift);
+        self.off_duty_ticks = 2;
+        self.off_duty = true;
+        self.needs.recover_with(self.off_duty_activity);
+        self.apply_off_duty_effects();
+        self.current_task = format!("off-duty: {}", self.off_duty_activity.label());
+        self.push_history(format!(
+            "off_duty@{}:{}",
+            at.as_secs() / 3600,
+            self.off_duty_activity.label()
+        ));
+    }
+
+    /// One hourly off-duty tick. Needs recover and the block eventually ends.
+    pub fn off_duty_recovery_tick(&mut self, _at: SimTime) {
+        self.off_duty = true;
+        self.needs.recover_with(self.off_duty_activity);
+        self.apply_off_duty_effects();
+        self.off_duty_ticks = self.off_duty_ticks.saturating_sub(1);
+        if self.off_duty_ticks == 0 {
+            self.off_duty = false;
+            self.current_task = "patrol".into();
+        }
+        self.report_credibility = self.compute_credibility(true);
+    }
+
+    fn apply_off_duty_effects(&mut self) {
+        match self.off_duty_activity {
+            OffDutyActivity::Rest => {
+                self.fatigue = (self.fatigue - 0.12).max(0.0);
+            }
+            OffDutyActivity::Socialize => {
+                self.morale = (self.morale + 0.03).min(1.0);
+                self.stress = (self.stress - 0.04).max(0.0);
+            }
+            OffDutyActivity::Train => {
+                self.experience = (self.experience + 0.01).min(1.0);
+                self.fatigue = (self.fatigue - 0.04).max(0.0);
+            }
+            OffDutyActivity::OffHoursPatrol => {
+                self.fatigue = (self.fatigue - 0.02).max(0.0);
+                self.stress = (self.stress - 0.01).max(0.0);
+            }
+        }
+    }
+
+    /// Strengthen (or create) a bounded bond with another guard.
+    pub fn form_bond(&mut self, peer: GuardId, day: u64) {
+        if self.id == peer {
+            return;
+        }
+        if let Some(bond) = self.bonds.iter_mut().find(|b| b.guard == peer) {
+            bond.strength = (bond.strength + 0.12).min(1.0);
+            bond.last_day = day;
+        } else {
+            self.bonds.push(GuardBond {
+                guard: peer,
+                strength: 0.15,
+                last_day: day,
+            });
+            if self.bonds.len() > 12 {
+                self.bonds.sort_by(|a, b| {
+                    a.strength
+                        .total_cmp(&b.strength)
+                        .then_with(|| a.guard.raw().cmp(&b.guard.raw()))
+                });
+                self.bonds.remove(0);
+            }
+        }
+        self.needs.social = (self.needs.social - 0.02).clamp(0.0, 1.0);
+    }
+
+    /// Composite performance score used to rank promotions and reductions.
+    #[must_use]
+    pub fn performance_score(&self) -> f32 {
+        let base = self.competence * 0.35
+            + self.experience * 0.20
+            + self.integrity * 0.15
+            + self.morale * 0.15
+            + self.report_credibility * 0.15;
+        let penalties = self.cumulative_mistakes as f32 * 0.01
+            + self.cumulative_violations as f32 * 0.04
+            + self.fatigue * 0.10
+            + self.stress * 0.10;
+        (base - penalties).clamp(0.0, 1.0)
+    }
+
+    /// Apply the result of a misconduct investigation. Returns true when
+    /// corruption or a policy violation was substantiated.
+    pub fn apply_investigation(&mut self, found_misconduct: bool, day: u64, detail: &str) -> bool {
+        if found_misconduct {
+            self.integrity = (self.integrity - 0.15).max(0.0);
+            self.morale = (self.morale - 0.10).max(0.0);
+            self.loyalty = (self.loyalty - 0.08).max(0.0);
+            self.cumulative_violations = self.cumulative_violations.saturating_add(1);
+            self.push_history(format!("investigation@{day}:substantiated:{detail}"));
+            true
+        } else {
+            self.morale = (self.morale + 0.02).min(1.0);
+            self.push_history(format!("investigation@{day}:cleared"));
+            false
+        }
     }
 
     /// Credibility of this guard's report (used by warden inbox).
@@ -543,12 +790,13 @@ impl Guard {
         let witness = if witnessed_directly { 1.0 } else { 0.5 };
         let stress_impairment = (self.stress * 0.25).min(0.25);
         let fatigue_penalty = self.fatigue * 0.10;
+        let needs_penalty = self.needs.performance_penalty() * 0.25;
         let base = 0.45 * self.competence
             + 0.20 * self.integrity
             + 0.15 * self.experience
             + 0.10 * witness
             + 0.10 * self.morale;
-        (base - stress_impairment - fatigue_penalty).clamp(0.05, 0.99)
+        (base - stress_impairment - fatigue_penalty - needs_penalty).clamp(0.05, 0.99)
     }
 
     /// Guard history is a bounded audit log. Bounding it keeps long runs fast
@@ -849,7 +1097,8 @@ impl Guard {
             + policies.security_level.clamp(0.0, 1.0) * 0.1
             + lockdown_pressure)
             .clamp(0.0, 1.0);
-        self.needs.drift_duty((nearby / 10.0).clamp(0.0, 1.0), avg_tension);
+        self.needs
+            .drift_duty((nearby / 10.0).clamp(0.0, 1.0), avg_tension);
 
         self.tick(at, incident_load);
 
@@ -903,16 +1152,21 @@ impl Guard {
                 )
             });
 
-            let mut witnessed_directly =
-                rng.chance((0.55 + self.competence as f64 * 0.35).min(0.98));
+            let mut witnessed_directly = rng.chance(
+                (0.55 + self.competence as f64 * 0.35
+                    - self.needs.performance_penalty() as f64 * 0.25)
+                    .clamp(0.2, 0.98),
+            );
 
             // Imperfect perception: fatigued/stressed or incompetent guards can
             // misremember severity or witness status. The degraded report still
             // carries a cause string, so this remains explainable to observers.
-            let mistake_chance =
-                ((1.0 - self.competence) * 0.40 + self.fatigue * 0.25 + self.stress * 0.20
-                    - self.integrity * 0.10)
-                    .clamp(0.01, 0.65) as f64;
+            let mistake_chance = ((1.0 - self.competence) * 0.40
+                + self.fatigue * 0.25
+                + self.stress * 0.20
+                + self.needs.performance_penalty() * 0.20
+                - self.integrity * 0.10)
+                .clamp(0.01, 0.70) as f64;
             if rng.chance(mistake_chance) {
                 witnessed_directly = false;
                 severity = severity.saturating_sub(1);
@@ -952,10 +1206,12 @@ impl Guard {
             // Occasional policy violation: leniency under stress, or excessive
             // force from a rigid, low-integrity guard. Bounded and rate-limited
             // by the same incident pressure that drives enforcement.
-            let violation_chance =
-                ((1.0 - self.integrity) * 0.35 + self.stress * 0.20 + self.personality * 0.10
-                    - self.morale * 0.10)
-                    .clamp(0.0, 0.45) as f64;
+            let violation_chance = ((1.0 - self.integrity) * 0.35
+                + self.stress * 0.20
+                + self.personality * 0.10
+                + policies.corruption_pressure.clamp(0.0, 1.0) * 0.15
+                - self.morale * 0.10)
+                .clamp(0.0, 0.50) as f64;
             if (incident_load > 0.55 || self.stress > 0.7) && rng.chance(violation_chance) {
                 let kind = if self.personality > 0.6 {
                     "leniency"
@@ -1063,6 +1319,7 @@ mod tests {
                 at: SimTime::from_secs(hour * 3600),
                 lockdown: false,
                 security_level: 1.0,
+                corruption_pressure: 0.0,
             };
             let reports = guard.duty_tick(&[1.0], ctx, &mut rng);
             for r in &reports {
@@ -1120,6 +1377,7 @@ mod tests {
             at: SimTime::from_secs(hour * 3600),
             lockdown: false,
             security_level: 1.0,
+            corruption_pressure: 0.0,
         }
     }
 
@@ -1242,5 +1500,65 @@ mod tests {
         guard.push_history("mistake@4:perception".to_string());
         guard.restore_legacy_counters_from_history();
         assert_eq!(guard.mistake_count(), 2);
+    }
+
+    #[test]
+    fn off_duty_blocks_recover_needs_and_form_bonds() {
+        let mut a = test_guard(31, PostType::Wing);
+        let mut b = test_guard(32, PostType::Wing);
+        a.needs.rest = 0.9;
+        a.needs.social = 0.9;
+        a.fatigue = 0.9;
+        b.needs.social = 0.9;
+        let before = a.needs.performance_penalty();
+        a.begin_off_duty(SimTime::from_secs(3600));
+        b.begin_off_duty(SimTime::from_secs(3600));
+        assert!(a.off_duty && b.off_duty);
+        assert!(a.needs.rest < 0.9, "rest need should recover off-duty");
+        assert!(a.fatigue < 0.9, "fatigue should recover off-duty");
+        assert!(a.performance_score() > 0.0);
+        a.form_bond(b.id, 1);
+        b.form_bond(a.id, 1);
+        assert_eq!(a.bonds.len(), 1);
+        assert_eq!(a.bonds[0].guard, b.id);
+        assert!(a.bonds[0].strength > 0.0);
+        assert!(a.needs.performance_penalty() < before);
+        // Two more recovery ticks end the block and return the guard to duty.
+        for _ in 0..2 {
+            a.off_duty_recovery_tick(SimTime::from_secs(7200));
+        }
+        assert!(!a.off_duty);
+        assert_eq!(a.current_task, "patrol");
+    }
+
+    #[test]
+    fn unmet_needs_degrade_report_quality() {
+        let rested = test_guard(41, PostType::Corridor);
+        let mut exhausted = rested.clone();
+        exhausted.id = GuardId(42);
+        exhausted.needs.rest = 1.0;
+        exhausted.needs.safety = 1.0;
+        exhausted.needs.hygiene = 1.0;
+        exhausted.needs.social = 1.0;
+        exhausted.needs.purpose = 1.0;
+        exhausted.needs.stimulation = 1.0;
+        assert!(rested.credibility() > exhausted.credibility());
+        // Credibility and performance are distinct signals: need penalties act
+        // on reporting quality first, while mistakes/violations dominate the
+        // performance score. Verify the need-aware scoring path directly.
+        assert!(rested.needs.performance_penalty() < exhausted.needs.performance_penalty());
+        assert!((rested.needs.performance_penalty() - 0.0).abs() < 0.6);
+    }
+
+    #[test]
+    fn investigation_consequences_are_durable() {
+        let mut guard = test_guard(51, PostType::Corridor);
+        let integrity = guard.integrity;
+        let violations = guard.violation_count();
+        assert!(guard.apply_investigation(true, 3, "bribery"));
+        assert!(guard.integrity < integrity);
+        assert!(guard.violation_count() > violations);
+        assert!(guard.history.iter().any(|h| h.contains("substantiated")));
+        assert!(!guard.apply_investigation(false, 4, "cleared"));
     }
 }

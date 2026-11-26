@@ -129,6 +129,21 @@ pub struct GuardSummary {
     pub violations: u32,
     /// Distinct prisoners this guard has formed an opinion about.
     pub tracked_opinions: usize,
+    /// Current guard needs (0..1, higher = more unmet).
+    #[serde(default)]
+    pub needs: alc_guard::GuardNeeds,
+    /// Whether the guard is in an off-duty block right now.
+    #[serde(default)]
+    pub off_duty: bool,
+    /// Activity for the current/last off-duty block.
+    #[serde(default)]
+    pub off_duty_activity: alc_guard::OffDutyActivity,
+    /// Composite performance score used for promotion and reduction.
+    #[serde(default)]
+    pub performance: f32,
+    /// Off-duty social bonds (bounded).
+    #[serde(default)]
+    pub bonds: Vec<alc_guard::GuardBond>,
     /// Historical event log.
     pub history: Vec<String>,
 }
