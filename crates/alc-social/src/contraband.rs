@@ -42,6 +42,170 @@ impl ContrabandItem {
             ContrabandItem::Drugs | ContrabandItem::Alcohol | ContrabandItem::Cigarettes
         )
     }
+
+    /// Base black-market price in minor currency units. Scarcity and gang
+    /// control adjust this at trade time.
+    #[must_use]
+    pub fn base_price(self) -> u32 {
+        match self {
+            ContrabandItem::Weapons => 120,
+            ContrabandItem::Drugs => 80,
+            ContrabandItem::Tools => 70,
+            ContrabandItem::Phones => 100,
+            ContrabandItem::Money => 50,
+            ContrabandItem::Alcohol => 60,
+            ContrabandItem::Cigarettes => 40,
+            ContrabandItem::Medicine => 90,
+            ContrabandItem::Blueprints => 150,
+            ContrabandItem::Radio => 110,
+        }
+    }
+
+    /// Relative danger of possessing the item (0..1). Drives discovery chance
+    /// and disciplinary severity.
+    #[must_use]
+    pub fn risk(self) -> f32 {
+        match self {
+            ContrabandItem::Weapons => 1.0,
+            ContrabandItem::Drugs => 0.85,
+            ContrabandItem::Alcohol => 0.55,
+            ContrabandItem::Phones => 0.6,
+            ContrabandItem::Tools => 0.45,
+            ContrabandItem::Money => 0.25,
+            ContrabandItem::Cigarettes => 0.35,
+            ContrabandItem::Medicine => 0.4,
+            ContrabandItem::Blueprints => 0.65,
+            ContrabandItem::Radio => 0.5,
+        }
+    }
+}
+
+/// Measurable effect of possessing/using one contraband item for a day.
+/// All fields are deltas in `-1..1`; the world applies them to prisoner needs
+/// and traits so different items create genuinely different incentives.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct ContrabandEffect {
+    pub safety: f32,
+    pub respect: f32,
+    pub freedom: f32,
+    pub stimulation: f32,
+    pub medical: f32,
+    pub aggression: f32,
+    pub hope: f32,
+    /// Increase to the prisoner's addiction level while using the item.
+    pub addiction: f32,
+}
+
+impl ContrabandItem {
+    /// Daily effect of possessing this item. Weapons embolden aggression;
+    /// phones provide coordination and freedom; medicine relieves medical
+    /// need; addictive items soothe but deepen dependency.
+    #[must_use]
+    pub fn daily_effect(self) -> ContrabandEffect {
+        match self {
+            ContrabandItem::Weapons => ContrabandEffect {
+                safety: -0.03,
+                respect: 0.04,
+                aggression: 0.03,
+                addiction: 0.0,
+                ..Default::default()
+            },
+            ContrabandItem::Drugs => ContrabandEffect {
+                safety: 0.02,
+                stimulation: 0.06,
+                medical: -0.02,
+                hope: -0.02,
+                addiction: 0.06,
+                ..Default::default()
+            },
+            ContrabandItem::Tools => ContrabandEffect {
+                freedom: 0.02,
+                respect: 0.01,
+                ..Default::default()
+            },
+            ContrabandItem::Phones => ContrabandEffect {
+                freedom: 0.04,
+                respect: 0.02,
+                stimulation: 0.02,
+                ..Default::default()
+            },
+            ContrabandItem::Money => ContrabandEffect {
+                freedom: 0.01,
+                respect: 0.01,
+                ..Default::default()
+            },
+            ContrabandItem::Alcohol => ContrabandEffect {
+                safety: 0.03,
+                stimulation: 0.03,
+                aggression: 0.02,
+                hope: -0.01,
+                addiction: 0.04,
+                ..Default::default()
+            },
+            ContrabandItem::Cigarettes => ContrabandEffect {
+                safety: 0.01,
+                stimulation: 0.02,
+                addiction: 0.02,
+                ..Default::default()
+            },
+            ContrabandItem::Medicine => ContrabandEffect {
+                medical: -0.08,
+                hope: 0.02,
+                ..Default::default()
+            },
+            ContrabandItem::Blueprints => ContrabandEffect {
+                freedom: 0.03,
+                respect: 0.02,
+                ..Default::default()
+            },
+            ContrabandItem::Radio => ContrabandEffect {
+                stimulation: 0.04,
+                freedom: 0.01,
+                ..Default::default()
+            },
+        }
+    }
+}
+
+/// A prisoner who repeatedly supplies scarce goods becomes a smuggler.
+/// Roles are detected from behaviour, not assigned at intake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SmugglerRole {
+    None,
+    Seller,
+    Broker,
+    Enforcer,
+}
+
+impl SmugglerRole {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Seller => "seller",
+            Self::Broker => "broker",
+            Self::Enforcer => "enforcer",
+        }
+    }
+}
+
+/// Classify a prison role from observed trade behaviour and social influence.
+#[must_use]
+pub fn detect_smuggler_role(
+    sales: u32,
+    disputes: u32,
+    influence: f32,
+    gang_control: f32,
+) -> SmugglerRole {
+    if sales == 0 {
+        return SmugglerRole::None;
+    }
+    if influence + gang_control > 0.65 && sales >= 3 {
+        return SmugglerRole::Broker;
+    }
+    if disputes >= 2 || gang_control > 0.5 {
+        return SmugglerRole::Enforcer;
+    }
+    SmugglerRole::Seller
 }
 
 /// A proposed illicit trade between prisoners.
@@ -199,18 +363,7 @@ pub fn contraband_market(
         }
 
         let item = pick_item(buyer, rng);
-        let base_price = match item {
-            ContrabandItem::Weapons => 120,
-            ContrabandItem::Drugs => 80,
-            ContrabandItem::Tools => 70,
-            ContrabandItem::Phones => 100,
-            ContrabandItem::Money => 50,
-            ContrabandItem::Alcohol => 60,
-            ContrabandItem::Cigarettes => 40,
-            ContrabandItem::Medicine => 90,
-            ContrabandItem::Blueprints => 150,
-            ContrabandItem::Radio => 110,
-        };
+        let base_price = item.base_price();
         let scarcity = 0.7 + rng.next_f64() * 0.8;
         let control_premium = 1.0 + seller_control * 0.2;
         let price = ((base_price as f64) * scarcity * f64::from(control_premium)) as u32;
@@ -530,5 +683,29 @@ mod tests {
             }
         }
         assert!(found.is_some());
+    }
+
+    #[test]
+    fn items_have_distinct_effect_profiles() {
+        use ContrabandItem::*;
+        let weapons = Weapons.daily_effect();
+        let medicine = Medicine.daily_effect();
+        let drugs = Drugs.daily_effect();
+        let phones = Phones.daily_effect();
+        assert!(weapons.aggression > 0.0, "weapons must embolden");
+        assert!(medicine.medical < 0.0, "medicine must relieve medical need");
+        assert!(drugs.addiction > 0.0 && drugs.stimulation > 0.0);
+        assert!(phones.freedom > 0.0);
+        assert!(Cigarettes.daily_effect().addiction > 0.0);
+        assert!(Money.base_price() < Blueprints.base_price());
+        assert!(Weapons.risk() > Money.risk());
+    }
+
+    #[test]
+    fn smuggler_roles_emerge_from_behaviour() {
+        assert_eq!(detect_smuggler_role(0, 0, 0.9, 0.9), SmugglerRole::None);
+        assert_eq!(detect_smuggler_role(1, 0, 0.2, 0.1), SmugglerRole::Seller);
+        assert_eq!(detect_smuggler_role(4, 3, 0.8, 0.6), SmugglerRole::Broker);
+        assert_eq!(detect_smuggler_role(2, 3, 0.2, 0.0), SmugglerRole::Enforcer);
     }
 }

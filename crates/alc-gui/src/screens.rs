@@ -459,6 +459,22 @@ fn prisoner(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                         theme::kv(ui, "Social drive", format!("{:.2}", agent.social_drive));
                     }
                 });
+                panels::section(ui, "Case file", |ui| {
+                    theme::kv(ui, "Conviction", p.crime.clone());
+                    theme::kv(ui, "Category", format!("{:?}", p.crime_category));
+                    theme::kv(
+                        ui,
+                        "Sentence",
+                        format!(
+                            "{} / {} days",
+                            p.sentence_served_days, p.sentence_days
+                        ),
+                    );
+                    ui.add(egui::Label::new(
+                        egui::RichText::new(data::short_truncate(&p.bio, 520))
+                            .small(),
+                    ));
+                });
                 panels::section(ui, "Personality", |ui| {
                     let t = &p.traits;
                     theme::metric_bar(ui, "Intelligence", t.intelligence, true);

@@ -1029,6 +1029,9 @@ impl Sim {
                 schedule: p.schedule.clone(),
                 skills: p.skills.clone(),
                 memory_summary: p.memory_summary.clone(),
+                bio: p.bio.clone(),
+                crime: p.crime.clone(),
+                crime_category: p.crime_category,
             })
             .collect()
     }

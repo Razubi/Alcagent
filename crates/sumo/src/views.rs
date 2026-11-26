@@ -36,6 +36,15 @@ pub struct PrisonerSummary {
     pub skills: std::collections::HashMap<String, f32>,
     /// Brief memory summary.
     pub memory_summary: String,
+    /// Specific authored/generated backstory (Spec 007).
+    #[serde(default)]
+    pub bio: String,
+    /// Conviction description and category (Spec 007).
+    #[serde(default)]
+    pub crime: String,
+    /// Legal category of the conviction (Spec 007).
+    #[serde(default)]
+    pub crime_category: alc_prisoner::CrimeCategory,
 }
 
 /// Pairwise political score between two gangs (Spec 008).

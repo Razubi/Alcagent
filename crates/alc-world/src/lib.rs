@@ -3447,6 +3447,7 @@ impl World {
 
         // Contraband market and discovery (Directive §7, §17).
         self.contraband_step();
+        self.contraband_effects_step();
 
         // Construction progress (0.05 lifecycle).
         self.construction_step();
@@ -4457,6 +4458,58 @@ impl World {
     /// discipline/reputation/safety effects, records the item in world-owned
     /// inventory/state, sets confiscation flags, and emits consistent
     /// ContrabandFound + ContrabandConfiscated events (0.05 lifecycle).
+    /// Daily application of contraband effects from carried items. Each item
+    /// has a distinct effect profile; addictive items deepen dependency and
+    /// withdrawal raises irritability when use stops.
+    fn contraband_effects_step(&mut self) {
+        use alc_social::contraband::ContrabandItem;
+        let ids: Vec<PrisonerId> = self.prisoners.iter().map(|p| p.id).collect();
+        for id in ids {
+            let items: Vec<(ContrabandItem, u32)> = self
+                .contraband_state
+                .get(&id)
+                .map(|state| state.inventory.iter().map(|(&k, &v)| (k, v)).collect())
+                .unwrap_or_default();
+            let Some(p) = self.prisoners.iter_mut().find(|p| p.id == id) else {
+                continue;
+            };
+            for (item, count) in items.iter().copied() {
+                let effect = item.daily_effect();
+                let dose = (count.min(3) as f32 / 3.0).max(0.25);
+                let delta = |base: f32| (base * dose).clamp(-1.0, 1.0);
+                p.needs.safety = (p.needs.safety + delta(effect.safety)).clamp(0.0, 1.0);
+                p.needs.respect = (p.needs.respect + delta(effect.respect)).clamp(0.0, 1.0);
+                p.needs.freedom = (p.needs.freedom + delta(effect.freedom)).clamp(0.0, 1.0);
+                p.needs.stimulation =
+                    (p.needs.stimulation + delta(effect.stimulation)).clamp(0.0, 1.0);
+                p.needs.medical_need =
+                    (p.needs.medical_need + delta(effect.medical)).clamp(0.0, 1.0);
+                p.condition.hope = (p.condition.hope + delta(effect.hope)).clamp(0.0, 1.0);
+                p.traits.aggression =
+                    (p.traits.aggression + delta(effect.aggression) * 0.5).clamp(0.0, 1.0);
+                if effect.addiction > 0.0 {
+                    let name = item.as_str().to_string();
+                    if !p.condition.addicted_items.contains(&name) {
+                        p.condition.addicted_items.push(name);
+                    }
+                    p.condition.addiction =
+                        (p.condition.addiction + effect.addiction * dose).clamp(0.0, 1.0);
+                }
+            }
+            // Withdrawal: dependency without the substance raises irritability
+            // and lowers hope, which in turn feeds arguments and rule-breaking.
+            if p.condition.addiction > 0.2 {
+                let has_source = items.iter().any(|(item, _)| item.is_addictive());
+                if !has_source {
+                    let withdrawal = p.condition.addiction * 0.06;
+                    p.needs.impulse(alc_prisoner::NeedTag::Respect, withdrawal);
+                    p.condition.hope = (p.condition.hope - withdrawal * 0.5).max(0.0);
+                    p.condition.addiction = (p.condition.addiction - 0.01).max(0.0);
+                }
+            }
+        }
+    }
+
     fn record_contraband_discovery(&mut self, found: alc_social::ContrabandFound) {
         let holder = found.holder;
         if let Some(p) = self.prisoners.iter_mut().find(|p| p.id == holder) {
@@ -6037,5 +6090,39 @@ mod tests {
         assert!(w.warden.traits.compassion > before);
         assert!(w.warden.outcome_streak > 0);
         assert!(w.warden.philosophy.len() > 3);
+    }
+
+    #[test]
+    fn contraband_effects_are_item_specific_and_addictive() {
+        let mut w = running(7_009, TimeSpeed::Paused);
+        let id = w.prisoners[0].id;
+        w.contraband_state_entry(id)
+            .inventory
+            .insert(ContrabandItem::Medicine, 3);
+        w.prisoners[0].needs.medical_need = 0.8;
+        let before_medical = w.prisoners[0].needs.medical_need;
+        w.contraband_effects_step();
+        assert!(w.prisoners[0].needs.medical_need < before_medical);
+
+        w.contraband_state_entry(id)
+            .inventory
+            .insert(ContrabandItem::Drugs, 3);
+        let before_addiction = w.prisoners[0].condition.addiction;
+        w.contraband_effects_step();
+        assert!(w.prisoners[0].condition.addiction > before_addiction);
+        assert!(
+            w.prisoners[0]
+                .condition
+                .addicted_items
+                .contains(&"Drugs".to_string())
+        );
+
+        // Removing the source triggers withdrawal rather than continued relief.
+        w.contraband_state_entry(id).inventory.clear();
+        w.prisoners[0].condition.addiction = 0.8;
+        w.prisoners[0].condition.hope = 0.7;
+        let before_hope = w.prisoners[0].condition.hope;
+        w.contraband_effects_step();
+        assert!(w.prisoners[0].condition.hope < before_hope);
     }
 }
