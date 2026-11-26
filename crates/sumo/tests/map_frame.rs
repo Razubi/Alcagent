@@ -65,7 +65,7 @@ fn map_frame_reflects_movement() {
     let old_x = old_pawn.x;
     let old_y = old_pawn.y;
 
-    // Directly move the prisoner to facility 2 (world_mut is pub).
+    // Directly move the prisoner to facility 2 via test-support access.
     sim.world_mut()
         .prisoner_location
         .insert(pid, alc_core::FacilityId(2));
@@ -82,6 +82,21 @@ fn map_frame_reflects_movement() {
         (old_x, old_y),
         "coordinates should change after move"
     );
+}
+
+#[test]
+fn map_frame_exposes_shared_world_map_regions() {
+    let sim = Sim::new(128);
+    let frame = sim.map_frame();
+    assert!(!frame.zones.is_empty());
+    assert!(frame.width > 0.0);
+    assert!(frame.height > 0.0);
+    assert_eq!(frame.zones.len(), 5);
+    let bounds = frame.bounds();
+    assert_eq!(bounds.min_x, 0.0);
+    assert_eq!(bounds.min_y, 0.0);
+    assert_eq!(bounds.max_x, frame.width);
+    assert_eq!(bounds.max_y, frame.height);
 }
 
 #[test]

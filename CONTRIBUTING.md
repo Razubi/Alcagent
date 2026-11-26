@@ -14,11 +14,15 @@ conventions, testing and documentation expectations. The full product specificat
   decisions; `sumo` validates and applies them. Do not mutate `alc_world::World` directly from
   UI or agent code.
 - **Events carry causes.** Every `WorldEvent` must have a `summary` and, where meaningful,
-  `causes` explaining why it happened (AGENTS.md §17).
+  `causes` explaining why it happened (agents.md §17).
 - **Agents never see everything.** Preserve the information model (direct knowledge, rumors,
   suspicion, belief) and fog-of-war: the warden reads reports through its inbox, not global state.
+- **One binary, thin frontends.** `alcagent` is the only binary: `cargo run` opens the graphical
+  observer, `--tui` the ratatui debug observer, `run <days>` is headless. Shared display models
+  (palette, view catalog, world-map layout/zones, camera math, construction kinds) belong in
+  `sumo::graphics`; `alc-gui`/`alc-ui` only render/input and route controls through `sumo::Sim`.
 
-## Development workflow (AGENTS.md §24)
+## Development workflow (agents.md §24)
 
 1. **Investigate** — read the relevant design doc under `docs/alcagent/Design/Core/` and system
    contract under `docs/alcagent/Systems/`, plus the current code. Use subagents for large audits.
@@ -36,6 +40,8 @@ conventions, testing and documentation expectations. The full product specificat
 ```powershell
 cargo build --workspace
 cargo test --workspace
+cargo run                          # graphical observer (default)
+cargo run -- --tui                 # ratatui debug observer
 cargo run -q -- run 365            # headless smoke / soak
 cargo test -p sumo --test chaos_soak -- --nocapture   # 730-day, 3 seeds
 cargo test -p sumo --test integration_wave4           # end-to-end engine flow
@@ -59,13 +65,14 @@ the long-run soaks and the 10k-entry log stress test.
 | `alc-agents` | Decision catalog, validation, memory, orchestration |
 | `alc-persistence` | Versioned bincode saves, migration, autosave |
 | `alc-testing` | Invariants, soak helpers |
-| `alc-ui` | Ratatui observer (read-only) |
-| `alc-gui` | Egui observer (buildable workspace member) |
-| `sumo` | **Public engine API** — the integration surface |
-| `alcagent` | CLI binary |
+| `alc-ui` | Ratatui debug observer adapter (`--tui`; read-only) |
+| `alc-gui` | Egui graphical observer adapter (library; no separate binary) |
+| `sumo` | **Public engine API** + `sumo::graphics` shared display models |
+| `alcagent` | The single binary: graphical observer / `--tui` / headless `run` |
 
-Both frontends consume engine snapshots and validated controls; do not add a backend that mutates
-`alc_world::World` directly.
+Both frontends consume engine snapshots, shared display models and validated controls; do not add
+a backend that mutates `alc_world::World` directly. World saves are v5 directories with `world.bin`;
+GUI preferences in `saves/alc-gui/settings.json` are separate from world state.
 
 ## Code style
 

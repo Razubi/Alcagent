@@ -16,6 +16,7 @@ members = [
   "crates/alcagent",
   "crates/sumo",
 ]
+default-members = ["crates/alcagent"]
 resolver = "3"
 
 [workspace.package]
@@ -50,6 +51,7 @@ alc-events = { path = "crates/alc-events" }
 alc-persistence = { path = "crates/alc-persistence" }
 alc-testing = { path = "crates/alc-testing" }
 alc-ui = { path = "crates/alc-ui" }
+alc-gui = { path = "crates/alc-gui" }
 sumo = { path = "crates/sumo" }
 
 [workspace.lints.clippy]

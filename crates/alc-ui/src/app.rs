@@ -1,9 +1,10 @@
 //! Interactive ratatui TUI (Directive §20, §21).
 //!
-//! This module owns the terminal, the frame loop and keyboard input. The
-//! simulation itself is supplied through [`SimDriver`] so this crate never has
-//! to depend on the engine crate (`sumo`) — that would be a dependency cycle,
-//! since the engine already depends on `alc-ui` for observation snapshots.
+//! `alc-ui` is the ratatui debug-observer backend: this module owns the
+//! terminal, the frame loop and all TUI keyboard handling. The simulation is
+//! supplied through [`SimDriver`]; read-only observation DTOs and the shared
+//! display models (view order, palette, map geometry) come from `sumo`, which
+//! owns those definitions for every frontend.
 //!
 //! The binary crate (`alcagent`) adapts `sumo::Sim` to [`SimDriver`] locally.
 

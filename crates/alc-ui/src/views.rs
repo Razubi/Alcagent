@@ -1,15 +1,19 @@
-//! Read-only renderers for the nine observation modes (Directive §20).
+//! Read-only renderers for the observation modes (Directive §20).
 //!
 //! Every function in this module works against observation/summaries from the
 //! engine and a [`UiState`] cursor. No function mutates simulation state: the
-//! observer is strictly read-only (Directive §19).
+//! observer is strictly read-only (Directive §19). View order, colors and map
+//! geometry come from `sumo::graphics`; only terminal glyphs and compact
+//! captions are defined locally.
 
 use crate::{CONSTRUCTION_KINDS, UiState, ViewMode};
 use alc_prisoner::Classification;
-use alc_world::FacilityKind;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 use std::collections::HashMap;
+use sumo::graphics::{
+    Color as SharedColor, MapBounds, MapCamera, Palette, facility_glyph as shared_facility_glyph,
+};
 use sumo::{
     EconomySummary, FacilitySummary, GangSummary, GuardSummary, MapFrame, Observation,
     PrisonerSummary, SocialEdge, SocialRoleSummary, WardenSummary, WorldEvent,
@@ -86,20 +90,6 @@ pub struct AppStatus {
 /// full filtered history, but this preview only needs a bounded tail.
 pub const OVERVIEW_EVENT_LIMIT: usize = 10;
 
-const ALL_MODES: [ViewMode; 11] = [
-    ViewMode::InstitutionOverview,
-    ViewMode::Prisoner,
-    ViewMode::Gang,
-    ViewMode::Staff,
-    ViewMode::Warden,
-    ViewMode::Financial,
-    ViewMode::EventTimeline,
-    ViewMode::SocialNetwork,
-    ViewMode::Map,
-    ViewMode::IncidentReports,
-    ViewMode::DecisionAudit,
-];
-
 /// Full status-bar help text. Measured at render time; tests assert it stays
 /// in sync with the keys handled in `app::App::handle_key`.
 pub const HELP_WIDE: &str = " ←↑↓→ select · 1-9,0,A views · SPACE pause · +/- speed · S save · Ctrl-L load · / search · Ctrl-W clear query · b/B intake · Tab pin · n notes · V auto-pause · N/E/K policy bands · p policy mode · L lock · U unlock (non-Warden) · x/X lockdown (non-Warden) · Ctrl-R resolve critical · Warden: c kind C queue u/U project v approve x/X cancel/fail > advance · H/G/J/Y parole (Prisoner) · t/r/R rehab · f/F contraband · m/o filters · d/D decision filter · ? help (Esc/? close) · q quit";
@@ -107,30 +97,53 @@ pub const HELP_WIDE: &str = " ←↑↓→ select · 1-9,0,A views · SPACE paus
 /// [`HELP_WIDE`] (measured by [`Line::width`]).
 pub const HELP_COMPACT: &str = " ↑↓ 1-9,0,A SPC +/- S Ctrl-L / b Tab n V c/C u/U x/X N/E/K p ? q";
 
-/// Map a `1`-`9`, `0`, `-` key press to its observation mode.
+/// TUI-only key captions for the tab bar, aligned with [`ViewMode::all`].
+const MODE_KEYS: [&str; 11] = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "A"];
+
+/// Map a `1`-`9`, `0`, `A` key press to its observation mode. The order is the
+/// shared canonical order from [`ViewMode::all`].
 pub fn mode_from_index(index: usize) -> Option<ViewMode> {
-    ALL_MODES.get(index).copied()
+    ViewMode::all().get(index).copied()
 }
 
-fn mode_name(mode: ViewMode) -> &'static str {
+/// Compact tab caption for an 80-column terminal. These are TUI-only hints;
+/// full labels come from [`ViewMode::label`] / [`ViewMode::title`], and the
+/// canonical catalog itself lives in `sumo::graphics`.
+fn compact_tab_label(mode: ViewMode) -> &'static str {
     match mode {
-        ViewMode::InstitutionOverview => "Institution Overview",
-        ViewMode::Prisoner => "Prisoner",
+        ViewMode::InstitutionOverview => "Ovw",
+        ViewMode::Financial => "Fin",
+        ViewMode::EventTimeline => "Evts",
+        ViewMode::SocialNetwork => "Net",
+        ViewMode::IncidentReports => "Inc",
+        ViewMode::DecisionAudit => "Aud",
+        ViewMode::Prisoner => "Pris",
         ViewMode::Gang => "Gang",
-        ViewMode::Staff => "Staff",
-        ViewMode::Warden => "Warden",
-        ViewMode::Financial => "Financial",
-        ViewMode::EventTimeline => "Event Timeline",
-        ViewMode::SocialNetwork => "Social Network",
-        ViewMode::Map => "Prison Map",
-        ViewMode::IncidentReports => "Incident Reports",
-        ViewMode::DecisionAudit => "Decision Audit",
+        ViewMode::Warden => "Ward",
+        _ => mode.label(),
     }
 }
 
 // ---------------------------------------------------------------------------
 // Small styling helpers
 // ---------------------------------------------------------------------------
+
+/// Shared palette for terminal rendering. `sumo` owns the color decisions;
+/// this backend only maps them onto ratatui's native color type.
+fn palette() -> Palette {
+    Palette::default()
+}
+
+/// Convert a shared RGBA color to ratatui. Terminal cells have no alpha
+/// channel, so the alpha component is intentionally dropped.
+fn to_tui_color(color: SharedColor) -> Color {
+    Color::Rgb(color.r, color.g, color.b)
+}
+
+/// Shared good/danger color for a binary state (surplus/deficit, active/...).
+fn state_color(ok: bool) -> Color {
+    to_tui_color(if ok { palette().good } else { palette().danger })
+}
 
 fn title_block(title: impl Into<String>) -> Block<'static> {
     let title = title.into();
@@ -154,26 +167,14 @@ fn kv(label: impl AsRef<str>, value: impl Into<String>) -> Line<'static> {
     ])
 }
 
-/// Colour for a *deficit* pressure: high is bad (red).
+/// Colour for a *deficit* pressure: high is bad (shared severity scale).
 fn urgency_color(v: f32) -> Color {
-    if v >= 0.75 {
-        Color::Red
-    } else if v >= 0.5 {
-        Color::Yellow
-    } else {
-        Color::Green
-    }
+    to_tui_color(palette().severity(v))
 }
 
-/// Colour for a *capacity* metric: high is good (green).
+/// Colour for a *capacity* metric: high is good (shared quality scale).
 fn good_color(v: f32) -> Color {
-    if v <= 0.25 {
-        Color::Red
-    } else if v <= 0.5 {
-        Color::Yellow
-    } else {
-        Color::Green
-    }
+    to_tui_color(palette().quality(v))
 }
 
 fn bar_line(label: &str, value: f32, width: usize) -> Line<'static> {
@@ -481,13 +482,9 @@ fn render_tabbar(frame: &mut Frame, area: Rect, active: ViewMode) {
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(area);
     let tabs_area = rows[0];
     let width = tabs_area.width as usize;
-    let short = [
-        "1 Ovw", "2 Pris", "3 Gang", "4 Staff", "5 Ward", "6 Fin", "7 Evts", "8 Net", "9 Map",
-        "0 Inc", "A Aud",
-    ];
     let build = |compact: bool| -> Vec<Span<'static>> {
         let mut spans: Vec<Span<'static>> = Vec::new();
-        for (i, mode) in ALL_MODES.iter().enumerate() {
+        for (i, mode) in ViewMode::all().iter().enumerate() {
             let is_active = *mode == active;
             let style = if is_active {
                 Style::default()
@@ -497,15 +494,11 @@ fn render_tabbar(frame: &mut Frame, area: Rect, active: ViewMode) {
             } else {
                 Style::default().fg(Color::DarkGray)
             };
-            let key = match i {
-                9 => "0".to_string(),
-                10 => "A".to_string(),
-                _ => format!("{}", i + 1),
-            };
+            let key = MODE_KEYS.get(i).copied().unwrap_or("?");
             let label = if compact {
-                short[i].to_string()
+                format!("{} {}", key, compact_tab_label(*mode))
             } else {
-                format!(" {} {} ", key, mode_name(*mode))
+                format!(" {} {} ", key, mode.title())
             };
             spans.push(Span::styled(label, style));
             spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
@@ -543,7 +536,7 @@ fn render_status(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState, s
 
     let mut spans: Vec<Span<'static>> = Vec::new();
     spans.push(Span::styled(
-        format!(" {} ", mode_name(ui.mode)),
+        format!(" {} ", ui.mode.title()),
         Style::default()
             .fg(Color::Black)
             .bg(Color::Cyan)
@@ -563,12 +556,12 @@ fn render_status(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState, s
     let run_style = if status.paused {
         Style::default()
             .fg(Color::Black)
-            .bg(Color::Red)
+            .bg(to_tui_color(palette().danger))
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default()
             .fg(Color::Black)
-            .bg(Color::Green)
+            .bg(to_tui_color(palette().good))
             .add_modifier(Modifier::BOLD)
     };
     spans.push(Span::raw(" │ "));
@@ -589,7 +582,7 @@ fn render_status(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState, s
             " LOCKDOWN ",
             Style::default()
                 .fg(Color::Black)
-                .bg(Color::Red)
+                .bg(to_tui_color(palette().danger))
                 .add_modifier(Modifier::BOLD),
         ));
     }
@@ -626,7 +619,7 @@ fn render_status(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState, s
             format!("CRITICAL:{} open", status.open_critical),
             Style::default()
                 .fg(Color::Black)
-                .bg(Color::Red)
+                .bg(to_tui_color(palette().danger))
                 .add_modifier(Modifier::BOLD),
         ));
     }
@@ -1261,7 +1254,7 @@ fn render_gang(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
                 ),
                 Span::styled(
                     if g.active { " ACTIVE" } else { " INACTIVE" },
-                    Style::default().fg(if g.active { Color::Green } else { Color::Red }),
+                    Style::default().fg(state_color(g.active)),
                 ),
             ]))
             .style(style)
@@ -1877,14 +1870,9 @@ fn render_financial(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
             .map(|l| l.amount.0)
             .sum();
         net_7 += net;
-        let style = if net >= 0 {
-            Style::default().fg(Color::Green)
-        } else {
-            Style::default().fg(Color::Red)
-        };
         daily_lines.push(Line::from(Span::styled(
             format!("D{} {:+.2}", day, net as f64 / 100.0),
-            style,
+            Style::default().fg(state_color(net >= 0)),
         )));
     }
     let day_30_start = max_day.saturating_sub(29);
@@ -2038,11 +2026,7 @@ fn render_financial(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
             .add_modifier(Modifier::BOLD),
     )));
     for (acct, net) in accounts.iter().take(5) {
-        let style = if *net >= 0 {
-            Style::default().fg(Color::Green)
-        } else {
-            Style::default().fg(Color::Red)
-        };
+        let style = Style::default().fg(state_color(*net >= 0));
         breakdown_lines.push(Line::from(vec![
             Span::raw(format!("{:<24}", format!("{:?}", acct))),
             Span::styled(format!("{:>12.2}", *net as f64 / 100.0), style),
@@ -2081,11 +2065,7 @@ fn render_financial(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
         .take(per_page)
         .map(|l| {
             let day = SimDay(l.at_secs / 86_400);
-            let amount_style = if l.amount.0 >= 0 {
-                Style::default().fg(Color::Green)
-            } else {
-                Style::default().fg(Color::Red)
-            };
+            let amount_style = Style::default().fg(state_color(l.amount.0 >= 0));
             Row::new(vec![
                 Cell::from(format!("D{}", day.0)),
                 Cell::from(format!("{:?}", l.account)),
@@ -2341,23 +2321,43 @@ fn render_network(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) 
 // 9 — Facility map
 // ---------------------------------------------------------------------------
 
-/// Glyph for a facility kind in the map grid (used when the facility id is
-/// known from the `MapFrame`).
+/// Glyph for a facility id in the map grid. The character itself is owned by
+/// `sumo::graphics`; only the ASCII byte conversion and the unknown-facility
+/// fallback are terminal-local.
 fn facility_glyph(id: u64, facilities: &[FacilitySummary]) -> u8 {
-    match facilities.iter().find(|f| f.id == id).map(|f| f.kind) {
-        Some(FacilityKind::CellBlock) => b'C',
-        Some(FacilityKind::Dormitory) => b'D',
-        Some(FacilityKind::Medical) => b'M',
-        Some(FacilityKind::Kitchen) => b'K',
-        Some(FacilityKind::Workshop) => b'W',
-        Some(FacilityKind::Recreation) => b'R',
-        Some(FacilityKind::Education) => b'E',
-        Some(FacilityKind::Admin) => b'A',
-        Some(FacilityKind::Isolation) => b'I',
-        Some(FacilityKind::Visitor) => b'V',
-        Some(FacilityKind::Staff) => b'S',
-        Some(FacilityKind::Yard) => b'Y',
-        _ => b'F',
+    facilities
+        .iter()
+        .find(|f| f.id == id)
+        .map(|f| shared_facility_glyph(f.kind) as u8)
+        .unwrap_or(b'F')
+}
+
+/// Canonical world-map bounds carried by the frame, not a facility-derived
+/// crop. A unit span keeps pawns plottable before any facilities are known.
+fn frame_bounds(frame: &MapFrame) -> MapBounds {
+    let bounds = frame.bounds();
+    if bounds.size().0 > 0.0 && bounds.size().1 > 0.0 {
+        bounds
+    } else {
+        MapBounds {
+            min_x: 0.0,
+            min_y: 0.0,
+            max_x: 1.0,
+            max_y: 1.0,
+        }
+    }
+}
+
+/// Camera for a terminal grid. `MapCamera::fit` clamps zoom for pixel canvases;
+/// terminal cells need the exact fit computed from the shared bounds instead.
+fn grid_camera(bounds: MapBounds, cols: usize, rows: usize) -> MapCamera {
+    let (span_x, span_y) = bounds.size();
+    let max_c = cols.saturating_sub(1).max(1) as f32;
+    let max_r = rows.saturating_sub(1).max(1) as f32;
+    let zoom = (max_c / span_x.max(1.0)).min(max_r / span_y.max(1.0));
+    MapCamera {
+        zoom,
+        pan: (-bounds.min_x * zoom, -bounds.min_y * zoom),
     }
 }
 
@@ -2372,41 +2372,20 @@ fn render_map(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
     ])
     .split(chunks[1]);
 
-    // --- Grid geometry from facility positions (empty positions default to a
-    // unit span so pawns still get a cell). Rendering is O(cells) with
-    // cols*rows ≈ O(facilities). ---
-    let (min_x, max_x, min_y, max_y) = {
-        let (mut min_x, mut max_x) = (f32::MAX, f32::MIN);
-        let (mut min_y, mut max_y) = (f32::MAX, f32::MIN);
-        for (x, y) in mf.facility_positions.values().copied() {
-            min_x = min_x.min(x);
-            max_x = max_x.max(x);
-            min_y = min_y.min(y);
-            max_y = max_y.max(y);
-        }
-        let norm = |min: f32, max: f32| {
-            if min.is_finite() && max.is_finite() && max >= min {
-                (min, max)
-            } else {
-                (0.0, 0.0)
-            }
-        };
-        let (min_x, max_x) = norm(min_x, max_x);
-        let (min_y, max_y) = norm(min_y, max_y);
-        (min_x, max_x, min_y, max_y)
-    };
+    // --- Grid geometry from the shared WorldMapLayout positions carried by
+    // MapFrame. MapBounds/MapCamera do the fitting and projection; rendering
+    // is O(cells) with cols*rows ≈ O(facilities). ---
+    let bounds = frame_bounds(mf);
     let cols = ((grid_area.width as usize).saturating_sub(2)).clamp(8, 40);
     let rows = ((grid_area.height as usize).saturating_sub(2)).clamp(8, 20);
-    let span_x = (max_x - min_x).max(1.0);
-    let span_y = (max_y - min_y).max(1.0);
-    let last_c = (cols - 1) as f32;
-    let last_r = (rows - 1) as f32;
+    let camera = grid_camera(bounds, cols, rows);
+    let last_c = (cols - 1) as isize;
+    let last_r = (rows - 1) as isize;
     let cell_for = |x: f32, y: f32| -> (usize, usize) {
-        let rx = ((x - min_x) / span_x).clamp(0.0, 1.0);
-        let ry = ((y - min_y) / span_y).clamp(0.0, 1.0);
+        let (px, py) = camera.project((x, y));
         (
-            (rx * last_c).round().min(last_c) as usize,
-            (ry * last_r).round().min(last_r) as usize,
+            (px.round() as isize).clamp(0, last_c) as usize,
+            (py.round() as isize).clamp(0, last_r) as usize,
         )
     };
 
@@ -2568,7 +2547,7 @@ fn render_map(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState) {
     ))];
     for inc in open_incidents.iter().take(6) {
         inc_lines.push(Line::from(vec![
-            Span::styled("  ! ", Style::default().fg(Color::Red)),
+            Span::styled("  ! ", Style::default().fg(to_tui_color(palette().danger))),
             Span::raw(format!(
                 "#{} {:?} @ {} sev {:.0}%",
                 inc.id,
@@ -2699,13 +2678,7 @@ fn render_incidents(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
             } else {
                 Style::default()
             };
-            let sev_color = if r.severity >= 0.75 {
-                Color::Red
-            } else if r.severity >= 0.4 {
-                Color::Yellow
-            } else {
-                Color::Green
-            };
+            let sev_color = to_tui_color(palette().severity(r.severity));
             let status = if r.resolved { "RES" } else { "OPEN" };
             let actor_count = r.involved_prisoners.len();
             ListItem::new(Line::from(vec![
@@ -2713,7 +2686,7 @@ fn render_incidents(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
                 Span::styled(format!("[{}] ", r.at), Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     format!("{:<14}", truncate(&r.kind, 14)),
-                    Style::default().fg(Color::Red),
+                    Style::default().fg(to_tui_color(palette().danger)),
                 ),
                 Span::styled(
                     format!("sev {:.0}% ", r.severity * 100.0),
@@ -2722,7 +2695,7 @@ fn render_incidents(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
                 Span::styled(
                     format!("{status:<4} "),
                     Style::default().fg(if r.resolved {
-                        Color::Green
+                        to_tui_color(palette().good)
                     } else {
                         Color::Magenta
                     }),
@@ -2990,7 +2963,7 @@ fn render_incidents(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
                     Span::styled(
                         if c.resolved { "RESOLVED" } else { "OPEN" },
                         Style::default()
-                            .fg(if c.resolved { Color::Green } else { Color::Red })
+                            .fg(state_color(c.resolved))
                             .add_modifier(Modifier::BOLD),
                     ),
                 ]));
@@ -3120,15 +3093,7 @@ fn render_decisions(frame: &mut Frame, area: Rect, data: &ViewData, ui: &UiState
             } else {
                 Style::default()
             };
-            let vcolor = if d.validation.starts_with("accepted") {
-                Color::Green
-            } else if d.validation.starts_with("repaired") {
-                Color::Yellow
-            } else if d.validation.starts_with("rejected") {
-                Color::Red
-            } else {
-                Color::Gray
-            };
+            let vcolor = to_tui_color(palette().validation(&d.validation));
             ListItem::new(Line::from(vec![
                 Span::styled(format!("{marker} "), Style::default().fg(Color::Yellow)),
                 Span::styled(
@@ -3463,7 +3428,7 @@ mod tests {
     fn render_all(world: &alc_world::World, width: u16, height: u16, scroll: u16) {
         let data = view_data_from_world(world);
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        for (i, mode) in ALL_MODES.iter().enumerate() {
+        for (i, mode) in ViewMode::all().iter().enumerate() {
             let ui = UiState {
                 mode: *mode,
                 scroll,
@@ -3480,7 +3445,7 @@ mod tests {
         let world = alc_world::World::new(0xA1C_0A_6E_17);
         let data = view_data_from_world(&world);
         let mut terminal = Terminal::new(TestBackend::new(140, 45)).unwrap();
-        for (i, mode) in ALL_MODES.iter().enumerate() {
+        for (i, mode) in ViewMode::all().iter().enumerate() {
             let ui = UiState {
                 mode: *mode,
                 scroll: i as u16,
@@ -3625,12 +3590,56 @@ mod tests {
     }
 
     #[test]
-    fn mode_index_mapping_is_total() {
-        for i in 0..11 {
-            assert!(mode_from_index(i).is_some());
+    fn mode_index_mapping_follows_shared_catalog() {
+        let modes = ViewMode::all();
+        for (i, mode) in modes.iter().enumerate() {
+            assert_eq!(mode_from_index(i), Some(*mode));
+            assert_eq!(mode.label(), ViewMode::all()[i].label());
+            assert_eq!(mode.title(), ViewMode::all()[i].title());
         }
-        assert_eq!(mode_from_index(11), None);
+        assert_eq!(mode_from_index(modes.len()), None);
         assert_eq!(mode_from_index(usize::MAX), None);
+    }
+
+    #[test]
+    fn wide_tabs_use_shared_titles() {
+        let world = alc_world::World::new(5);
+        let data = view_data_from_world(&world);
+        let mut terminal = Terminal::new(TestBackend::new(240, 24)).unwrap();
+        let ui = UiState {
+            mode: ViewMode::Map,
+            ..UiState::new()
+        };
+        terminal
+            .draw(|frame| draw(frame, &data, &ui, &status(false)))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let tab_row: String = (0..buf.area.width)
+            .map(|x| buf[(x, 0)].symbol().to_string())
+            .collect();
+        for mode in ViewMode::all() {
+            assert!(tab_row.contains(mode.title()), "missing {}", mode.title());
+        }
+    }
+
+    #[test]
+    fn shared_palette_converts_to_ratatui_colors() {
+        let p = palette();
+        assert_eq!(
+            to_tui_color(SharedColor::rgba(12, 34, 56, 78)),
+            Color::Rgb(12, 34, 56),
+            "ratatui cells have no alpha channel"
+        );
+        assert_eq!(urgency_color(0.9), to_tui_color(p.danger));
+        assert_eq!(urgency_color(0.5), to_tui_color(p.warning));
+        assert_eq!(urgency_color(0.1), to_tui_color(p.good));
+        assert_eq!(good_color(0.1), to_tui_color(p.danger));
+        assert_eq!(good_color(0.9), to_tui_color(p.good));
+        assert_eq!(to_tui_color(p.validation("accepted")), to_tui_color(p.good));
+        assert_eq!(
+            to_tui_color(p.validation("rejected")),
+            to_tui_color(p.danger)
+        );
     }
 
     #[test]

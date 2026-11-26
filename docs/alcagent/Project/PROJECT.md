@@ -1,6 +1,6 @@
 # Project Alcagent — Autonomous Living Prison Simulation
 
-Master Directive lives in `AGENTS.md` (mirror of the original `agents.md` directive).
+Master Directive lives in [`agents.md`](../../../agents.md).
 
 **Canonical docs:** `../Project/` (status, milestones, design-status), `../Systems/` (interfaces), `../Design/` (intent/plans), `../Reports/` (findings), `../Communication/` (AI-to-AI handoffs).
 **Release/change notes:** `CHANGELOG.md` at repo root.
@@ -12,10 +12,12 @@ council of drives, memory-driven choices, a navigation-graph-shaped map surface 
 pawn positions, structured conflicts, gang politics, AI orchestration/batching, long-run soak
 acceptance and release documentation; all 14 Ralph specs in `dev/ralph/specs` are `done`.
 
-**0.05 status (R0):** the major UI/GUI overhaul and real game map are implemented — the TUI and
-the egui GUI (`alc-gui`, a buildable workspace member) both render a spatial map with cell/wing
-occupancy, prisoner/guard pawn positions, movement/path hints and incident overlays from
-`sumo::MapFrame`. See `dev/ralph/specs/002-map-gui-acceptance.md`.
+**0.05 status (R0):** the major UI/GUI overhaul and real game map are implemented — the ratatui
+debug observer and the egui graphical observer both render a layered campus-style map with zones,
+schematic roads, cell/wing occupancy, prisoner/guard pawns and incident overlays from
+`sumo::MapFrame`, using shared display models in `sumo::graphics`. See
+`dev/ralph/specs/002-map-gui-acceptance.md`. Shared `alc-gui`/`alc-ui` frontends are rendering/input
+adapters over `sumo::Sim`; frontends never mutate arbitrary world state.
 
 **Verified at the 0.05 release (2026-11-25):**
 - `cargo fmt --all -- --check`, `cargo build --workspace --all-targets` and
@@ -31,16 +33,24 @@ occupancy, prisoner/guard pawn positions, movement/path hints and incident overl
 ```powershell
 cargo build --workspace
 cargo test --workspace        # full workspace, including long-run soaks
+cargo run                     # graphical observer at the Main Menu (default)
+cargo run -- --tui            # ratatui debug observer
 cargo run -- run 365          # 1-year headless evolution
-cargo run -- observe          # interactive ratatui observer (default)
-cargo run -- --help           # CLI + TUI keybindings
+cargo run -- --help           # CLI flags (TUI keys in the --tui ? overlay)
 ```
+
+There is one binary (`alcagent`, selected by workspace `default-members`). The graphical observer
+opens at a seed field with **Start** (new world), plus **Load Existing Save / Settings / Quit**;
+`--load <dir>` opens a save directly, otherwise the Main Menu offers a save browser (version, status,
+population, sim time). Saves are v5 directories with `world.bin`; GUI preferences are separate JSON
+in `saves/alc-gui/settings.json`.
+`--no-tui` remains a legacy short headless-report alias; prefer `--tui` and `run`.
 
 ## Current milestone
 
 - **Current version:** 0.05 (`0.5.0-beta.1`, reconciled in the workspace manifest).
-- **0.05 exit criteria:** all Ralph specs done, green workspace, 365+ day soak; both TUI and GUI
-  already render the shared `sumo::MapFrame`.
+- **0.05 exit criteria:** all Ralph specs done, green workspace, 365+ day soak; the TUI and GUI
+  adapters render the shared `sumo::MapFrame` and `sumo::graphics` display models.
 - **Next milestone:** **0.1 beta** — scope in `../Project/version-milestones.md`.
 
 ## Where to look

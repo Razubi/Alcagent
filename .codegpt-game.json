@@ -1,7 +1,7 @@
 {
   "name": "alcagent-gui",
   "engine": "generic",
-  "launch": { "cmd": "cargo", "args": ["run", "-p", "alc-gui"] },
+  "launch": { "cmd": "cargo", "args": ["run"] },
   "log": { "stdout": true },
   "ready": "Alcagent",
   "sourceRoots": ["crates"]

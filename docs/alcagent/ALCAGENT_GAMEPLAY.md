@@ -9,6 +9,8 @@ extend the simulation in Rust. Engine docs are maintained under `docs/sumo/` in 
 > **Status (2026-11-25):** the 0.05 gameplay wave is stable and green: policy controls, queued
 > construction, incident/decision audit views, rehab/contraband/post-release lifecycles, report-only
 > warden strategy, autonomous guards, social roles and both spatial frontends are implemented.
+> Launch is consolidated to one `alcagent` binary: the graphical observer is the default and
+> `--tui` opens the keyboard-driven debug observer.
 
 ---
 
@@ -33,23 +35,24 @@ replayed and debugged like a replay file in a strategy game.
 ```powershell
 cargo build --workspace
 
-cargo run --                 # interactive TUI (default)
+cargo run --                 # graphical observer at the Main Menu (default)
 cargo run -- observe         # same, explicitly
-cargo run -- observe --no-tui # 30-day headless report instead of TUI
+cargo run -- --tui           # ratatui debug observer
 cargo run -- run 365         # headless 1-year simulation + report + save
                              # (`run` with no number defaults to 30 days)
-cargo run -- --help          # full help (flags and keybindings)
+cargo run -- --help          # full flags (TUI keys are in the in-app ? overlay)
 cargo run -- docs            # one-line documentation pointer
 ```
 
 | Flag | Default | Effect |
 |---|---|---|
-| `--seed <u64>` | `0xA1C_0A_6E_17_0` | World-generation seed; same seed ⇒ same institution. Ignored when loading a save. |
-| `--speed <u32>` | `60` | TUI tick rate (ticks/second); CLI rejects values outside `1..=4000`. Ignored by headless `run`. |
-| `--no-tui` | off | `observe` becomes a 30-day headless report (CI-friendly). |
-| `--load <DIR>` | none | Resume from a save directory; overrides `--seed`. |
-| `--save-dir <DIR>` | `saves/default` | Where saves are written. |
-| `--autosave-days <N>` | `7` | Autosave cadence in simulated days; `0` disables. |
+| `--tui` | off | Open the ratatui debug observer instead of the graphical observer; key map is in its `?` help overlay. Observer path only; rejected by `run`/`docs`. |
+| `--no-tui` | off | Legacy alias for a short headless 30-day report; not the main UI switch. Prefer `--tui` and `run`. Observer path only; rejected by `run`/`docs`. |
+| `--seed <u64>` | saved preference / `0xA1C_0A_6E_17_0` | World-generation seed; same seed ⇒ same institution. Ignored when loading a save. GUI uses saved preference unless this flag is supplied. |
+| `--speed <u32>` | saved preference / `60` | Absolute RealTime tick rate; CLI rejects values outside `1..=4000`, even with headless `run`. Used only by observers; GUI uses saved preference unless supplied. |
+| `--load <DIR>` | none | Resume from a save directory; overrides `--seed`. In GUI mode the save opens directly; otherwise the Main Menu offers a save browser. |
+| `--save-dir <DIR>` | saved preference / `saves/default` | Where saves are written. GUI uses saved preference unless this flag is supplied. |
+| `--autosave-days <N>` | saved preference / `7` | Autosave cadence in simulated days; `0` disables. GUI uses saved preference unless this flag is supplied. |
 | `RUST_LOG=sumo=debug` | unset | Enables engine trace logging (PowerShell: `$env:RUST_LOG='sumo=debug'`). |
 
 Headless `run N` adds `N` days to the world's current day (when loading) and **always saves** on
@@ -57,6 +60,10 @@ completion. The run prints real elapsed time, tick count, requested/progressed d
 engine report; there is no `Ticks/sec` label in the current output.
 
 ### 2.2 TUI keybindings (complete)
+
+These keys apply only to the ratatui debug observer launched with `--tui`; they are also listed in
+its in-app `?` help overlay. The default graphical observer is button/menu-only and has no hidden
+keyboard shortcuts (see §2.4).
 
 | Key | Action |
 |---|---|
@@ -90,8 +97,8 @@ engine report; there is no `Ticks/sec` label in the current output.
 | `m`, `o` | Incident severity / resolved-status filters (Incident Reports). |
 | `d`, `D` | Decision validation filter (Decision Audit). |
 
-The in-app help bar shows common controls; `?` opens the modal help and the policy panel lives in
-the Warden view. A red `LOCKDOWN` badge appears in the status bar when lockdown is active. These
+The TUI help bar shows common controls; `?` opens the modal help and the policy panel lives in the
+Warden view. A red `LOCKDOWN` badge appears in the status bar when lockdown is active. These
 controls landed in the 0.05 release.
 
 ### 2.3 Observation views (9 core + 2 audit)
@@ -106,10 +113,25 @@ controls landed in the 0.05 release.
 | 6 | Financial | Treasury, health index, per-prisoner funding, crowding threshold, paged daily ledger and warden affordances. |
 | 7 | Event Timeline | Newest-first events with causes (`a → b`) and confidence. |
 | 8 | Social Network | Relationship dyads and derived social roles ranked by bond strength, with trust/fear/hostility/rivalry. |
-| 9 | Prison Map | Spatial facilities, cell/wing occupancy, pawn positions, nav edges, movement hints, incident overlays and condition bars from `sumo::MapFrame`. |
+| 9 | World Map | Layered campus-style map: zones, schematic roads, facilities, cell/wing occupancy, pawn positions, incident overlays and condition bars from `sumo::MapFrame` / `sumo::graphics`. |
 | 0 / A | Incident Reports / Decision Audit | Structured incidents (severity, OPEN/RES, cause/consequence) and audited decisions (actor, source, validation, reason, rationale). |
 
 Views are read-only over engine snapshots and remain stable on sparse or 2,000-prisoner worlds.
+
+### 2.4 Graphical observer (default)
+
+The egui/eframe observer opens at a **Main Menu**: seed field + **Start** (new world), Load Existing Save, Settings and Quit.
+All navigation and controls are visible buttons/menus — there are no hidden GUI keyboard shortcuts.
+The save screen uses `alc_persistence::list_saves`/`probe_save_dir` and shows each save's version,
+compatibility status, population and simulation time. `--load <dir>` skips the browser and opens a
+save at startup. The world map offers explicit on-screen camera controls (Fit/Reset and zoom) over
+the shared campus layout. GUI preferences live in `saves/alc-gui/settings.json`, separate from v5
+world saves containing `world.bin`; they are used on later launches unless explicitly overridden by
+the matching CLI flag.
+
+`alc-gui` and `alc-ui` are rendering/input adapters over `sumo::Sim`. Shared display models —
+palette, view catalog, world-map layout/zones, camera math and construction-kind catalog — live in
+`sumo::graphics`; frontends never mutate arbitrary world state.
 
 ---
 
@@ -124,7 +146,7 @@ Views are read-only over engine snapshots and remain stable on sparse or 2,000-p
 - Schedules assign activities (wake, meals, work, yard, education, recreation, medical, showers,
   visits, lockdown, sleep) gated by classification, wing, privileges, discipline, staffing,
   weather and lockdown. Prisoners can be late, skip work, socialize or break rules.
-- **Watch it in:** TUI views 1, 2 and 7.
+- **Watch it in:** views 1, 2 and 7 in either observer.
 
 ### 3.2 Needs and psychology
 
@@ -193,14 +215,14 @@ escape/violence reduction, political pressure and expansion, acting under fog of
 guard reports). Modes: **Deterministic** (historical arbitration), **Council** (deterministic
 drive vote with rationales) and **Shadow** (runs both, applies baseline, logs divergence).
 Policies: Normal/Enhanced/Lockdown bands, security/privileges/rehab-funding levels and intake
-pause. These are directly controllable from both frontends (§2.2).
+pause. These are directly controllable from both frontends (§2.2–2.4).
 
 ### 3.9 Expansion and construction
 
 Warden `Expand` actions no longer add a facility instantly: they **queue a construction project**
 (7–14 days depending on facility type, with a cost charged to the economy ledger when queued and
 staffing/material/prerequisite flags recorded). The queue advances daily; completion adds the
-facility and emits `ConstructionComplete`. Progress appears in the map view.
+facility and emits `ConstructionComplete`. Progress appears in the world map view.
 
 ### 3.10 Rehabilitation, contraband and post-release
 
@@ -231,6 +253,7 @@ causality and actor/source/validation for debugging.
 
 - `saves/<dir>/world.bin` — versioned bincode (world + engine state); `world.debug.json` —
   human-readable sidecar. Format version is currently **5**; v1/v3/v4 saves are migrated on load.
+  GUI preferences are separate JSON at `saves/alc-gui/settings.json` and do not alter world saves.
 - Autosave cadence is configurable; `S` saves manually; headless runs always save.
 - Load with `--load <dir>`; the save's seed wins. Loaded worlds can be continued and replayed
   deterministically; `trace_hash()` / `trace_hash_v2()` fingerprints verify equality.
@@ -243,9 +266,10 @@ causality and actor/source/validation for debugging.
 
 | Symptom | Fix |
 |---|---|
-| Garbled TUI / arrow keys print `^[[A` | Use Windows Terminal/modern console; CI should use `--no-tui`. |
-| Wrong binary built | Use `cargo run -p alcagent -- <args>`. |
-| "No save found" on `--load` | Point at a *directory* containing `world.bin`. |
+| Garbled TUI / arrow keys print `^[[A` | Use Windows Terminal/modern console; CI should use `cargo run -- run N`. |
+| Looking for the GUI binary | There is only `alcagent`: `cargo run` opens the GUI; `alc-gui` is a library adapter. |
+| GUI shortcuts not working | The GUI is button/menu-only; use `--tui` for the keyboard-driven observer. |
+| "No save found" on `--load` | Point at a *directory* containing `world.bin`, or use the GUI save browser. |
 | Different results with same seed | You may have loaded a save (its seed overrides the CLI value). |
 | Terminal stuck in raw mode after crash | Open a fresh shell; normal shutdown always restores the terminal. |
 | Old save won't load | Save format is v5; regenerate or migrate older saves. |
@@ -254,7 +278,7 @@ causality and actor/source/validation for debugging.
 
 ## 6. See also
 
-- [`ALCAGENT.md`](ALCAGENT.md) — CLI/TUI operator reference (flags, keys, views).
+- [`ALCAGENT.md`](ALCAGENT.md) — launch/CLI and observer reference (flags, keys, views).
 - [`SUMO_ENGINE.md`](../sumo/SUMO_ENGINE.md) — engine product & system design.
 - [`SUMO_API.md`](../sumo/SUMO_API.md) — engine API guide.
 - [`Design/`](Design/) — game system design documents (in this repo).

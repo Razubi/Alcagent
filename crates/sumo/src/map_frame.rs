@@ -4,6 +4,7 @@
 //! (node/edge position) plus richer per-pawn metadata so the UI can draw a
 //! live dot-map without needing `world_mut()` access.
 
+use crate::graphics::{MapBounds, MapZone, WorldMapLayout};
 use alc_core::{FacilityId, SimTime};
 use alc_world::World;
 use serde::{Deserialize, Serialize};
@@ -47,11 +48,12 @@ pub struct PawnPosition {
     pub post: Option<String>,
 }
 
-/// A navigation-graph edge between two facilities.
+/// A schematic road between two facilities.
 ///
-/// Placeholder graph: until `alc-world` owns a real nav graph, edges are
-/// derived from facility insertion order as a ring/mesh (i -> i+1 and
-/// last -> first) with `sightline: true, restricted: false`.
+/// Until `alc-world` owns a real navigation graph, edges are derived from the
+/// shared world-map layout: facilities are grouped into purpose-built zones and
+/// connected by local loops plus cross-zone roads. This is presentation data,
+/// not a claim about engine pathfinding.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NavEdge {
     /// Source facility/node ID.
@@ -79,8 +81,13 @@ pub struct MapFrame {
     /// Facility/node positions for rendering the map background.
     /// Maps facility ID to (x, y) coordinates.
     pub facility_positions: HashMap<u64, (f32, f32)>,
-    /// Placeholder navigation graph edges derived from facility insertion
-    /// order. Documented as a placeholder until alc-world owns a real graph.
+    /// Canonical map regions beneath the facility layer.
+    pub zones: Vec<MapZone>,
+    /// Canonical world-map width in layout units.
+    pub width: f32,
+    /// Canonical world-map height in layout units.
+    pub height: f32,
+    /// Schematic roads derived from [`crate::graphics::WorldMapLayout`].
     pub edges: Vec<NavEdge>,
     /// Facility IDs currently locked (e.g. all nodes during a lockdown).
     pub locked_nodes: Vec<u64>,
@@ -94,6 +101,17 @@ pub struct MapFrame {
 }
 
 impl MapFrame {
+    /// Canonical rectangular bounds of this frame's shared world map.
+    #[must_use]
+    pub const fn bounds(&self) -> MapBounds {
+        MapBounds {
+            min_x: 0.0,
+            min_y: 0.0,
+            max_x: self.width,
+            max_y: self.height,
+        }
+    }
+
     /// Capture a map frame from the current world state.
     ///
     /// This variant has no access to engine-side state (e.g. incidents), so
@@ -107,45 +125,23 @@ impl MapFrame {
     pub fn capture_with_incidents(world: &World, incidents: &[crate::incidents::Incident]) -> Self {
         let mut prisoners = Vec::new();
         let mut guards = Vec::new();
-        let mut facility_positions = HashMap::new();
 
-        // Facility positions use a synthetic grid placeholder: 4 columns,
-        // spaced 200x150 units apart. Replace with real layout data when
-        // alc-world exports facility coordinates.
-        for (idx, facility) in world.facilities.iter().enumerate() {
-            let col = (idx % 4) as f32;
-            let row = (idx / 4) as f32;
-            facility_positions.insert(facility.id.0, (col * 200.0 + 100.0, row * 150.0 + 100.0));
-        }
-
-        // Placeholder nav graph: a ring connecting facilities in insertion
-        // order so the UI has something meaningful to render today.
+        // Facility geometry comes from the shared world-map layout so every
+        // frontend draws the same institutional campus. These are schematic
+        // roads, not a claim of engine pathfinding.
+        let layout = WorldMapLayout::new(
+            &world
+                .facilities
+                .iter()
+                .map(|f| (f.id.0, f.kind))
+                .collect::<Vec<_>>(),
+        );
+        let facility_positions = layout.positions;
+        let zones = layout.zones.clone();
+        let width = layout.width;
+        let height = layout.height;
+        let edges = layout.edges;
         let facility_ids: Vec<u64> = world.facilities.iter().map(|f| f.id.0).collect();
-        let mut edges = Vec::new();
-        if facility_ids.len() == 2 {
-            edges.push(NavEdge {
-                from: facility_ids[0],
-                to: facility_ids[1],
-                sightline: true,
-                restricted: false,
-            });
-            edges.push(NavEdge {
-                from: facility_ids[1],
-                to: facility_ids[0],
-                sightline: true,
-                restricted: false,
-            });
-        } else if facility_ids.len() > 2 {
-            for i in 0..facility_ids.len() {
-                let next = (i + 1) % facility_ids.len();
-                edges.push(NavEdge {
-                    from: facility_ids[i],
-                    to: facility_ids[next],
-                    sightline: true,
-                    restricted: false,
-                });
-            }
-        }
 
         // Lockdown locks every node; otherwise none.
         let locked_nodes = if world.policies.lockdown {
@@ -240,6 +236,9 @@ impl MapFrame {
             prisoners,
             guards,
             facility_positions,
+            zones,
+            width,
+            height,
             edges,
             locked_nodes,
             incidents: incidents.to_vec(),

@@ -562,7 +562,9 @@ pub struct Snapshot {
     /// Details for the currently selected prisoner, when one is selected.
     pub selected_agent: Option<AgentObservation>,
     pub selected_schedule: Option<ScheduleTimeline>,
-    pub selected_parole: Option<String>,
+    /// Typed parole status for the selected prisoner. Kept typed so control
+    /// gating cannot silently break when engine variants are renamed.
+    pub selected_parole_status: Option<sumo::ParoleStatus>,
     /// Conditions and decision record for the selected prisoner (spec 006).
     pub selected_parole_conditions: Option<sumo::ParoleConditions>,
     pub selected_parole_reason: Option<String>,
@@ -607,9 +609,7 @@ pub fn capture(sim: &sumo::Sim, selected_prisoner: Option<PrisonerId>) -> Snapsh
     let events: Vec<sumo::WorldEvent> = sim.events().last_reversed(300);
     let selected_agent = selected_prisoner.and_then(|id| sim.agent_observation(id));
     let selected_schedule = selected_prisoner.and_then(|id| sim.schedule_timeline(id));
-    let selected_parole = selected_prisoner
-        .and_then(|id| sim.parole_status(id))
-        .map(|status| format!("{status:?}"));
+    let selected_parole_status = selected_prisoner.and_then(|id| sim.parole_status(id));
     let selected_parole_conditions = selected_prisoner
         .and_then(|id| sim.parole_conditions(id))
         .cloned();
@@ -649,7 +649,7 @@ pub fn capture(sim: &sumo::Sim, selected_prisoner: Option<PrisonerId>) -> Snapsh
         parole_due: sim.parole_due(),
         selected_agent,
         selected_schedule,
-        selected_parole,
+        selected_parole_status,
         selected_parole_conditions,
         selected_parole_reason,
         selected_parole_released,
@@ -696,16 +696,26 @@ impl FacilityView {
 // Map projection & pan/zoom math (pure, so it can be unit tested)
 // ---------------------------------------------------------------------------
 
+/// Build a shared camera from the legacy `(zoom, pan)` pair.
+fn camera(zoom: f32, pan: egui::Vec2) -> sumo::MapCamera {
+    sumo::MapCamera {
+        zoom,
+        pan: (pan.x, pan.y),
+    }
+}
+
 /// Project a world-space point into canvas-local screen coordinates.
+/// Delegates to the shared engine camera so GUI and TUI projections agree.
 #[must_use]
 pub fn world_to_screen(world: (f32, f32), zoom: f32, pan: egui::Vec2) -> egui::Pos2 {
-    egui::pos2(world.0 * zoom + pan.x, world.1 * zoom + pan.y)
+    let (x, y) = camera(zoom, pan).project(world);
+    egui::pos2(x, y)
 }
 
 /// Inverse of [`world_to_screen`].
 #[must_use]
 pub fn screen_to_world(screen: egui::Pos2, zoom: f32, pan: egui::Vec2) -> (f32, f32) {
-    ((screen.x - pan.x) / zoom, (screen.y - pan.y) / zoom)
+    camera(zoom, pan).unproject((screen.x, screen.y))
 }
 
 /// Zoom by `factor` while keeping the world point under `anchor` fixed.
@@ -719,10 +729,8 @@ pub fn zoom_at(
     min: f32,
     max: f32,
 ) -> (f32, egui::Vec2) {
-    let world = screen_to_world(anchor, zoom, pan);
-    let new_zoom = (zoom * factor).clamp(min, max);
-    let new_pan = egui::vec2(anchor.x - world.0 * new_zoom, anchor.y - world.1 * new_zoom);
-    (new_zoom, new_pan)
+    let camera = camera(zoom, pan).zoom_at((anchor.x, anchor.y), factor, min, max);
+    (camera.zoom, egui::vec2(camera.pan.0, camera.pan.1))
 }
 
 /// World-space position of a pawn, interpolating along its current nav edge.
@@ -1335,5 +1343,24 @@ mod tests {
         assert!(lookup("Actors").contains("prisoner:7"));
         assert_eq!(lookup("Validation"), "rejected: guard nearby");
         assert_eq!(lookup("Outcome"), "Proposed");
+    }
+
+    #[test]
+    fn capture_keeps_parole_status_typed() {
+        let mut sim = sim(0xC0FFEE_15);
+        let id = sim
+            .prisoners()
+            .first()
+            .map(|p| p.id)
+            .expect("fresh world has a prisoner");
+        sim.parole_mut()
+            .set(id, sumo::ParoleStatus::Scheduled, SimTime::EPOCH);
+
+        let snap = capture(&sim, Some(id));
+        assert_eq!(
+            snap.selected_parole_status,
+            Some(sumo::ParoleStatus::Scheduled)
+        );
+        assert_eq!(capture(&sim, None).selected_parole_status, None);
     }
 }

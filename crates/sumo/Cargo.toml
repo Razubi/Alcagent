@@ -22,6 +22,10 @@ tracing = { workspace = true }
 
 [features]
 default = []
+test-support = []
+
+[dev-dependencies]
+sumo = { path = ".", features = ["test-support"] }
 
 [lints]
 workspace = true

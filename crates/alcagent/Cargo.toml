@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Binary: run the prison simulation headless or with the TUI observer."
+description = "Unified binary: graphical prison observer, terminal observer, and headless runner."
 
 [[bin]]
 name = "alcagent"
@@ -16,6 +16,7 @@ alc-world = { workspace = true }
 alc-events = { workspace = true }
 alc-persistence = { workspace = true }
 alc-ui = { workspace = true }
+alc-gui = { workspace = true }
 sumo = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }

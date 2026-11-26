@@ -1,17 +1,18 @@
 # `sumo` Engine API Guide
 
-> This guide describes the `sumo` engine (the `sumo` subfolder of this repository). References to
-> `alcagent` / `alc-ui` describe the game and observer in the parent folders of this repo.
+> This guide describes the `sumo` engine (`crates/sumo` in this repository). References to
+> `alcagent`, `alc-gui` and `alc-ui` describe the game and its observer adapters here.
 
 `sumo` is the public Rust API of Project Alcagent. It owns an `alc_world::World` and drives it
 forward in deterministic ticks. All world mutations are performed by the engine; agents submit
-*decisions*, which are validated and applied by the engine. AGENTS.md §19 ("Agents must not
+*decisions*, which are validated and applied by the engine. agents.md §19 ("Agents must not
 modify arbitrary simulation state") is enforced by this boundary.
 
 - **Crate:** `sumo` (`crates/sumo/`), version `0.5.0-beta.1` (workspace version), edition 2024, MSRV 1.85.
 - **Add as a path dependency:** `sumo = { path = "crates/sumo" }`.
-- **Features:** `default = []`; `gui` is a stub (`SumoApp` unit struct and `launch_gui()`
-  returning `Ok(())`) and is not recommended — use the `alc-ui` ratatui observer instead.
+- **Features:** `default = []`; `test-support` exposes `Sim::world_mut` for engine fixtures only.
+  `sumo` has no GUI feature or `SumoApp`; run the `alcagent` graphical observer (default) or
+  `alcagent --tui` for the ratatui debug observer.
 - **Source of truth for signatures:** `crates/sumo/src/*.rs`; this guide reflects the codebase
   as of 2026-11-25.
 
@@ -110,19 +111,27 @@ let frame: sumo::MapFrame = sim.map_frame();
 // frame.prisoners / frame.guards: Vec<PawnPosition> (id, name, is_prisoner,
 // node_id, edge_progress, target_node, activity, x, y, gang, classification,
 // mood, intention, threat, post)
-// frame.facility_positions: HashMap<u64, (f32, f32)>, frame.edges: Vec<NavEdge>,
+// frame.facility_positions: HashMap<u64, (f32, f32)>, frame.zones: Vec<MapZone>,
+// frame.width / frame.height: f32, frame.edges: Vec<NavEdge>,
 // frame.locked_nodes, frame.incidents: Vec<Incident>
 ```
 
 This is the documented entry point for rendering a live map without mutable world access.
-Both frontends (the ratatui TUI in `alc-ui` and the egui GUI in `alc-gui`) render a live
-spatial map from it: the TUI draws facilities (G/C/D/... glyphs), pawns (`P`/`G`), incident
-overlays (`!`), locked nodes (`L`) and nav edges (`·`) on a character grid; the egui GUI
-draws nodes, pawns, edges, incident badges, rosters and capacity/utilisation bars with
-pan/zoom and hover/click inspectors. Note: the navigation graph is still a **placeholder**
-— facility positions are a synthetic 4-column grid and `edge_progress` is always `None`
-until real pathfinding lands. `MapFrame::capture(&World)` is available but omits incidents;
+`frame.zones`, `frame.width`, `frame.height` and `frame.edges` come from the shared
+`WorldMapLayout` in `sumo::graphics`: a layered campus-style layout with purpose-built zones,
+schematic roads, facility footprints and pawns. The `alcagent` frontends render from it: the
+`--tui` ratatui observer draws facilities (G/C/D/... glyphs), pawns (`P`/`G`), incident overlays
+(`!`), locked nodes (`L`) and nav edges (`·`) on a character grid; the default egui graphical
+observer draws zones, roads, nodes, pawns, incident badges, rosters and capacity/utilisation bars
+with explicit on-screen camera controls (Fit/Reset and zoom) plus hover/click inspectors.
+The roads remain **schematic presentation data**, not engine pathfinding; `edge_progress` is
+`None` until real pathfinding lands. `MapFrame::capture(&World)` omits incidents;
 `Sim::map_frame()` includes them.
+
+Shared display models — palette, 11-view catalog, world-map layout/zones, camera math and
+construction-kind catalog — live in `sumo::graphics` and are re-exported from `sumo`. `alc-gui`
+and `alc-ui` are rendering/input adapters over `sumo::Sim`; frontends never mutate arbitrary
+world state.
 
 ---
 
@@ -199,7 +208,7 @@ Comply/Refuse/None) or if the prisoner has a pending decision.
 - `sim.events()` → `&EventBus`; `sim.events_since(at)` → `Vec<WorldEvent>`;
   `sim.emit_event(event)` for public emission.
 - `WorldEvent { id, at, kind, summary, actors, causes, confidence }` with builders
-  `with_actor`, `with_cause`, `with_confidence`. Every event carries causes (AGENTS.md §17).
+  `with_actor`, `with_cause`, `with_confidence`. Every event carries causes (agents.md §17).
 - `EventKind` has **51 variants** (source of truth: `crates/alc-events/src/lib.rs`): 7
   population/lifecycle, 3 rehab/reintegration, 3 construction, 5 social, 8 conflict/discipline,
   3 health, 7 security, 6 institution, 6 narrative, `Dialogue`/`Interaction` (2), and the
@@ -304,6 +313,8 @@ sim.run_days(365);
   `tick()` checks autosave each tick. Both interval and directory survive save/load, and
   `last_autosave_error()` exposes the most recent failure.
 - Maps in the persisted EngineState use `BTreeMap` for reproducible save bytes.
+- The graphical observer stores its preferences separately at `saves/alc-gui/settings.json`;
+  they are not part of a world save.
 
 ---
 
@@ -343,12 +354,12 @@ tests in `crates/sumo/tests/` verify this.
    bounded-log trimming scrubs stale references.
 7. **Target ids in proposals** are opaque `PrisonerId`s; a missing target becomes id 0 and
    validation normally rejects it.
-8. **Map geometry**: synthetic grid + ring graph, still without real pathfinding; both
-   frontends (TUI and egui GUI) already render this via `MapFrame`.
+8. **Map geometry**: shared campus layout with zones and schematic roads, still without real
+   pathfinding; both frontends render it via `MapFrame` / `sumo::graphics`.
 9. **Warden inbox** now resolves from actually delivered guard reports; it is intentionally
    not a complete world-event feed.
-10. **The `sumo` `gui` feature is a no-op stub**; use the `alc-gui` egui binary or `alc-ui` TUI
-    for a real observer. Both render the shared `MapFrame`.
+10. **`sumo` has no GUI feature**; run `alcagent` (graphical) or `alcagent --tui` (ratatui) for a real
+    observer. Both render the shared map models.
 11. **Contraband/capabilities** are wired into daily `contraband_step`; validation reads the
    authoritative contraband state rather than the old skill proxy.
 12. **Event bus eviction** at 50k can make `events_since` / `wait_for_event` miss old events.

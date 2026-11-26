@@ -9,7 +9,7 @@ use alc_core::TimeSpeed;
 use eframe::egui;
 use std::collections::HashMap;
 
-/// All eleven observation views, in tab order.
+/// All eleven observation views, in the engine's canonical tab order.
 pub const ALL_VIEWS: [ViewMode; 11] = [
     ViewMode::InstitutionOverview,
     ViewMode::Prisoner,
@@ -24,22 +24,20 @@ pub const ALL_VIEWS: [ViewMode; 11] = [
     ViewMode::DecisionAudit,
 ];
 
-/// Short tab label for an observation view.
+/// Visible playback modes in toolbar order. Event-driven playback is included
+/// so the observer can advance only on meaningful engine events.
+const PLAYBACK_BUTTONS: [(TimeSpeed, &str); 5] = [
+    (TimeSpeed::Paused, "Pause"),
+    (TimeSpeed::RealTime, "Real"),
+    (TimeSpeed::FastForward, "FF"),
+    (TimeSpeed::Extreme, "Extreme"),
+    (TimeSpeed::EventDriven, "Event"),
+];
+
+/// Short tab label for an observation view (shared display model).
 #[must_use]
 pub fn view_label(view: ViewMode) -> &'static str {
-    match view {
-        ViewMode::InstitutionOverview => "Overview",
-        ViewMode::Prisoner => "Prisoners",
-        ViewMode::Gang => "Gangs",
-        ViewMode::Staff => "Staff",
-        ViewMode::Warden => "Warden",
-        ViewMode::Financial => "Financial",
-        ViewMode::EventTimeline => "Timeline",
-        ViewMode::SocialNetwork => "Network",
-        ViewMode::Map => "Map",
-        ViewMode::IncidentReports => "Incidents",
-        ViewMode::DecisionAudit => "Audit",
-    }
+    view.label()
 }
 
 /// Everything a screen needs. Rendering is read-only over the snapshot; any
@@ -87,47 +85,20 @@ pub fn section(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) 
     });
 }
 
-/// Draw the persistent top toolbar: status readout, view tabs, playback
-/// controls and save/load path controls.
+/// Draw the compact navigation row: eleven view buttons plus visible playback
+/// controls. Save/Load/Settings/Menu live in the shell top bar, so raw paths
+/// never clutter this strip.
 pub fn toolbar(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
-    egui::Panel::top("alc_gui_toolbar").show(ui, |ui| {
-        let obs = &ctx.snapshot.observation;
+    egui::Panel::top("alc_gui_view_nav").show(ui, |ui| {
         ui.horizontal_wrapped(|ui| {
             ui.add(egui::Label::new(
-                egui::RichText::new("ALCAGENT · LIVING PRISON")
-                    .strong()
-                    .color(theme::ACCENT),
+                egui::RichText::new("Views:").small().color(theme::MUTED),
             ));
-            ui.separator();
-            ui.label(format!(
-                "{} · Day {} · Pop {}/{} · Guards {} · Gangs {}",
-                obs.at, obs.days_simulated, obs.population, obs.capacity, obs.guards, obs.gangs
-            ));
-            ui.separator();
-            ui.label(format!(
-                "${:.2} · Health {:.0}%",
-                obs.cash_major,
-                obs.economy_health * 100.0
-            ));
-            if obs.lockdown {
-                ui.add(egui::Label::new(
-                    egui::RichText::new("LOCKDOWN")
-                        .color(theme::LOCKED)
-                        .strong(),
-                ));
-            }
-            if let Some(msg) = &ctx.state.status {
-                ui.separator();
-                ui.add(egui::Label::new(
-                    egui::RichText::new(msg).color(theme::MUTED),
-                ));
-            }
-        });
-
-        ui.horizontal_wrapped(|ui| {
-            for view in ALL_VIEWS {
+            for view in ViewMode::all() {
                 let selected = ctx.state.view == view;
-                let button = egui::Button::new(view_label(view)).selected(selected);
+                let button = egui::Button::new(view_label(view))
+                    .small()
+                    .selected(selected);
                 if ui.add(button).clicked() {
                     ctx.emit(Command::SetView(view));
                 }
@@ -136,52 +107,34 @@ pub fn toolbar(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
 
         ui.horizontal_wrapped(|ui| {
             let speed = ctx.snapshot.speed;
-            ui.label("Playback:");
-            for (s, label) in [
-                (TimeSpeed::Paused, "Pause"),
-                (TimeSpeed::RealTime, "Real"),
-                (TimeSpeed::FastForward, "FF"),
-                (TimeSpeed::Extreme, "Extreme"),
-            ] {
+            ui.add(egui::Label::new(
+                egui::RichText::new("Playback:").small().color(theme::MUTED),
+            ));
+            for (s, label) in PLAYBACK_BUTTONS {
                 if ui
-                    .add(egui::Button::new(label).selected(speed == s))
+                    .add(egui::Button::new(label).small().selected(speed == s))
                     .clicked()
                 {
                     ctx.emit(Command::SetSpeed(s));
                 }
             }
-            if ui.button("Step 1 tick").clicked() {
+            if ui.small_button("Step").clicked() {
                 ctx.emit(Command::StepTick);
             }
-            if ui.button("+1 Day").clicked() {
+            if ui.small_button("+1 Day").clicked() {
                 ctx.emit(Command::OneDay);
             }
             ui.separator();
-            ui.add(
-                egui::TextEdit::singleline(&mut ctx.state.save_input)
-                    .desired_width(170.0)
-                    .hint_text("save directory"),
-            );
-            if ui.button("Save").clicked() {
-                ctx.emit(Command::Save(ctx.state.save_input.clone()));
+            ui.add(egui::Label::new(
+                egui::RichText::new("Autosave:").small().color(theme::MUTED),
+            ));
+            let days = ctx.state.autosave_days;
+            if ui.small_button("−").clicked() && days > 0 {
+                ctx.emit(Command::SetAutosave(days - 1));
             }
-            ui.label("Load:");
-            ui.add(
-                egui::TextEdit::singleline(&mut ctx.state.load_input)
-                    .desired_width(170.0)
-                    .hint_text("load directory"),
-            );
-            if ui.button("Load").clicked() {
-                ctx.emit(Command::Load(ctx.state.load_input.clone()));
-            }
-            ui.separator();
-            ui.label("Autosave days:");
-            let mut days = ctx.state.autosave_days;
-            if ui
-                .add(egui::DragValue::new(&mut days).range(0..=365))
-                .changed()
-            {
-                ctx.emit(Command::SetAutosave(days));
+            ui.label(format!("{days} d"));
+            if ui.small_button("+").clicked() && days < 365 {
+                ctx.emit(Command::SetAutosave(days + 1));
             }
         });
     });
@@ -274,5 +227,24 @@ pub fn event_detail(ui: &mut egui::Ui, event: &sumo::WorldEvent) {
                 egui::RichText::new(format!("↳ {cause}")).small(),
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn playback_controls_expose_event_driven_mode() {
+        assert_eq!(PLAYBACK_BUTTONS.len(), 5);
+        assert!(
+            PLAYBACK_BUTTONS
+                .iter()
+                .any(|(speed, label)| *speed == TimeSpeed::EventDriven && *label == "Event")
+        );
+        let labels: Vec<_> = PLAYBACK_BUTTONS.iter().map(|(_, l)| *l).collect();
+        let mut unique = labels.clone();
+        unique.dedup();
+        assert_eq!(unique, labels);
     }
 }

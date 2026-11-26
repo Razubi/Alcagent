@@ -312,6 +312,155 @@ pub enum SaveError {
     },
 }
 
+/// Compatibility classification of a discovered save directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveStatus {
+    /// Written by the current format and loadable without migration.
+    Current,
+    /// Written by an older format the loader can migrate.
+    Migratable(u32),
+    /// Written by a newer build; this binary cannot open it.
+    Unsupported(u32),
+    /// Written by an older build whose binary layout cannot be safely migrated.
+    Incompatible(u32),
+    /// Header is missing or implausible.
+    Corrupt,
+}
+
+impl SaveStatus {
+    /// Short label for save-browser rows.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Current => "Current",
+            Self::Migratable(_) => "Migratable",
+            Self::Unsupported(_) => "Unsupported",
+            Self::Incompatible(_) => "Incompatible",
+            Self::Corrupt => "Corrupt",
+        }
+    }
+}
+
+/// Lightweight metadata for one save directory.
+///
+/// This is a browser aid only. It reads the fixed-width bincode header and
+/// filesystem metadata; it never loads or trusts `world.debug.json`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SaveProbe {
+    /// Directory containing `world.bin`.
+    pub dir: PathBuf,
+    /// Format version, when the header is readable.
+    pub version: Option<u32>,
+    /// Simulation time in seconds from the save header.
+    pub created_at_secs: Option<u64>,
+    /// Prisoner population from the save header.
+    pub population: Option<u32>,
+    /// Size of `world.bin` in bytes.
+    pub len: u64,
+    /// Filesystem modification time, when available.
+    pub modified: Option<std::time::SystemTime>,
+    /// Compatibility classification.
+    pub status: SaveStatus,
+}
+
+impl SaveProbe {
+    /// Human-readable name derived from the save directory.
+    #[must_use]
+    pub fn name(&self) -> String {
+        self.dir
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| self.dir.to_string_lossy().into_owned())
+    }
+
+    /// One-line summary for a save-browser row.
+    #[must_use]
+    pub fn summary(&self) -> String {
+        let version = self
+            .version
+            .map_or_else(|| "unknown".to_string(), |v| format!("v{v}"));
+        let population = self
+            .population
+            .map_or_else(|| "?".to_string(), |p| p.to_string());
+        let sim_secs = self
+            .created_at_secs
+            .map_or_else(|| "?".to_string(), |s| s.to_string());
+        format!(
+            "{version} · {population} prisoners · sim {sim_secs}s · {}",
+            self.status.label()
+        )
+    }
+}
+
+/// Probe one save directory without loading the world.
+///
+/// # Errors
+/// Returns [`SaveError::Io`] when `world.bin` is absent or unreadable.
+pub fn probe_save_dir(dir: impl AsRef<Path>) -> Result<SaveProbe, SaveError> {
+    let dir = dir.as_ref().to_path_buf();
+    let path = dir.join("world.bin");
+    let metadata = fs::metadata(&path)?;
+    let bytes = {
+        use std::io::Read;
+        let mut file = fs::File::open(&path)?;
+        let mut head = [0_u8; 16];
+        let read = file.read(&mut head)?;
+        head[..read].to_vec()
+    };
+    let version = read_le_u32(&bytes, 0);
+    let created_at_secs = read_le_u64(&bytes, 4);
+    let population = read_le_u32(&bytes, 12);
+    let status = match version {
+        Some(SAVE_FORMAT_VERSION) => SaveStatus::Current,
+        // v2 binary saves used an Incident encoding that changed incompatibly
+        // (severity u8 -> f32, kind String -> EventKind); no safe migration exists.
+        Some(2) => SaveStatus::Incompatible(2),
+        Some(v) if (1..SAVE_FORMAT_VERSION).contains(&v) => SaveStatus::Migratable(v),
+        Some(0) | None => SaveStatus::Corrupt,
+        Some(v) => SaveStatus::Unsupported(v),
+    };
+    Ok(SaveProbe {
+        dir,
+        version,
+        created_at_secs,
+        population,
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+        status,
+    })
+}
+
+/// List all immediate child directories of `root` that contain a save.
+///
+/// Results are sorted by directory name so the save browser is deterministic.
+/// Unreadable entries are skipped; a broken save should not block the menu.
+#[must_use]
+pub fn list_saves(root: impl AsRef<Path>) -> Vec<SaveProbe> {
+    let Ok(entries) = fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut saves: Vec<SaveProbe> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir() && path.join("world.bin").is_file())
+        .filter_map(|path| probe_save_dir(path).ok())
+        .collect();
+    saves.sort_by(|a, b| a.dir.cmp(&b.dir));
+    saves
+}
+
+fn read_le_u32(bytes: &[u8], offset: usize) -> Option<u32> {
+    let slice = bytes.get(offset..offset + 4)?;
+    Some(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+}
+
+fn read_le_u64(bytes: &[u8], offset: usize) -> Option<u64> {
+    let slice = bytes.get(offset..offset + 8)?;
+    Some(u64::from_le_bytes([
+        slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7],
+    ]))
+}
+
 pub struct SaveManager {
     dir: PathBuf,
     /// Last simulation day an autosave was written (deduplicates intra-day
@@ -374,7 +523,7 @@ impl SaveManager {
     /// Load a save with EngineState, migrating older versions when possible.
     ///
     /// Unlike [`SaveManager::load`], this entry point runs the forward
-    /// migration hook so a v1/v2 save can still be opened by a v3 build.
+    /// migration hook so supported v1/v3/v4 saves can be opened by this build.
     pub fn load_with_engine(&self) -> Result<(alc_world::World, Option<EngineState>), SaveError> {
         let bytes = fs::read(self.dir.join("world.bin"))?;
         let sf = migrate_bytes(&bytes)?;
@@ -616,9 +765,10 @@ impl From<EngineStateV4> for EngineState {
 /// Migrate a save to the current format version.
 ///
 /// - v1 -> v5: v1 predates `engine_state`; an empty engine state is installed.
-/// - v2/v3/v4 -> v5: fields added since those versions are serde-defaulted in
-///   self-describing formats; for bincode, explicit legacy layouts are used
-///   where trailing-field additions break direct decoding.
+/// - v3/v4 -> v5: explicit legacy layouts restore fields added since those
+///   versions where bincode's positional encoding cannot use serde defaults.
+/// - v2 binary saves are rejected: their `Incident` encoding changed
+///   incompatibly after v2, so there is no safe automated migration.
 /// - v0 or unknown older versions have no defined layout and are rejected
 ///   with a clear error instead of being silently misinterpreted.
 /// - Newer versions are rejected (never downgraded) with a version mismatch.
@@ -626,6 +776,13 @@ pub fn migrate(sf: SaveFile) -> Result<SaveFile, SaveError> {
     let found = sf.header.version;
     if found == SAVE_FORMAT_VERSION {
         return Ok(sf);
+    }
+    if found == 2 {
+        return Err(SaveError::MigrationUnsupported {
+            found,
+            expected: SAVE_FORMAT_VERSION,
+            reason: "v2 binary saves use an incompatible Incident encoding (severity u8 -> f32, kind String -> EventKind); regenerate the world".to_string(),
+        });
     }
     if found == 0 || found > SAVE_FORMAT_VERSION {
         if found > SAVE_FORMAT_VERSION {
@@ -987,24 +1144,22 @@ mod tests {
     }
 
     #[test]
-    fn migrate_v1_and_v2_stamp_current_version_and_fill_engine_state() {
-        for version in [1_u32, 2_u32] {
-            let sf = SaveFile {
-                header: SaveHeader {
-                    version,
-                    created_at_secs: 1,
-                    population: 0,
-                },
-                world: alc_world::World::new(7),
-                engine_state: None,
-            };
-            let migrated = migrate(sf).expect("older version migrates");
-            assert_eq!(migrated.header.version, SAVE_FORMAT_VERSION);
-            let state = migrated.engine_state.expect("engine state installed");
-            assert!(state.decision_audit.is_empty());
-            assert!(state.post_release.is_empty());
-            assert_eq!(state.policy_mode, PolicyMode::Deterministic);
-        }
+    fn migrate_v1_stamps_current_version_and_fills_engine_state() {
+        let sf = SaveFile {
+            header: SaveHeader {
+                version: 1,
+                created_at_secs: 1,
+                population: 0,
+            },
+            world: alc_world::World::new(7),
+            engine_state: None,
+        };
+        let migrated = migrate(sf).expect("v1 migrates");
+        assert_eq!(migrated.header.version, SAVE_FORMAT_VERSION);
+        let state = migrated.engine_state.expect("engine state installed");
+        assert!(state.decision_audit.is_empty());
+        assert!(state.post_release.is_empty());
+        assert_eq!(state.policy_mode, PolicyMode::Deterministic);
     }
 
     #[test]
@@ -1069,35 +1224,45 @@ mod tests {
     }
 
     #[test]
-    fn load_and_migrate_older_binary_version() {
-        let dir = unique_dir("migrate-bytes");
+    fn v2_binary_save_is_reported_and_rejected_as_incompatible() {
+        let dir = unique_dir("v2-incompatible");
         let manager = SaveManager::new(&dir);
         let world = alc_world::World::new(0xBEEF);
 
         fs::create_dir_all(&dir).unwrap();
-        // Serialize the current layout but tag it as v2. All v3 additions are
-        // serde-defaulted, so this is a faithful stand-in for a v2 save whose
-        // sub-fields did not yet exist.
+        // Header-compatible stand-in: the version is what the save browser and
+        // migration gate classify on; a genuine v2 binary predates the current
+        // Incident encoding and cannot be decoded safely.
         let legacy_tagged = SaveFile {
             header: SaveHeader {
                 version: 2,
                 created_at_secs: 1,
                 population: 0,
             },
-            world: world.clone(),
+            world,
             engine_state: None,
         };
         let bytes = bincode::serialize(&legacy_tagged).unwrap();
         fs::write(dir.join("world.bin"), &bytes).unwrap();
 
-        let migrated = manager.load_migrated().expect("v2 loads via migration");
-        assert_eq!(migrated.seed, world.seed);
-        assert_eq!(migrated.time, world.time);
+        let probe = probe_save_dir(&dir).unwrap();
+        assert_eq!(probe.status, SaveStatus::Incompatible(2));
+        assert!(probe.summary().contains("Incompatible"));
 
-        // load_with_engine uses the same migration hook.
-        let (w, engine) = manager.load_with_engine().expect("v2 loads with engine");
-        assert_eq!(w.seed, world.seed);
-        assert!(engine.is_some());
+        let err = manager
+            .load_migrated()
+            .expect_err("v2 must not be migrated");
+        assert!(
+            matches!(err, SaveError::MigrationUnsupported { found: 2, .. }),
+            "unexpected error: {err:?}"
+        );
+        let err = manager
+            .load_with_engine()
+            .expect_err("v2 must not load with engine");
+        assert!(
+            matches!(err, SaveError::MigrationUnsupported { found: 2, .. }),
+            "unexpected error: {err:?}"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1274,5 +1439,64 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn probe_and_list_saves_read_only_header_metadata() {
+        let root = unique_dir("probe-root");
+        let first = root.join("alpha");
+        let second = root.join("beta");
+        SaveManager::new(&first)
+            .save(&alc_world::World::new(11))
+            .unwrap();
+        SaveManager::new(&second)
+            .save(&alc_world::World::new(12))
+            .unwrap();
+
+        let probe = probe_save_dir(&first).unwrap();
+        assert_eq!(probe.name(), "alpha");
+        assert_eq!(probe.version, Some(SAVE_FORMAT_VERSION));
+        assert_eq!(probe.status, SaveStatus::Current);
+        assert!(probe.population.is_some());
+        assert!(probe.len > 16);
+
+        let saves = list_saves(&root);
+        assert_eq!(saves.len(), 2);
+        assert_eq!(saves[0].name(), "alpha");
+        assert_eq!(saves[1].name(), "beta");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn probe_classifies_corrupt_and_future_headers() {
+        let root = unique_dir("probe-status");
+        let corrupt = root.join("corrupt");
+        let invalid_version = root.join("invalid-version");
+        let future = root.join("future");
+        fs::create_dir_all(&corrupt).unwrap();
+        fs::create_dir_all(&invalid_version).unwrap();
+        fs::create_dir_all(&future).unwrap();
+        fs::write(corrupt.join("world.bin"), [1_u8, 2, 3]).unwrap();
+        fs::write(invalid_version.join("world.bin"), [0_u8; 16]).unwrap();
+
+        let mut future_bytes = vec![0_u8; 16];
+        future_bytes[..4].copy_from_slice(&(SAVE_FORMAT_VERSION + 3).to_le_bytes());
+        fs::write(future.join("world.bin"), future_bytes).unwrap();
+
+        assert_eq!(
+            probe_save_dir(&corrupt).unwrap().status,
+            SaveStatus::Corrupt
+        );
+        assert_eq!(
+            probe_save_dir(&invalid_version).unwrap().status,
+            SaveStatus::Corrupt
+        );
+        assert_eq!(
+            probe_save_dir(&future).unwrap().status,
+            SaveStatus::Unsupported(SAVE_FORMAT_VERSION + 3)
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

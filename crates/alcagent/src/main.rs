@@ -1,6 +1,7 @@
 use alc_core::TimeSpeed;
 use alc_ui::app::{SimDriver, TuiOptions};
-use clap::{Parser, Subcommand};
+use clap::parser::ValueSource;
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 const DEFAULT_SEED: u64 = 0xA1C_0A_6E_17_0;
 const DEFAULT_SPEED: u32 = 60;
@@ -10,12 +11,20 @@ fn valid_observer_speed(speed: u32) -> bool {
     (1..=MAX_OBSERVER_SPEED).contains(&speed)
 }
 
+/// True when the user supplied the argument on the command line rather than
+/// relying on its default. Global args can land on either the root or the
+/// selected subcommand, and clap ids are the field names (underscored).
+fn explicitly_set(matches: &clap::ArgMatches, name: &str) -> bool {
+    let from_cli = |m: &clap::ArgMatches| m.value_source(name) == Some(ValueSource::CommandLine);
+    from_cli(matches) || matches.subcommand().is_some_and(|(_, sub)| from_cli(sub))
+}
+
 #[derive(Parser)]
 #[command(
     name = "alcagent",
     version,
     about = "Autonomous Living Prison Simulation",
-    long_about = "Autonomous Living Prison Simulation\n\nWith no arguments (or `observe`) an interactive ratatui observer opens.\n\nTUI controls:\n  q / Q / Esc / Ctrl-C   quit (Esc closes help/search first)\n  Space                  pause / resume\n  + / =                  speed up\n  - / _                  speed down\n  1-9,0,A                 switch observation view\n  Arrows or h/j/k/l      move the selection cursor\n  /                      free-text search (Ctrl-W clears)\n  Tab                    pin/unpin the selected entity\n  n                      toggle observer feed (notices/pins)\n  V                      toggle auto-pause on critical incidents\n  Ctrl-R                 resolve a critical incident\n  ?                      modal help overlay (Esc/? close)\n  S                      manual save to --save-dir\n  Ctrl-L                 quick load from --save-dir\n  b/B                    toggle intake pause\n  N/E/K                  policy band (Normal/Enhanced/Lockdown)\n  p                      cycle policy mode (Deterministic/Council/Shadow)\n  L/U                    lockdown enable/lift (U unlocks outside Warden)\n  x/X                    lockdown toggle outside Warden view\n  [/]                    security level down/up\n  ,/.                    privileges down/up\n  ;/'                    rehab funding down/up\n  Warden: c/C/u/U/v/x/X/>  construction kind/queue/project/approve/cancel/fail/advance\n  H/G/J/Y                parole hearing/grant/deny/release (Prisoner view)\n  t/r/R                  rehab program cycle/enroll/drop\n  f/F                    contraband case cycle/resolve\n  m/o                    incident severity/resolved filters (Incident Reports)\n  d/D                    decision validation filter (Decision Audit)\n\nUse `run <days>` for a headless soak run, or `--no-tui` for a short report."
+    long_about = "Autonomous Living Prison Simulation\n\nWith no arguments (or `observe`) the graphical observer opens at the main menu.\nThe GUI is button/menu-driven; controls are visible on screen and there are no\nhidden keyboard shortcuts.\n\nUse --tui for the ratatui debug observer. Its key map is available from the in-app ? help overlay.\nUse `run <days>` for a headless soak run. Use --load to open a save at startup,\n--seed to choose a generated world, and --save-dir/--autosave-days to configure saves.\n\nFrontends share sumo's display models and validated controls; the world is always owned by sumo::Sim."
 )]
 struct Cli {
     /// World-generation seed (same seed reproduces the same institution).
@@ -26,8 +35,11 @@ struct Cli {
     #[arg(long, global = true, default_value_t = DEFAULT_SPEED)]
     speed: u32,
 
-    /// Disable the TUI: `observe` falls back to a short headless report.
-    /// Useful for CI and non-interactive shells.
+    /// Launch the ratatui debug observer instead of the graphical observer.
+    #[arg(long, global = true)]
+    tui: bool,
+
+    /// Legacy alias: skip the observer and run a short headless report.
     #[arg(long, global = true)]
     no_tui: bool,
 
@@ -63,7 +75,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Launch the interactive TUI observer (the default when no args are given).
+    /// Launch the graphical observer (the default when no args are given).
     Observe,
     /// Run headless for N days at extreme speed, printing a summary.
     Run {
@@ -75,9 +87,9 @@ enum Cmd {
     Docs,
 }
 
-/// Adapts the engine (`sumo::Sim`) to the UI's `SimDriver` trait. Implemented
-/// here — not in `alc-ui` — because `alc-ui` already depends on `sumo`; putting
-/// this adapter in `alc-ui` would create a crate cycle.
+/// Adapts the engine (`sumo::Sim`) to the terminal observer's `SimDriver` trait.
+/// The graphical observer applies validated controls directly; this adapter is
+/// the ratatui debug path and preserves the runtime `AiConfig` across loads.
 struct EngineDriver(sumo::Sim, alc_core::config::AiConfig);
 
 impl SimDriver for EngineDriver {
@@ -307,12 +319,21 @@ fn main() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let cli = Cli::parse();
+    let matches = Cli::command().get_matches();
+    let cli = Cli::from_arg_matches(&matches)?;
     if !valid_observer_speed(cli.speed) {
         return Err(anyhow::anyhow!(
             "invalid --speed {}: must be in 1..={}",
             cli.speed,
             MAX_OBSERVER_SPEED
+        ));
+    }
+    if cli.tui && cli.no_tui {
+        return Err(anyhow::anyhow!("--tui and --no-tui are mutually exclusive"));
+    }
+    if matches!(cli.cmd, Some(Cmd::Run { .. }) | Some(Cmd::Docs)) && (cli.tui || cli.no_tui) {
+        return Err(anyhow::anyhow!(
+            "--tui and --no-tui apply only to the observer; use them without `run` or `docs`"
         ));
     }
     match cli.cmd {
@@ -325,13 +346,46 @@ fn main() -> anyhow::Result<()> {
                     &cli.save_dir,
                     cli.autosave_days,
                 )?;
-            } else {
+            } else if cli.tui {
                 launch_tui(
                     cli.seed,
                     cli.speed,
                     cli.load.as_deref(),
                     &cli.save_dir,
                     cli.autosave_days,
+                )?;
+            } else {
+                // Unspecified launch flags inherit the observer preferences so
+                // Settings choices survive a restart; explicit flags win.
+                let settings_path = std::path::PathBuf::from("saves/alc-gui/settings.json");
+                let persisted = alc_gui::Settings::load(&settings_path);
+                let seed = if explicitly_set(&matches, "seed") {
+                    cli.seed
+                } else {
+                    persisted.seed
+                };
+                let save_dir = if explicitly_set(&matches, "save_dir") {
+                    cli.save_dir.clone()
+                } else {
+                    persisted.save_root()
+                };
+                let autosave_days = if explicitly_set(&matches, "autosave_days") {
+                    cli.autosave_days
+                } else {
+                    persisted.autosave_days
+                };
+                let speed = if explicitly_set(&matches, "speed") {
+                    cli.speed
+                } else {
+                    persisted.ticks_per_second
+                };
+                launch_gui(
+                    seed,
+                    speed,
+                    cli.load.clone(),
+                    &save_dir,
+                    autosave_days,
+                    &settings_path,
                 )?;
             }
         }
@@ -371,6 +425,26 @@ fn load_or_new_with_config(
     } else {
         Ok(sumo::Sim::new_with_config(seed, ai))
     }
+}
+
+fn launch_gui(
+    seed: u64,
+    speed: u32,
+    load: Option<std::path::PathBuf>,
+    save_dir: &std::path::Path,
+    autosave_days: u64,
+    settings_path: &std::path::Path,
+) -> anyhow::Result<()> {
+    println!("Alcagent graphical observer starting");
+    let options = alc_gui::GuiOptions {
+        seed,
+        load,
+        save_dir: save_dir.to_path_buf(),
+        settings_path: settings_path.to_path_buf(),
+        ticks_per_second: speed,
+        autosave_days,
+    };
+    alc_gui::launch(options).map_err(|err| anyhow::anyhow!("graphical observer failed: {err}"))
 }
 
 fn launch_tui(

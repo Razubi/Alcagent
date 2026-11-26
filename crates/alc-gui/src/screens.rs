@@ -47,6 +47,79 @@ fn names(snap: &data::Snapshot) -> HashMap<u64, String> {
         .collect()
 }
 
+const POLICY_STEP: f32 = 0.05;
+const REHAB_FUNDING_STEP: f32 = 0.1;
+const SEVERITY_STEP: f32 = 0.05;
+const POST_RELEASE_SUCCESS_RISK: f32 = 0.10;
+const POST_RELEASE_FOLLOW_UP_RISK: f32 = 0.80;
+
+/// Next value for a discrete +/- control, clamped to an inclusive range.
+fn stepped_value(value: f32, delta: f32, min: f32, max: f32) -> f32 {
+    (value + delta).clamp(min, max)
+}
+
+/// Visible minus/plus buttons with a fixed-precision readout. No sliders, no
+/// drag fields and no hidden keybindings: every change is an explicit click.
+fn step_buttons(
+    ui: &mut egui::Ui,
+    value: f32,
+    min: f32,
+    max: f32,
+    step: f32,
+    suffix: &str,
+    mut emit: impl FnMut(f32),
+) {
+    let down = stepped_value(value, -step, min, max);
+    if ui.small_button("−").clicked() && down != value {
+        emit(down);
+    }
+    ui.label(format!("{value:.2}{suffix}"));
+    let up = stepped_value(value, step, min, max);
+    if ui.small_button("+").clicked() && up != value {
+        emit(up);
+    }
+}
+
+/// Stable display label for a typed parole status (no debug-string round trip).
+fn parole_status_label(status: sumo::ParoleStatus) -> &'static str {
+    use sumo::ParoleStatus as P;
+    match status {
+        P::None => "none",
+        P::Scheduled => "scheduled",
+        P::InHearing => "in hearing",
+        P::Granted => "granted",
+        P::Denied => "denied",
+    }
+}
+
+/// Compact label for a contraband case row in the prisoner detail panel.
+fn contraband_case_label(case: &sumo::ContrabandCaseSummary) -> String {
+    format!(
+        "#{} {} · sev {:.0}% · {}",
+        case.case_id,
+        case.item.as_deref().unwrap_or("Unknown"),
+        case.severity * 100.0,
+        if case.resolved { "resolved" } else { "open" }
+    )
+}
+
+/// Coarse, observer-initiated follow-up outcome routed through the validated
+/// `RecordPostRelease` command. The button choice supplies the risk/plan pair;
+/// the observer does not have free-form simulation-state writes here.
+fn post_release_record_command(row: &sumo::PostReleaseSummary, successful: bool) -> Command {
+    let (risk, plan) = if successful {
+        (POST_RELEASE_SUCCESS_RISK, true)
+    } else {
+        (POST_RELEASE_FOLLOW_UP_RISK, false)
+    };
+    Command::RecordPostRelease {
+        prisoner: row.prisoner_id,
+        release_type: row.release_type.clone(),
+        risk,
+        plan,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 1 — Institution overview
 // ---------------------------------------------------------------------------
@@ -104,7 +177,7 @@ fn overview(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                 }
             });
         },
-        |ui, _ctx| {
+        |ui, ctx| {
             panels::section(ui, "Recent events", |ui| {
                 egui::ScrollArea::vertical()
                     .id_salt("overview_events")
@@ -121,6 +194,76 @@ fn overview(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                                 .small(),
                             ));
                         }
+                    });
+            });
+            panels::section(ui, "Post-release tracking", |ui| {
+                ui.add(egui::Label::new(
+                    egui::RichText::new(
+                        "Recorded reintegration outcomes. Buttons update a tracked case through the validated command path.",
+                    )
+                    .small()
+                    .color(theme::MUTED),
+                ));
+                if snap.post_release.is_empty() {
+                    ui.label("No post-release outcomes recorded.");
+                    return;
+                }
+                egui::ScrollArea::vertical()
+                    .id_salt("post_release_tracking")
+                    .max_height(180.0)
+                    .show(ui, |ui| {
+                        egui::Grid::new("post_release_grid")
+                            .striped(true)
+                            .show(ui, |ui| {
+                                ui.label("Released");
+                                ui.label("Type");
+                                ui.label("Risk / plan");
+                                ui.label("Outcome");
+                                ui.label("Record");
+                                ui.end_row();
+                                for row in &snap.post_release {
+                                    let name = row
+                                        .prisoner_name
+                                        .clone()
+                                        .unwrap_or_else(|| format!("#{}", row.prisoner_id.raw()));
+                                    ui.label(format!(
+                                        "{} · {}",
+                                        data::short_truncate(&name, 16),
+                                        row.released_at.map_or_else(
+                                            || "time unknown".to_string(),
+                                            |at| at.to_string()
+                                        )
+                                    ));
+                                    ui.label(&row.release_type);
+                                    ui.label(format!(
+                                        "{} / {}",
+                                        row.recidivism_risk
+                                            .map_or_else(|| "—".to_string(), |r| format!("{r:.2}")),
+                                        row.has_reintegration_plan.map_or_else(
+                                            || "unknown".to_string(),
+                                            |p| if p {
+                                                "yes".to_string()
+                                            } else {
+                                                "no".to_string()
+                                            },
+                                        )
+                                    ));
+                                    ui.label(if row.follow_up_required {
+                                        "follow-up"
+                                    } else {
+                                        "successful"
+                                    });
+                                    ui.horizontal(|ui| {
+                                        if ui.small_button("Successful").clicked() {
+                                            ctx.emit(post_release_record_command(row, true));
+                                        }
+                                        if ui.small_button("Follow-up").clicked() {
+                                            ctx.emit(post_release_record_command(row, false));
+                                        }
+                                    });
+                                    ui.end_row();
+                                }
+                            });
                     });
             });
             panels::section(ui, "Leaderboard (reputation)", |ui| {
@@ -173,18 +316,6 @@ fn overview(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
 struct ParoleButtonState {
     enabled: bool,
     tip: &'static str,
-}
-
-/// The snapshot carries the engine status as its debug label. Keep the decode
-/// local to the GUI so `data.rs` remains untouched.
-fn parole_status_from_label(label: Option<&str>) -> Option<sumo::ParoleStatus> {
-    match label {
-        Some("Scheduled") => Some(sumo::ParoleStatus::Scheduled),
-        Some("Granted") => Some(sumo::ParoleStatus::Granted),
-        Some("Denied") => Some(sumo::ParoleStatus::Denied),
-        Some("InHearing") => Some(sumo::ParoleStatus::InHearing),
-        _ => None,
-    }
 }
 
 /// Pure gating for the four parole buttons, newest state first:
@@ -312,7 +443,14 @@ fn prisoner(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                     theme::kv(ui, "Sentence", format!("{} served / {} total ({} remaining)", p.sentence_served_days, p.sentence_days, p.sentence_days.saturating_sub(p.sentence_served_days)));
                     theme::kv(ui, "Gang", p.gang_affiliation.map_or_else(|| "unaffiliated".into(), |g| format!("#{g}")));
                     theme::kv(ui, "Reputation", format!("{:.2}", p.reputation));
-                    theme::kv(ui, "Parole", snap.selected_parole.clone().unwrap_or_else(|| "none".into()));
+                    theme::kv(
+                        ui,
+                        "Parole",
+                        snap.selected_parole_status
+                            .map(parole_status_label)
+                            .unwrap_or("none")
+                            .to_string(),
+                    );
                     theme::metric_bar(ui, "Health", p.condition.health, true);
                     theme::metric_bar(ui, "Mental health", p.condition.mental_health, true);
                     theme::metric_bar(ui, "Hope", p.condition.hope, true);
@@ -415,7 +553,7 @@ fn prisoner(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                         ui.label("Released from custody on parole.");
                     }
                     let due = snap.parole_due.contains(&id);
-                    let status = parole_status_from_label(snap.selected_parole.as_deref());
+                    let status = snap.selected_parole_status;
                     let [schedule, grant, deny, release] = parole_button_states(
                         due,
                         status,
@@ -455,9 +593,35 @@ fn prisoner(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                     let cases: Vec<_> = snap.contraband.iter().filter(|c| c.holder == Some(id)).collect();
                     if cases.is_empty() {
                         ui.label("No cases recorded.");
+                        return;
                     }
-                    for case in cases {
-                        theme::kv(ui, &format!("#{} {}", case.case_id, case.item.as_deref().unwrap_or("Unknown")), format!("sev {:.2} · {}", case.severity, if case.resolved { "resolved" } else { "open" }));
+                    egui::ScrollArea::vertical()
+                        .id_salt("prisoner_contraband_cases")
+                        .max_height(140.0)
+                        .show(ui, |ui| {
+                            for case in &cases {
+                                let selected = ctx.state.selected_contraband == Some(case.case_id);
+                                if ui
+                                    .selectable_label(selected, contraband_case_label(case))
+                                    .clicked()
+                                {
+                                    ctx.state.selected_contraband = Some(case.case_id);
+                                }
+                            }
+                        });
+                    if let Some(case_id) = ctx.state.selected_contraband {
+                        if let Some(case) = cases.iter().find(|c| c.case_id == case_id) {
+                            ui.add(egui::Label::new(
+                                egui::RichText::new(data::short_truncate(&case.summary, 120))
+                                    .small()
+                                    .color(theme::MUTED),
+                            ));
+                            if case.resolved {
+                                ui.label("Case is already resolved.");
+                            } else if ui.button("Resolve case").clicked() {
+                                ctx.emit(Command::ResolveContraband(case.case_id));
+                            }
+                        }
                     }
                 });
                 panels::section(ui, "Memory", |ui| {
@@ -930,27 +1094,44 @@ fn warden(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                 {
                     ctx.emit(Command::SetIntakePaused(!snap.policy.intake_paused));
                 }
-                let mut security = snap.policy.security_level;
-                if ui
-                    .add(egui::Slider::new(&mut security, 0.0..=1.0).text("Security"))
-                    .changed()
-                {
-                    ctx.emit(Command::SetSecurity(security));
-                }
-                let mut privileges = snap.policy.privileges_level;
-                if ui
-                    .add(egui::Slider::new(&mut privileges, 0.0..=1.0).text("Privileges"))
-                    .changed()
-                {
-                    ctx.emit(Command::SetPrivileges(privileges));
-                }
-                let mut funding = snap.policy.rehab_funding_multiplier;
-                if ui
-                    .add(egui::Slider::new(&mut funding, 0.0..=3.0).text("Rehab funding"))
-                    .changed()
-                {
-                    ctx.emit(Command::SetRehabFunding(funding));
-                }
+                ui.horizontal(|ui| {
+                    ui.label("Security");
+                    step_buttons(
+                        ui,
+                        snap.policy.security_level,
+                        0.0,
+                        1.0,
+                        POLICY_STEP,
+                        "",
+                        |v| {
+                            ctx.emit(Command::SetSecurity(v));
+                        },
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Privileges");
+                    step_buttons(
+                        ui,
+                        snap.policy.privileges_level,
+                        0.0,
+                        1.0,
+                        POLICY_STEP,
+                        "",
+                        |v| ctx.emit(Command::SetPrivileges(v)),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Rehab funding");
+                    step_buttons(
+                        ui,
+                        snap.policy.rehab_funding_multiplier,
+                        0.0,
+                        3.0,
+                        REHAB_FUNDING_STEP,
+                        "x",
+                        |v| ctx.emit(Command::SetRehabFunding(v)),
+                    );
+                });
                 ui.horizontal(|ui| {
                     for mode in [
                         sumo::PolicyMode::Deterministic,
@@ -981,9 +1162,23 @@ fn warden(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
                     });
                 ui.horizontal(|ui| {
                     ui.label("Wing");
-                    ui.add(egui::DragValue::new(&mut ctx.state.build_wing).range(0..=99));
+                    if ui.small_button("-").clicked() {
+                        ctx.state.build_wing = ctx.state.build_wing.saturating_sub(1);
+                    }
+                    ui.label(format!("{}", ctx.state.build_wing));
+                    if ui.small_button("+").clicked() {
+                        ctx.state.build_wing = (ctx.state.build_wing + 1).min(99);
+                    }
+                    ui.add_space(12.0);
                     ui.label("Capacity");
-                    ui.add(egui::DragValue::new(&mut ctx.state.build_capacity).range(1..=500));
+                    if ui.small_button("-").clicked() {
+                        ctx.state.build_capacity =
+                            ctx.state.build_capacity.max(1).saturating_sub(1).max(1);
+                    }
+                    ui.label(format!("{}", ctx.state.build_capacity));
+                    if ui.small_button("+").clicked() {
+                        ctx.state.build_capacity = (ctx.state.build_capacity + 1).min(500);
+                    }
                 });
                 if ui.button("Queue construction").clicked() {
                     ctx.emit(Command::EnqueueConstruction {
@@ -1502,10 +1697,15 @@ fn incidents(ui: &mut egui::Ui, ctx: &mut RenderCtx<'_>) {
     let snap = ctx.snapshot;
     ui.horizontal(|ui| {
         ui.label("Minimum severity");
-        ui.add(egui::Slider::new(
-            &mut ctx.state.incident_min_severity,
-            0.0..=1.0,
-        ));
+        step_buttons(
+            ui,
+            ctx.state.incident_min_severity,
+            0.0,
+            1.0,
+            SEVERITY_STEP,
+            "",
+            |v| ctx.state.incident_min_severity = v,
+        );
         ui.checkbox(&mut ctx.state.incident_open_only, "Open only");
     });
     let buckets = incident_bucket_rows(&snap.incidents);
@@ -1833,12 +2033,10 @@ mod tests {
     #[test]
     fn parole_controls_gate_on_status_conditions_and_release() {
         use sumo::ParoleStatus as P;
-        assert_eq!(
-            parole_status_from_label(Some("Scheduled")),
-            Some(P::Scheduled)
-        );
-        assert_eq!(parole_status_from_label(Some("None")), None);
-        assert_eq!(parole_status_from_label(None), None);
+        assert_eq!(parole_status_label(P::Scheduled), "scheduled");
+        assert_eq!(parole_status_label(P::InHearing), "in hearing");
+        assert_eq!(parole_status_label(P::Granted), "granted");
+        assert_eq!(parole_status_label(P::Denied), "denied");
 
         let due = parole_button_states(true, None, false, false);
         assert!(due[0].enabled && due[1].enabled && due[2].enabled);
@@ -1858,5 +2056,59 @@ mod tests {
 
         let released = parole_button_states(true, Some(P::Granted), true, true);
         assert!(released.iter().all(|state| !state.enabled));
+    }
+
+    #[test]
+    fn step_controls_clamp_to_their_inclusive_ranges() {
+        let mid = stepped_value(0.5, POLICY_STEP, 0.0, 1.0);
+        assert!((mid - 0.55).abs() < 1e-6);
+        assert_eq!(stepped_value(0.0, -POLICY_STEP, 0.0, 1.0), 0.0);
+        assert_eq!(stepped_value(3.0, REHAB_FUNDING_STEP, 0.0, 3.0), 3.0);
+        assert_eq!(stepped_value(1.0, SEVERITY_STEP, 0.0, 1.0), 1.0);
+    }
+
+    #[test]
+    fn contraband_case_label_shows_id_item_severity_and_state() {
+        let mut case = sumo::ContrabandCaseSummary::default();
+        case.case_id = 7;
+        case.item = Some("Phones".into());
+        case.severity = 0.4;
+        let label = contraband_case_label(&case);
+        assert!(label.contains("#7"));
+        assert!(label.contains("Phones"));
+        assert!(label.contains("40%"));
+        assert!(label.contains("open"));
+        case.resolved = true;
+        assert!(contraband_case_label(&case).contains("resolved"));
+    }
+
+    #[test]
+    fn post_release_buttons_emit_both_outcomes_through_commands() {
+        let mut row = sumo::PostReleaseSummary::default();
+        row.prisoner_id = PrisonerId(9);
+        row.release_type = "parole".into();
+
+        let success = post_release_record_command(&row, true);
+        match success {
+            Command::RecordPostRelease {
+                prisoner,
+                release_type,
+                risk,
+                plan,
+            } => {
+                assert_eq!(prisoner, PrisonerId(9));
+                assert_eq!(release_type, "parole");
+                assert!(risk < 0.5 && plan);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        let follow_up = post_release_record_command(&row, false);
+        match follow_up {
+            Command::RecordPostRelease { risk, plan, .. } => {
+                assert!(risk >= 0.5 && !plan);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
     }
 }

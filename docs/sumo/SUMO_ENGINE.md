@@ -7,7 +7,8 @@ use it. It is deliberately separate from the prison game built on top of it
 simulation projects.
 
 - **Crate:** `sumo` 0.5.0-beta.1 (workspace version; edition 2024, MSRV 1.85, MIT).
-- **Repo:** standalone (`../sumo`), containing `sumo` plus 11 `alc-*` dependency crates.
+- **Repo:** this workspace (`crates/sumo` plus its `alc-*` dependency crates). An out-of-tree
+  snapshot may exist at `../sumo`, but the docs in this repository are canonical.
 - **Baseline:** builds cleanly; workspace tests are green, including 365/730-day soaks.
 - **Public API guide:** [`SUMO_API.md`](SUMO_API.md) — exact signatures and usage examples.
 
@@ -19,8 +20,9 @@ Today `sumo` powers a prison simulation. Its goal is to become a **general-purpo
 deterministic, agent-based simulations** with:
 
 1. **Separation from any one game** — the core runs headless with no CLI/UI dependency.
-2. **One authoritative core, many frontends** — CLI, terminal UI and egui GUI all drive the
-   same validated `Sim` API.
+2. **One authoritative core, many views** — one `alcagent` binary exposes the egui graphical
+   observer (default), the ratatui debug observer (`--tui`) and headless runs, all over the same
+   validated `Sim` API.
 3. **Determinism and replay** — seeded RNG, fixed timestep, state fingerprints.
 4. **Emergent behavior** — autonomous agents, events with causes, consequences that ripple.
 5. **Observability** — read-only snapshots, event logs, audit records, invariants, tracing.
@@ -32,9 +34,11 @@ deterministic, agent-based simulations** with:
 ## 2. Architecture overview
 
 ```
-       ┌──────────────── Frontends (separate crates / repos) ────────────────┐
-       │  alcagent CLI   │   alc-ui ratatui   │   (planned) GUI editor       │
+       ┌────────────── Frontends (one binary, adapter crates) ──────────────┐
+       │ alcagent GUI  │  alcagent --tui  │  headless run                   │
+       │  (alc-gui)    │    (alc-ui)      │  (alcagent)                     │
        └──────────────────────────┬──────────────────────────────────────────┘
+                                  │  shared display models: sumo::graphics
                                   │  uses only the public API
                           ┌───────▼────────┐
                           │   sumo::Sim    │  ← façade / engine control surface
@@ -103,15 +107,20 @@ Caveat: mirrored conflict incidents currently use a self-referential cause/conse
 `GangSummary`, `GuardSummary`, `WardenSummary`, `EconomySummary`, `SocialEdge`,
 `FacilitySummary`, `ConstructionSummary`) are cheap, serializable, read-only projections of
 world state. They are the only surface frontends need. `MapFrame` supplies pawn positions,
-facility nodes, placeholder nav edges, locked nodes and incidents for a live map renderer.
+facility nodes, campus zones, schematic roads, locked nodes and incidents for a live map renderer.
+Shared display models (palette, view catalog, world-map layout/zones, camera math and the
+construction-kind catalog) live in `sumo::graphics`; frontends are rendering/input adapters and
+never mutate arbitrary world state.
 
 ### 3.5 Persistence
 
-`alc-persistence` writes `world.bin` (versioned bincode, atomic tmp+rename) plus a JSON debug
-sidecar. `EngineState` (parole ledger, population history, incident/decision/audit logs,
-post-release, policy state/mode, autosave interval) round-trips alongside the world. Format
-version 3; v1/v2 require migration/regeneration. Autosave runs on a configurable day interval;
-the autosave directory is runtime-only and must be re-enabled after load.
+`alc-persistence` writes version-5 directories containing `world.bin` (versioned bincode, atomic
+tmp+rename) plus a JSON debug sidecar. `EngineState` (parole ledger, population history,
+incident/decision/audit logs, post-release, policy state/mode, autosave interval and directory)
+round-trips alongside the world; v1/v3/v4 saves are migrated on load. Autosave runs on a
+configurable day interval and its interval/directory survive save/load. Save discovery
+(`list_saves` / `probe_save_dir`) exposes version, compatibility status, population and sim time.
+Graphical observer preferences are separate JSON under `saves/alc-gui/settings.json`.
 
 ### 3.6 Determinism
 
@@ -133,13 +142,14 @@ checks fire.
 historical utility arbitration; deterministic council of seven drives with rationales; or shadow
 mode which runs both, applies only the baseline and logs divergence for A/B evaluation.
 
-### 3.9 GUI (current stub → planned)
+### 3.9 Observers (outside `sumo`)
 
-The `gui` feature currently compiles a stub (`SumoApp` unit struct, `launch_gui()` returning
-`Ok(())`); egui/eframe dependencies were removed from the standalone manifest. The planned GUI
-is an editor/inspector over the public API — see [`SUMO_ROADMAP.md`](SUMO_ROADMAP.md)
-and the deep research report in this docs tree. The shipped observer today is the parent's
-`alc-ui` ratatui TUI alongside the buildable `alc-gui` egui observer.
+`sumo` has no GUI feature or `SumoApp`; the shipped observers live in the `alcagent` binary. The
+egui/eframe graphical observer is the default (`alc-gui` adapter, Main Menu with a seed field +
+**Start** (new world), Load Existing Save, Settings and Quit); `alcagent --tui` opens the ratatui
+debug observer (`alc-ui` adapter). Both use `sumo::graphics` models and validated `Sim` controls.
+A future engine-side editor/inspector is not part of the current API — see
+[`SUMO_ROADMAP.md`](SUMO_ROADMAP.md) for planning context.
 
 ---
 

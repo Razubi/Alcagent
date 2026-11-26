@@ -11,7 +11,7 @@ docs/
 │   └── sumo-engine-research.md  Deep research on sumo's future
 └── alcagent/            ALL game (Alcagent) docs
     ├── ALCAGENT_GAMEPLAY.md  Gameplay, systems & controls
-    ├── ALCAGENT.md           CLI/TUI quick reference
+    ├── ALCAGENT.md           Launch / CLI & observer quick reference
     ├── Design/               Game system designs
     ├── Systems/              Game-domain contracts
     ├── Reports/              Game/workspace reports
@@ -27,7 +27,7 @@ dated planning snapshots; historical notes are retained but not treated as activ
 
 | Document | Purpose |
 |---|---|
-| [`sumo/SUMO_ENGINE.md`](sumo/SUMO_ENGINE.md) | Engine product & system design |
+| [`sumo/SUMO_ENGINE.md`](sumo/SUMO_ENGINE.md) | Engine product & system design (incl. shared `sumo::graphics` models) |
 | [`sumo/SUMO_API.md`](sumo/SUMO_API.md) | Complete API reference with examples and gotchas |
 | [`sumo/sumo-engine-research.md`](sumo/sumo-engine-research.md) | Deep research: architecture, GUI, determinism, backlog, questions |
 | [`sumo/SUMO_ROADMAP.md`](sumo/SUMO_ROADMAP.md) | **0.05 → 0.6+ engine roadmap + mass bug-fixing plan** |
@@ -42,12 +42,22 @@ any out-of-tree `../sumo` snapshot.
 
 | Document | Purpose |
 |---|---|
-| [`alcagent/ALCAGENT_GAMEPLAY.md`](alcagent/ALCAGENT_GAMEPLAY.md) | Gameplay, systems and all controls |
-| [`alcagent/ALCAGENT.md`](alcagent/ALCAGENT.md) | CLI/TUI operator quick reference |
+| [`alcagent/ALCAGENT_GAMEPLAY.md`](alcagent/ALCAGENT_GAMEPLAY.md) | Gameplay, systems and controls |
+| [`alcagent/ALCAGENT.md`](alcagent/ALCAGENT.md) | Launch, CLI and observer quick reference |
 | [`alcagent/Design/`](alcagent/Design/) | Game system designs |
 | [`alcagent/Systems/`](alcagent/Systems/) | Game-domain contracts |
 | [`alcagent/Reports/`](alcagent/Reports/) | Product/workspace reports |
 | [`alcagent/Project/`](alcagent/Project/) | Status, design cross-reference, milestones |
 | [`alcagent/Communication/`](alcagent/Communication/) | AI handoffs |
+
+### Launching (current)
+
+There is one binary, `alcagent`: `cargo run` (workspace `default-members`) opens the graphical
+observer at its Main Menu — seed field + **Start** (new world), **Load Existing Save**, **Settings**,
+**Quit**. Use `cargo run -- --tui` for the ratatui debug observer and `cargo run -- run <days>` for
+headless runs.
+The GUI is button/menu-only; the TUI key map lives in its `?` help overlay. World saves are v5
+directories with `world.bin`; GUI preferences are separate JSON in `saves/alc-gui/settings.json`.
+Both frontends are rendering/input adapters over `sumo::Sim` using shared `sumo::graphics` models.
 
 The master directive is [`../agents.md`](../agents.md).

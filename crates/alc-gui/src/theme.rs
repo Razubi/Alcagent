@@ -5,14 +5,16 @@
 //! (e.g. [`incident_colour`]) without depending on widget construction.
 
 use crate::data::IncidentKind;
+use crate::settings::UiDensity;
 use egui::Color32;
+use sumo::{Palette, ThemeKind};
 
 /// Highlight colour used for the active view tab and selected rows.
 pub const ACCENT: Color32 = Color32::from_rgb(91, 200, 255);
-/// Muted colour for secondary labels and captions.
-pub const MUTED: Color32 = Color32::from_rgb(150, 160, 175);
-/// Background of the map canvas.
-pub const MAP_BG: Color32 = Color32::from_rgb(22, 27, 34);
+/// Muted colour for secondary labels and captions (shared Slate palette).
+pub const MUTED: Color32 = Color32::from_rgb(150, 163, 180);
+/// Background of the map canvas (shared Slate palette).
+pub const MAP_BG: Color32 = Color32::from_rgb(14, 18, 24);
 
 /// Colour used for a pawn that is a prisoner on the live map.
 pub const PRISONER: Color32 = Color32::from_rgb(255, 176, 92);
@@ -22,6 +24,57 @@ pub const GUARD: Color32 = Color32::from_rgb(120, 200, 255);
 pub const FACILITY: Color32 = Color32::from_rgb(120, 230, 170);
 /// Colour used for a locked facility node.
 pub const LOCKED: Color32 = Color32::from_rgb(255, 96, 96);
+
+/// Convert a toolkit-neutral shared colour to egui's `Color32`.
+#[must_use]
+pub const fn from_shared(color: sumo::Color) -> Color32 {
+    Color32::from_rgba_unmultiplied_const(color.r, color.g, color.b, color.a)
+}
+
+/// Resolve the canonical palette for a theme.
+#[must_use]
+pub fn palette(theme: ThemeKind) -> Palette {
+    Palette::for_theme(theme)
+}
+
+/// Apply the selected theme and UI density to the egui context.
+///
+/// This is called by the shell when the preference changes; individual views
+/// never mutate globals. The map additionally uses [`palette`] directly so its
+/// terrain, zones, roads and pawns follow the same shared colour language.
+pub fn apply_visuals(ctx: &egui::Context, theme: ThemeKind, density: UiDensity) {
+    let p = palette(theme);
+    let light = theme == ThemeKind::Paper;
+    ctx.set_theme(if light {
+        egui::Theme::Light
+    } else {
+        egui::Theme::Dark
+    });
+    let mut visuals = if light {
+        egui::Visuals::light()
+    } else {
+        egui::Visuals::dark()
+    };
+    visuals.panel_fill = from_shared(p.panel);
+    visuals.window_fill = from_shared(p.panel);
+    visuals.extreme_bg_color = from_shared(p.background);
+    visuals.faint_bg_color = from_shared(p.panel);
+    visuals.hyperlink_color = from_shared(p.accent);
+    visuals.selection.stroke.color = from_shared(p.accent);
+    visuals.widgets.noninteractive.bg_fill = from_shared(p.panel);
+    visuals.widgets.active.bg_fill = from_shared(p.zone);
+    visuals.widgets.hovered.bg_fill = from_shared(p.zone);
+    ctx.set_visuals(visuals);
+
+    let (item_spacing, button_padding) = match density {
+        UiDensity::Compact => (egui::vec2(4.0, 3.0), egui::vec2(5.0, 3.0)),
+        UiDensity::Comfortable => (egui::vec2(6.0, 4.0), egui::vec2(7.0, 4.0)),
+    };
+    ctx.all_styles_mut(|style| {
+        style.spacing.item_spacing = item_spacing;
+        style.spacing.button_padding = button_padding;
+    });
+}
 
 /// Colour for each incident bucket (shared by the data layer and panels).
 #[must_use]
@@ -110,4 +163,30 @@ pub fn kv(ui: &mut egui::Ui, key: &str, value: impl Into<egui::WidgetText>) {
         ui.add(egui::Label::new(egui::RichText::new(key).color(MUTED)));
         ui.label(value);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_accent_colors_match_the_shared_slate_palette() {
+        let p = palette(ThemeKind::Slate);
+        assert_eq!(ACCENT, from_shared(p.accent));
+        assert_eq!(MUTED, from_shared(p.muted));
+        assert_eq!(PRISONER, from_shared(p.prisoner));
+        assert_eq!(GUARD, from_shared(p.guard));
+        assert_eq!(FACILITY, from_shared(p.facility));
+        assert_eq!(LOCKED, from_shared(p.locked));
+        assert_eq!(MAP_BG, from_shared(p.background));
+    }
+
+    #[test]
+    fn shared_color_conversion_preserves_alpha() {
+        let c = sumo::Color::rgba(10, 20, 30, 90);
+        assert_eq!(
+            from_shared(c),
+            Color32::from_rgba_unmultiplied(10, 20, 30, 90)
+        );
+    }
 }

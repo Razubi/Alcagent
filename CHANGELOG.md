@@ -1,5 +1,30 @@
 # Changelog — Project Alcagent
 
+## [Unreleased]
+
+### Frontends / launch
+- Consolidated to one `alcagent` binary (workspace `default-members`): `cargo run` opens the egui/eframe
+  graphical observer at a Main Menu (seed field + Start, Load Existing Save, Settings, Quit); `--tui` opens the
+  ratatui debug observer; `run <days>` remains headless. The GUI is button/menu-only with no hidden
+  keyboard shortcuts; TUI keybinds remain available in `--tui` mode and its `?` help overlay.
+- Shared display/graphics models (palette, view catalog, world-map layout/zones, camera math,
+  construction-kind catalog) now live in `sumo::graphics`; `alc-gui` and `alc-ui` are rendering/input
+  adapters over `sumo::Sim` and never mutate arbitrary world state.
+- The map is a layered campus-style world map with zones, roads, facilities and pawns, with explicit
+  on-screen camera controls. The save browser uses `alc_persistence::list_saves`/`probe_save_dir` to
+  show version, status, population and simulation time.
+- Saves remain v5 directories with `world.bin`; GUI settings are separate JSON at
+  `saves/alc-gui/settings.json` and do not alter world saves. `--load`, `--seed`, `--speed`,
+  `--save-dir` and `--autosave-days` continue to work; `--no-tui` is a legacy headless-report alias.
+- GUI preferences are authoritative on restart: omitted startup flags inherit saved settings while
+  explicit flags win. `--tui`/`--no-tui` are observer-only and rejected by `run`/`docs`.
+  `sumo::Sim::world_mut` is gated behind the `test-support` feature so frontends cannot bypass
+  validated controls.
+- The save browser now labels v2 binary saves as **Incompatible** instead of **Migratable**; the
+  loader rejects them with an actionable reason, matching the supported v1/v3/v4 migration set.
+- Manual saves no longer replace the persisted save root: generated world directories are tracked
+  separately, so the save browser keeps listing worlds after a restart.
+
 ## [0.5.0-beta.1] — "The Living Institution" (0.05 release candidate; status 2026-11-25)
 
 ### Build / tests

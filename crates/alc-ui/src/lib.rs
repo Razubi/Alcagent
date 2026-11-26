@@ -1,51 +1,30 @@
 //! Observation UI (Directive §20). Ratatui TUI observer with multiple modes.
 //!
+//! `alc-ui` is the ratatui debug-observer backend; `sumo` owns the shared
+//! display models (view catalog, palette, map geometry). Only terminal-specific
+//! glyphs and styling stay local here.
+//!
 //! The crate is split in three focused pieces:
 //!
-//! - [`UiState`] / [`ViewMode`] — the (persistable) observer state.
-//! - [`views`] — pure render functions over a read-only [`alc_world::World`].
-//! - [`app`] — terminal setup, the simulation loop and keyboard handling.
+//! - [`UiState`] — persistable observer state; [`ViewMode`] is the canonical
+//!   view catalog re-exported from `sumo::graphics`.
+//! - [`views`] — pure render functions over read-only `sumo` observation DTOs.
+//! - [`app`] — terminal setup, the simulation loop and TUI-only key handling.
 
 pub mod app;
 pub mod views;
 
-use serde::{Deserialize, Serialize};
-
-/// Observation modes required by the directive.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ViewMode {
-    InstitutionOverview,
-    Prisoner,
-    Gang,
-    Staff,
-    Warden,
-    Financial,
-    EventTimeline,
-    SocialNetwork,
-    Map,
-    IncidentReports,
-    DecisionAudit,
-}
+/// Canonical observation modes, owned by `sumo::graphics`.
+///
+/// Re-exported so existing `alc_ui::ViewMode` call sites keep working; serde
+/// variant names are unchanged.
+pub use sumo::ViewMode;
 
 /// Construction projects offered by the observer `c`/`C` controls.
 ///
-/// Kept in one place so the keybind handler and Warden view never drift apart.
-pub const CONSTRUCTION_KINDS: [alc_world::FacilityKind; 12] = [
-    alc_world::FacilityKind::CellBlock,
-    alc_world::FacilityKind::Dormitory,
-    alc_world::FacilityKind::Medical,
-    alc_world::FacilityKind::Education,
-    alc_world::FacilityKind::Isolation,
-    alc_world::FacilityKind::Visitor,
-    alc_world::FacilityKind::Workshop,
-    // Keep the original order stable; append the remaining facility kinds so
-    // existing observer selections/cycle expectations do not shift.
-    alc_world::FacilityKind::Kitchen,
-    alc_world::FacilityKind::Recreation,
-    alc_world::FacilityKind::Admin,
-    alc_world::FacilityKind::Staff,
-    alc_world::FacilityKind::Yard,
-];
+/// Owned by `sumo::graphics` so the keybind handler and Warden view use the
+/// same catalog as every other frontend.
+pub use sumo::CONSTRUCTION_KINDS;
 
 /// Observer-side selection/filter state (0.05 control wiring).
 ///

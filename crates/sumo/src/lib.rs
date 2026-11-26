@@ -42,6 +42,13 @@ pub mod map_frame;
 /// Re-export map frame types for UI rendering.
 pub use crate::map_frame::{MapFrame, NavEdge, PawnPosition};
 
+/// Shared graphics primitives used by every observation frontend.
+pub mod graphics;
+pub use crate::graphics::{
+    CONSTRUCTION_KINDS, Color, MapBounds, MapCamera, MapZone, MapZoneKind, Palette, ThemeKind,
+    ViewMode, WorldMapLayout,
+};
+
 pub mod observation;
 /// Re-export observation types for UI and external consumers.
 pub use crate::observation::{AgentObservation, Observation, Stats};
@@ -737,7 +744,12 @@ impl Sim {
     pub fn world(&self) -> &World {
         &self.world
     }
-    /// Get a mutable reference to the world state.
+    /// Mutable world access for engine tests and fixture setup only.
+    ///
+    /// This bypasses the validated control boundary and is not available to
+    /// observers or agents: it is gated behind the `test-support` feature (and
+    /// unit-test builds). Frontends must use the validated `Sim` controls.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn world_mut(&mut self) -> &mut World {
         &mut self.world
     }
