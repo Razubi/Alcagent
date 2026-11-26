@@ -802,8 +802,11 @@ impl Guard {
     /// Rotate to the next shift explicitly (e.g. schedule boundary handoff).
     pub fn rotate_shift(&mut self) {
         self.rotation.ticks_on_shift = self.rotation.rotation_period_ticks;
-        let _ = self.rotation.advance();
+        let rotated = self.rotation.advance();
         self.shift = self.rotation.current_shift;
+        if rotated {
+            self.needs.recover_off_duty();
+        }
     }
 
     /// Area-scoped duty tick: observe only the supplied co-located prisoners,
