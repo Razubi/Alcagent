@@ -310,7 +310,24 @@ impl Economy {
         let utilities = Money::from_major(2).mul(population as f64 + buildings as f64 * 5.0);
         let salaries = Money::from_major(140).mul(guards as f64);
         let maintenance = Money::from_major(1).mul(buildings as f64);
-        let total = food.add(utilities).add(salaries).add(maintenance);
+        let medical = Money::from_major(1).mul(population as f64 * 0.35);
+        let education = Money::from_major(1).mul(population as f64 * 0.15);
+        let rehabilitation = Money::from_major(1).mul(population as f64 * 0.1);
+        let security_equipment = Money::from_major(2).mul(buildings as f64 * 0.25 + guards as f64 * 0.1);
+        let transportation = Money::from_major(1).mul(population as f64 * 0.05 + guards as f64 * 0.1);
+        let supplies = Money::from_major(1).mul(population as f64 * 0.25);
+        let admin = Money::from_major(1).mul(guards as f64 * 0.2 + buildings as f64 * 0.1);
+        let total = food
+            .add(utilities)
+            .add(salaries)
+            .add(maintenance)
+            .add(medical)
+            .add(education)
+            .add(rehabilitation)
+            .add(security_equipment)
+            .add(transportation)
+            .add(supplies)
+            .add(admin);
         self.record(at_secs, Account::Food, food.mul(-1.0), "meals");
         self.record(
             at_secs,
@@ -330,6 +347,28 @@ impl Economy {
             maintenance.mul(-1.0),
             "upkeep",
         );
+        self.record(at_secs, Account::Medical, medical.mul(-1.0), "care");
+        self.record(at_secs, Account::Education, education.mul(-1.0), "classes");
+        self.record(
+            at_secs,
+            Account::Rehabilitation,
+            rehabilitation.mul(-1.0),
+            "programs",
+        );
+        self.record(
+            at_secs,
+            Account::SecurityEquipment,
+            security_equipment.mul(-1.0),
+            "equipment",
+        );
+        self.record(
+            at_secs,
+            Account::Transportation,
+            transportation.mul(-1.0),
+            "transport",
+        );
+        self.record(at_secs, Account::Supplies, supplies.mul(-1.0), "supplies");
+        self.record(at_secs, Account::Admin, admin.mul(-1.0), "administration");
         self.push_daily_expense(total.0.max(0));
         total
     }
