@@ -1387,6 +1387,37 @@ impl World {
             };
             p.needs.drift_with(dt_mins, &ctx);
         }
+
+        // Contraband addiction drift (Directive 8): carrying addictive items
+        // raises addiction; absence causes withdrawal pressure.
+        for p in &mut self.prisoners {
+            let addictive: Vec<String> = self
+                .contraband_state
+                .get(&p.id)
+                .map(|st| {
+                    st.inventory
+                        .iter()
+                        .filter(|(item, count)| **count > 0 && item.is_addictive())
+                        .map(|(item, _)| item.as_str().to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !addictive.is_empty() {
+                p.condition.addiction =
+                    (p.condition.addiction + 0.001 * dt_mins as f32).clamp(0.0, 1.0);
+                p.condition.addicted_items = addictive;
+                if p.condition.addiction > 0.6 {
+                    p.needs.impulse(NeedTag::Stimulation, 0.01);
+                }
+            } else if p.condition.addiction > 0.0 {
+                p.condition.addiction =
+                    (p.condition.addiction - 0.0005 * dt_mins as f32).max(0.0);
+                if p.condition.addiction > 0.3 {
+                    p.needs.impulse(NeedTag::Medical, 0.01);
+                }
+                p.condition.addicted_items.clear();
+            }
+        }
     }
 
     fn staff_coverage(&self) -> f32 {

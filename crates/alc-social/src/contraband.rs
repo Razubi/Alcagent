@@ -20,6 +20,27 @@ pub enum ContrabandItem {
     Radio,
 }
 
+impl ContrabandItem {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ContrabandItem::Weapons => "Weapons",
+            ContrabandItem::Drugs => "Drugs",
+            ContrabandItem::Tools => "Tools",
+            ContrabandItem::Phones => "Phones",
+            ContrabandItem::Money => "Money",
+            ContrabandItem::Alcohol => "Alcohol",
+            ContrabandItem::Cigarettes => "Cigarettes",
+            ContrabandItem::Medicine => "Medicine",
+            ContrabandItem::Blueprints => "Blueprints",
+            ContrabandItem::Radio => "Radio",
+        }
+    }
+
+    pub fn is_addictive(self) -> bool {
+        matches!(self, ContrabandItem::Drugs | ContrabandItem::Alcohol | ContrabandItem::Cigarettes)
+    }
+}
+
 /// A proposed illicit trade between prisoners.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TradeOffer {

@@ -278,6 +278,8 @@ pub fn generate_intake_with(rng: &mut RngStream, id: PrisonerId) -> Prisoner {
             rng.range(0.45, 0.95) as f32 - (1.0 - p.traits.emotional_stability) * 0.2,
         ),
         hope,
+        addiction: if kind == BackgroundKind::Drug { 0.2 } else { 0.0 },
+        addicted_items: Vec::new(),
     };
 
     // 4. Skills follow background and employment history (§2.7).

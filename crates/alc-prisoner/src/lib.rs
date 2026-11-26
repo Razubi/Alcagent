@@ -100,6 +100,12 @@ pub struct Condition {
     pub mental_health: f32,
     /// 0..1 of actual hope (not a deficit). Consumed by needs→behavior effects.
     pub hope: f32,
+    /// 0..1 aggregate addiction severity (higher = more dependent).
+    #[serde(default)]
+    pub addiction: f32,
+    /// Item names the prisoner is currently addicted to.
+    #[serde(default)]
+    pub addicted_items: Vec<String>,
 }
 
 impl Default for Condition {
@@ -110,6 +116,8 @@ impl Default for Condition {
             illness: 0.0,
             mental_health: 0.8,
             hope: 0.5,
+            addiction: 0.0,
+            addicted_items: Vec::new(),
         }
     }
 }
@@ -631,6 +639,8 @@ impl Prisoner {
                 illness: 0.0,
                 mental_health: rng.range(0.5, 0.95) as f32,
                 hope: rng.range(0.3, 0.8) as f32,
+                addiction: 0.0,
+                addicted_items: Vec::new(),
             },
             reputation: rng.range(0.0, 0.3) as f32,
             needs: Needs::new(),
