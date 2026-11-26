@@ -331,6 +331,53 @@ impl Default for GuardOpinion {
     }
 }
 
+/// Guard needs (0..1, higher = more unmet). These are simpler than prisoner
+/// needs but still affect performance and reporting quality.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct GuardNeeds {
+    pub rest: f32,
+    pub social: f32,
+    pub safety: f32,
+    pub purpose: f32,
+    pub hygiene: f32,
+    pub stimulation: f32,
+}
+
+impl Default for GuardNeeds {
+    fn default() -> Self {
+        Self {
+            rest: 0.2,
+            social: 0.4,
+            safety: 0.2,
+            purpose: 0.3,
+            hygiene: 0.2,
+            stimulation: 0.4,
+        }
+    }
+}
+
+impl GuardNeeds {
+    /// Drift needs during a duty tick. `load` and `tension` are 0..1.
+    pub fn drift_duty(&mut self, load: f32, tension: f32) {
+        self.rest = (self.rest + 0.015 + load * 0.02).clamp(0.0, 1.0);
+        self.safety = (self.safety + tension * 0.03).clamp(0.0, 1.0);
+        self.hygiene = (self.hygiene + 0.005 + load * 0.01).clamp(0.0, 1.0);
+        self.stimulation = (self.stimulation + 0.01 + tension * 0.01).clamp(0.0, 1.0);
+        self.social = (self.social + 0.005).clamp(0.0, 1.0);
+        self.purpose = (self.purpose - 0.005).clamp(0.0, 1.0);
+    }
+
+    /// Recover needs during off-duty rest.
+    pub fn recover_off_duty(&mut self) {
+        self.rest = (self.rest - 0.05).clamp(0.0, 1.0);
+        self.social = (self.social - 0.02).clamp(0.0, 1.0);
+        self.safety = (self.safety - 0.01).clamp(0.0, 1.0);
+        self.hygiene = (self.hygiene - 0.03).clamp(0.0, 1.0);
+        self.stimulation = (self.stimulation - 0.02).clamp(0.0, 1.0);
+        self.purpose = (self.purpose + 0.01).clamp(0.0, 1.0);
+    }
+}
+
 /// Kind of direct guard → prisoner interaction produced by a duty tick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GuardInteractionKind {
@@ -410,6 +457,9 @@ pub struct Guard {
     /// Cumulative policy violations; survives bounded history trimming.
     #[serde(default)]
     pub cumulative_violations: u32,
+    /// Guard needs (rest, social, safety, purpose, hygiene, stimulation).
+    #[serde(default)]
+    pub needs: GuardNeeds,
 }
 
 fn default_authority() -> AuthorityLevel {
@@ -454,6 +504,7 @@ impl Guard {
             last_escalation_hour: 0,
             cumulative_mistakes: 0,
             cumulative_violations: 0,
+            needs: GuardNeeds::default(),
         }
     }
 
@@ -795,6 +846,7 @@ impl Guard {
             + policies.security_level.clamp(0.0, 1.0) * 0.1
             + lockdown_pressure)
             .clamp(0.0, 1.0);
+        self.needs.drift_duty((nearby / 10.0).clamp(0.0, 1.0), avg_tension);
 
         self.tick(at, incident_load);
 
