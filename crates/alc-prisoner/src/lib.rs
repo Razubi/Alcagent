@@ -405,6 +405,62 @@ pub enum MedicalCrisisCause {
     Combined,
 }
 
+/// Crime category determining sentence severity, classification, and parole eligibility.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CrimeCategory {
+    #[default]
+    Property,
+    Violent,
+    Drug,
+    Fraud,
+    Organized,
+    PublicOrder,
+    WhiteCollar,
+    Weapons,
+    Sexual,
+}
+
+impl CrimeCategory {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CrimeCategory::Property => "Property",
+            CrimeCategory::Violent => "Violent",
+            CrimeCategory::Drug => "Drug",
+            CrimeCategory::Fraud => "Fraud",
+            CrimeCategory::Organized => "Organized",
+            CrimeCategory::PublicOrder => "Public Order",
+            CrimeCategory::WhiteCollar => "White Collar",
+            CrimeCategory::Weapons => "Weapons",
+            CrimeCategory::Sexual => "Sexual",
+        }
+    }
+
+    /// Typical sentence range in days for this crime category.
+    pub fn sentence_range(self) -> (u32, u32) {
+        match self {
+            CrimeCategory::Property => (30, 365),
+            CrimeCategory::Violent => (365, 2555),
+            CrimeCategory::Drug => (180, 1460),
+            CrimeCategory::Fraud => (90, 1095),
+            CrimeCategory::Organized => (730, 3650),
+            CrimeCategory::PublicOrder => (30, 180),
+            CrimeCategory::WhiteCollar => (180, 1095),
+            CrimeCategory::Weapons => (365, 1825),
+            CrimeCategory::Sexual => (1095, 3650),
+        }
+    }
+
+    /// Base classification for this crime category.
+    pub fn base_classification(self) -> Classification {
+        match self {
+            CrimeCategory::Property | CrimeCategory::PublicOrder => Classification::Minimum,
+            CrimeCategory::Drug | CrimeCategory::Fraud | CrimeCategory::WhiteCollar => Classification::Low,
+            CrimeCategory::Violent | CrimeCategory::Weapons => Classification::High,
+            CrimeCategory::Organized | CrimeCategory::Sexual => Classification::Maximum,
+        }
+    }
+}
+
 /// A prisoner aggregate.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Prisoner {
@@ -412,6 +468,15 @@ pub struct Prisoner {
     pub name: String,
     pub age: u32,
     pub background: String,
+    /// Life story (2-4 sentences) generated from background, traits, crime, sentence.
+    #[serde(default)]
+    pub bio: String,
+    /// Specific crime committed (e.g., "Armed robbery of a convenience store").
+    #[serde(default)]
+    pub crime: String,
+    /// Crime category determining sentence severity and parole eligibility.
+    #[serde(default)]
+    pub crime_category: CrimeCategory,
     pub sentence_days: u32,
     pub sentence_served_days: u32,
     pub classification: Classification,
@@ -449,6 +514,9 @@ impl Default for Prisoner {
             name: "Unnamed".into(),
             age: 18,
             background: String::new(),
+            bio: String::new(),
+            crime: String::new(),
+            crime_category: CrimeCategory::default(),
             sentence_days: 0,
             sentence_served_days: 0,
             classification: Classification::default(),
@@ -547,9 +615,12 @@ impl Prisoner {
         }
         Self {
             id,
-            name,
+            name: name.clone(),
             age: rng.range(18.0, 55.0) as u32,
             background: format!("Sentence {sentence_days}d, classification {classification:?}"),
+            bio: format!("{} is serving {} days.", name, sentence_days),
+            crime: "Unknown offense".into(),
+            crime_category: CrimeCategory::default(),
             sentence_days,
             sentence_served_days: 0,
             classification,

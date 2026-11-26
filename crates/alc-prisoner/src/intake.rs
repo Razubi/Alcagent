@@ -7,7 +7,7 @@
 //! population into concrete seeds for the Social/Gang/Economy systems — it
 //! suggests, never forces, relationships and group membership (Directive §2).
 
-use crate::{Classification, Condition, Goal, GoalKind, Needs, Prisoner};
+use crate::{Classification, Condition, CrimeCategory, Goal, GoalKind, Needs, Prisoner};
 use alc_core::{PrisonerId, RngStream};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -92,6 +92,65 @@ impl BackgroundKind {
             Classification::Minimum
         }
     }
+
+    pub fn crime_category(self) -> CrimeCategory {
+        match self {
+            BackgroundKind::Violent => CrimeCategory::Violent,
+            BackgroundKind::Property => CrimeCategory::Property,
+            BackgroundKind::Drug => CrimeCategory::Drug,
+            BackgroundKind::Fraud => CrimeCategory::Fraud,
+            BackgroundKind::Organized => CrimeCategory::Organized,
+            BackgroundKind::PublicOrder => CrimeCategory::PublicOrder,
+        }
+    }
+
+    pub fn crime(self, rng: &mut RngStream) -> String {
+        let crimes = match self {
+            BackgroundKind::Violent => [
+                "Armed robbery of a convenience store",
+                "Aggravated assault in a bar fight",
+                "Home invasion with a weapon",
+                "Drive-by shooting",
+                "Manslaughter during a street altercation",
+            ],
+            BackgroundKind::Property => [
+                "Burglary of a residential home",
+                "Grand theft auto",
+                "Shoplifting with prior convictions",
+                "Arson of a commercial building",
+                "Vandalism of public property",
+            ],
+            BackgroundKind::Drug => [
+                "Possession with intent to distribute",
+                "Drug trafficking across state lines",
+                "Manufacturing methamphetamine",
+                "Smuggling cocaine through a port",
+                "Sale of controlled substances to minors",
+            ],
+            BackgroundKind::Fraud => [
+                "Wire fraud and identity theft",
+                "Embezzlement from employer",
+                "Credit card fraud scheme",
+                "Insurance fraud",
+                "Counterfeiting currency",
+            ],
+            BackgroundKind::Organized => [
+                "Racketeering and extortion",
+                "Organized crime conspiracy",
+                "Money laundering operation",
+                "Human trafficking",
+                "Gang-related drive-by shooting",
+            ],
+            BackgroundKind::PublicOrder => [
+                "Disorderly conduct at a protest",
+                "Public intoxication and resisting arrest",
+                "Vandalism during a riot",
+                "Trespassing on government property",
+                "Unlawful assembly",
+            ],
+        };
+        crimes[(rng.next_u64() as usize) % crimes.len()].to_string()
+    }
 }
 
 fn pick_background(rng: &mut RngStream) -> BackgroundKind {
@@ -154,7 +213,19 @@ pub fn generate_intake_with(rng: &mut RngStream, id: PrisonerId) -> Prisoner {
     p.sentence_days = days;
     p.sentence_served_days = 0;
     p.classification = class;
+    p.crime_category = kind.crime_category();
+    p.crime = kind.crime(rng);
     p.background = format!("{}|{}", kind.tag(), p.background);
+    p.bio = format!(
+        "{} is serving {} days for {}. Background: {}. Traits: aggression {:.2}, sociability {:.2}, discipline {:.2}.",
+        p.name,
+        p.sentence_days,
+        p.crime,
+        kind.tag(),
+        p.traits.aggression,
+        p.traits.sociability,
+        p.traits.discipline
+    );
 
     // 2. Correlated traits: violent → aggressive/less empathetic; fraud →
     //    smart/disciplined; organized → loyal/leaderlike; drug → impulsive.
